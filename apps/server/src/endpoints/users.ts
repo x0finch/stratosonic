@@ -62,6 +62,16 @@ export const getUser: SubsonicHandler = (request) => {
   return { user: buildUserResponse(request.user) };
 };
 
+/**
+ * `getUsers` — the list of accounts an admin may see, which is the caller's
+ * own. Navidrome answers the same way: `GetUsers` builds a one-element list
+ * from the logged-in user, and the endpoint is mounted `adminOnly`, so a
+ * non-admin gets error 50 before the handler runs.
+ */
+export const getUsers: SubsonicHandler = (request) => ({
+  users: { user: [buildUserResponse(request.user)] },
+});
+
 /** Usernames match case-insensitively, as everywhere else in this server. */
 function equalsIgnoringCase(left: string, right: string): boolean {
   return left.toLowerCase() === right.toLowerCase();

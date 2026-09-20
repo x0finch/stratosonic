@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { getLicense, getOpenSubsonicExtensions, ping } from "./endpoints/system";
-import { getUser } from "./endpoints/users";
+import { getUser, getUsers } from "./endpoints/users";
 import {
   registerEndpoint,
   registerErrorHandler,
@@ -21,6 +21,7 @@ export function createApp(): SubsonicApp {
   registerEndpoint(app, "getLicense", getLicense);
 
   registerEndpoint(app, "getUser", getUser);
+  registerEndpoint(app, "getUsers", getUsers, { adminOnly: true });
 
   registerUnknownEndpointHandler(app);
 

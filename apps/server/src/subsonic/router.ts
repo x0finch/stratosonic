@@ -50,6 +50,14 @@ export interface EndpointOptions {
    * reach before it has credentials.
    */
   readonly public?: boolean;
+
+  /**
+   * `true` lets only an admin through, with error 50 for everyone else —
+   * Navidrome's `adminOnly` middleware, which it wraps the same endpoints in
+   * (server/subsonic/api.go). Saying it here keeps the rule visible where the
+   * endpoint is mounted rather than buried in the handler.
+   */
+  readonly adminOnly?: boolean;
 }
 
 /**
@@ -114,6 +122,12 @@ async function callHandler(
   checkRequiredParameters(request.params);
   const user = await authenticate(request.env, request.params);
   await recordLastAccess(request.env, user.id);
+
+  // After the access is recorded, as in Navidrome, where `adminOnly` wraps the
+  // endpoint inside the middleware chain that has already run.
+  if (options.adminOnly && !user.isAdmin) {
+    throw new SubsonicError(SubsonicErrorCode.NotAuthorized);
+  }
 
   return (handler as SubsonicHandler)({ ...request, user });
 }
