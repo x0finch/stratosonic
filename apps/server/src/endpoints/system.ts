@@ -1,4 +1,4 @@
-import type { SubsonicHandler } from "../subsonic/router";
+import type { PublicSubsonicHandler, SubsonicHandler } from "../subsonic/router";
 
 /**
  * The OpenSubsonic extensions this server implements.
@@ -15,6 +15,13 @@ const OPEN_SUBSONIC_EXTENSIONS = [{ name: "formPost", versions: [1] }];
  * requires, so clients can probe the server before they have credentials. Auth
  * parameters may be present; they are simply ignored.
  */
-export const getOpenSubsonicExtensions: SubsonicHandler = () => ({
+export const getOpenSubsonicExtensions: PublicSubsonicHandler = () => ({
   openSubsonicExtensions: OPEN_SUBSONIC_EXTENSIONS,
 });
+
+/**
+ * `ping` — an empty successful envelope. Clients use it to check the server and
+ * their credentials, so it is authenticated: that is the whole point of the
+ * call, and it is what Navidrome does (server/subsonic/system.go).
+ */
+export const ping: SubsonicHandler = () => ({});

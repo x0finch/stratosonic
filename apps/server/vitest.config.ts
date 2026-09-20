@@ -14,7 +14,15 @@ export default defineConfig(async () => {
       cloudflareTest({
         wrangler: { configPath: "./wrangler.jsonc" },
         miniflare: {
-          bindings: { TEST_MIGRATIONS: migrations },
+          // `INITIAL_PASSWORD` and `PASSWORD_ENCRYPTION_KEY` are Worker secrets
+          // in production (`wrangler secret put`); tests supply them the same
+          // way the runtime sees them, as plain bindings.
+          bindings: {
+            TEST_MIGRATIONS: migrations,
+            INITIAL_USER: "admin",
+            INITIAL_PASSWORD: "sesame",
+            PASSWORD_ENCRYPTION_KEY: "test-password-encryption-key",
+          },
         },
       }),
     ],

@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { getOpenSubsonicExtensions } from "./endpoints/system";
+import { getOpenSubsonicExtensions, ping } from "./endpoints/system";
 import {
   registerEndpoint,
   registerErrorHandler,
@@ -13,9 +13,10 @@ export function createApp(): SubsonicApp {
 
   registerErrorHandler(app);
 
-  // Public: no authentication (see issue #2; auth arrives with the System
-  // module's remaining endpoints).
-  registerEndpoint(app, "getOpenSubsonicExtensions", getOpenSubsonicExtensions);
+  // Public: no authentication, as the OpenSubsonic spec requires.
+  registerEndpoint(app, "getOpenSubsonicExtensions", getOpenSubsonicExtensions, { public: true });
+
+  registerEndpoint(app, "ping", ping);
 
   registerUnknownEndpointHandler(app);
 

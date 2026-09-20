@@ -2,11 +2,11 @@ import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SubsonicError, SubsonicErrorCode } from "../src/subsonic/response";
 import {
+  type PublicSubsonicHandler,
   registerEndpoint,
   registerErrorHandler,
   registerUnknownEndpointHandler,
   type SubsonicApp,
-  type SubsonicHandler,
 } from "../src/subsonic/router";
 
 const LEAKY_MESSAGE = "D1_ERROR: no such table: secret_internals";
@@ -22,12 +22,13 @@ function appThatThrows(error: unknown, middleware = false): SubsonicApp {
     });
   }
 
-  const handler: SubsonicHandler = () => {
+  const handler: PublicSubsonicHandler = () => {
     if (middleware) return {};
     throw error;
   };
 
-  registerEndpoint(app, "boom", handler);
+  // Mounted public: this is about how a throw is rendered, not about auth.
+  registerEndpoint(app, "boom", handler, { public: true });
   registerUnknownEndpointHandler(app);
   return app;
 }
