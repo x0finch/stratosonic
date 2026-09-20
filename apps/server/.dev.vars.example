@@ -1,0 +1,17 @@
+# Worker secrets, for `wrangler dev`. Copy this file to `.dev.vars` and put real
+# values in it; `.dev.vars` is git-ignored and must never be committed.
+#
+# In production these are set once per environment, and are never written to
+# wrangler.jsonc:
+#
+#   wrangler secret put INITIAL_PASSWORD
+#   wrangler secret put PASSWORD_ENCRYPTION_KEY
+#
+# Password of the admin user created on first run, alongside the INITIAL_USER
+# var in wrangler.jsonc. It is only read while the user table is empty.
+INITIAL_PASSWORD = "change-me"
+
+# Passphrase the AES-GCM key that encrypts stored passwords is derived from
+# (ADR-0003). Changing it after users exist makes their passwords unreadable,
+# and nobody can log in.
+PASSWORD_ENCRYPTION_KEY = "change-me-too"

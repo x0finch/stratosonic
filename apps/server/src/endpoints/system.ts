@@ -25,3 +25,11 @@ export const getOpenSubsonicExtensions: PublicSubsonicHandler = () => ({
  * call, and it is what Navidrome does (server/subsonic/system.go).
  */
 export const ping: SubsonicHandler = () => ({});
+
+/**
+ * `getLicense` — Stratosonic is not licensed per install, so the licence is
+ * always valid. Navidrome answers with the same single `valid` attribute
+ * (server/subsonic/system.go and its `responses.License`), and nothing else:
+ * the optional email and expiry attributes are left out rather than invented.
+ */
+export const getLicense: SubsonicHandler = () => ({ license: { valid: true } });

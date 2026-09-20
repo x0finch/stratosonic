@@ -4,6 +4,7 @@ import {
   authenticate,
   checkRequiredParameters,
 } from "../auth/authenticate";
+import { recordLastAccess } from "../auth/last-access";
 import type { Env } from "../env";
 import {
   renderSubsonicResponse,
@@ -111,6 +112,7 @@ async function callHandler(
 
   checkRequiredParameters(request.params);
   const user = await authenticate(request.env, request.params);
+  await recordLastAccess(request.env, user.id);
 
   return (handler as SubsonicHandler)({ ...request, user });
 }

@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { getOpenSubsonicExtensions, ping } from "./endpoints/system";
+import { getLicense, getOpenSubsonicExtensions, ping } from "./endpoints/system";
 import {
   registerEndpoint,
   registerErrorHandler,
@@ -17,6 +17,7 @@ export function createApp(): SubsonicApp {
   registerEndpoint(app, "getOpenSubsonicExtensions", getOpenSubsonicExtensions, { public: true });
 
   registerEndpoint(app, "ping", ping);
+  registerEndpoint(app, "getLicense", getLicense);
 
   registerUnknownEndpointHandler(app);
 
