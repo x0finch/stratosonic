@@ -61,6 +61,9 @@ function authenticationFailed(): SubsonicError {
   return new SubsonicError(SubsonicErrorCode.AuthenticationFailed);
 }
 
+/** Whether this isolate has already reported the missing encryption key. */
+let warnedAboutMissingKey = false;
+
 /**
  * Recovers a user's password. A password this server cannot read — because
  * `PASSWORD_ENCRYPTION_KEY` is unset or has changed — is a server-side problem
@@ -68,7 +71,12 @@ function authenticationFailed(): SubsonicError {
  */
 async function storedPassword(env: Env, stored: string): Promise<string | null> {
   if (!env.PASSWORD_ENCRYPTION_KEY) {
-    console.error("PASSWORD_ENCRYPTION_KEY is not set; no user can log in");
+    if (!warnedAboutMissingKey) {
+      // A missing secret does not come back on its own, so saying it once per
+      // isolate is enough; saying it per request would bury the logs.
+      warnedAboutMissingKey = true;
+      console.error("PASSWORD_ENCRYPTION_KEY is not set; no user can log in");
+    }
     return null;
   }
 

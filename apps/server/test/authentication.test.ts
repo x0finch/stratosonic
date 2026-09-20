@@ -88,6 +88,27 @@ describe("token authentication", () => {
     expect(await ping(await credentials({ t: token, s: "x" }))).toMatchObject({ status: "ok" });
   });
 
+  it.each([
+    ["is absent", null],
+    ["is empty", ""],
+  ])("rejects a token whose salt %s, without crashing", async (_label, salt) => {
+    const query = new URLSearchParams(await credentials());
+    if (salt === null) {
+      query.delete("s");
+    } else {
+      query.set("s", salt);
+    }
+
+    const response = await SELF.fetch(`${BASE}/rest/ping?${query}`);
+    const body = (await response.json()) as JsonEnvelope;
+
+    expect(response.status).toBe(200);
+    expect(body["subsonic-response"]).toMatchObject({
+      status: "failed",
+      error: { code: 40, message: "Wrong username or password" },
+    });
+  });
+
   it("rejects an unknown user with the same error as a wrong password", async () => {
     expect(await ping(await credentials({ u: "nobody" }))).toMatchObject({
       status: "failed",
