@@ -7,6 +7,7 @@ import {
 import { recordLastAccess } from "../auth/last-access";
 import type { Env } from "../env";
 import {
+  type ResponseFormat,
   renderSubsonicResponse,
   responseFormat,
   SubsonicError,
@@ -88,7 +89,7 @@ export function registerEndpoint(
       });
       return renderSubsonicResponse({ status: "ok", body }, format);
     } catch (error) {
-      return renderSubsonicResponse({ status: "failed", error: toSubsonicError(error) }, format);
+      return renderFailure(error, format);
     }
   });
 }
@@ -124,11 +125,23 @@ async function callHandler(
  */
 export function registerErrorHandler(app: SubsonicApp): void {
   app.onError(async (error, c) => {
-    return renderSubsonicResponse(
-      { status: "failed", error: toSubsonicError(error) },
-      responseFormat(await readParamsForErrorResponse(c.req.raw)),
-    );
+    return renderFailure(error, responseFormat(await readParamsForErrorResponse(c.req.raw)));
   });
+}
+
+/**
+ * Renders a thrown error as a failed envelope. A `SubsonicError` may ask for an
+ * HTTP status of its own — the 501 the user-write endpoints answer with — and
+ * everything else keeps the protocol's default of 200.
+ */
+function renderFailure(error: unknown, format: ResponseFormat): Response {
+  const subsonicError = toSubsonicError(error);
+
+  return renderSubsonicResponse(
+    { status: "failed", error: subsonicError },
+    format,
+    subsonicError.httpStatus,
+  );
 }
 
 /**

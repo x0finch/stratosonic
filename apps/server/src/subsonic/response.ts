@@ -40,14 +40,26 @@ const DEFAULT_ERROR_MESSAGES: Record<SubsonicErrorCode, string> = {
   [SubsonicErrorCode.NotFound]: "The requested data was not found",
 };
 
+/** HTTP status used unless a caller asks for another one. */
+const DEFAULT_HTTP_STATUS = 200;
+
 /** An error a handler can throw to produce a `status="failed"` response. */
 export class SubsonicError extends Error {
   readonly code: SubsonicErrorCode;
 
-  constructor(code: SubsonicErrorCode, message?: string) {
+  /**
+   * The HTTP status the failure is rendered with. A Subsonic failure is an HTTP
+   * 200 carrying an `<error>` child, so this is 200 for almost everything; it
+   * exists for the endpoints Navidrome answers at the HTTP level too, such as
+   * the user-write endpoints it returns 501 for.
+   */
+  readonly httpStatus: number;
+
+  constructor(code: SubsonicErrorCode, message?: string, httpStatus: number = DEFAULT_HTTP_STATUS) {
     super(message ?? DEFAULT_ERROR_MESSAGES[code]);
     this.name = "SubsonicError";
     this.code = code;
+    this.httpStatus = httpStatus;
   }
 }
 
@@ -75,9 +87,6 @@ export type ResponseFormat = "xml" | "json";
 export function responseFormat(params: URLSearchParams): ResponseFormat {
   return params.get("f") === "json" ? "json" : "xml";
 }
-
-/** HTTP status used unless a caller asks for another one. */
-const DEFAULT_HTTP_STATUS = 200;
 
 /**
  * Renders a payload as a complete HTTP response.
