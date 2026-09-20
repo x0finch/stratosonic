@@ -8,6 +8,13 @@
       "when": 1789943822797,
       "tag": "0000_create_property_table",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1789944321529,
+      "tag": "0001_create_user_table",
+      "breakpoints": true
     }
   ]
 }
