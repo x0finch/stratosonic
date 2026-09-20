@@ -20,14 +20,19 @@ import { countUsers } from "../users/repository";
 const INITIAL_SETUP_FLAG = "InitialSetup";
 
 /**
- * The bootstrap in flight, or the one that already succeeded in this isolate.
+ * Whether a bootstrap attempt has already run to completion in this isolate.
  *
  * Setup is a question about a database that can only change from "unset" to
  * "set", so asking once per isolate is enough — and it keeps D1 out of the path
- * of every request, which the free tier's write budget cares about. A failed
- * attempt is forgotten so the next request retries it.
+ * of every request, which the free tier's write budget cares about.
+ *
+ * What is remembered is only this marker, never the promise that produced it:
+ * a shared promise would leave every later request awaiting I/O that belongs to
+ * the first request's context, which can be cancelled out from under them. Each
+ * request that finds the marker unset does the work itself, with its own
+ * bindings, and `onConflictDoNothing` keeps a few of them racing harmless.
  */
-let pending: Promise<void> | null = null;
+let attempted = false;
 
 /**
  * Runs the bootstrap at most once per isolate. Called from both Worker entry
@@ -36,17 +41,23 @@ let pending: Promise<void> | null = null;
  *
  * It never rejects: a server that cannot bootstrap should still answer, with
  * the authentication failures that follow from having no users, rather than
- * fail the request with something the client cannot act on.
+ * fail the request with something the client cannot act on. A failed attempt
+ * leaves the marker unset, so the next request retries it.
  */
-export function ensureInitialSetup(env: Env): Promise<void> {
-  if (!pending) {
-    pending = runInitialSetup(env).catch((error) => {
-      console.error("initial setup failed; it will be retried on the next request", error);
-      pending = null;
-    });
+export async function ensureInitialSetup(env: Env): Promise<void> {
+  if (attempted) {
+    return;
   }
 
-  return pending;
+  try {
+    await runInitialSetup(env);
+    // An environment that does not say what to create is not a failure: there
+    // is nothing to retry until the deployment itself changes, and retrying per
+    // request would put a D1 read in front of every one of them.
+    attempted = true;
+  } catch (error) {
+    console.error("initial setup failed; it will be retried on the next request", error);
+  }
 }
 
 /**
