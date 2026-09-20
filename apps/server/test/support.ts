@@ -46,6 +46,26 @@ export async function seedUser(
   return id;
 }
 
+/** A `<user>` element as the JSON rendering carries it. */
+export interface SubsonicUser {
+  username: string;
+  email?: string;
+  scrobblingEnabled: boolean;
+  adminRole: boolean;
+  settingsRole: boolean;
+  downloadRole: boolean;
+  uploadRole: boolean;
+  playlistRole: boolean;
+  coverArtRole: boolean;
+  commentRole: boolean;
+  podcastRole: boolean;
+  streamRole: boolean;
+  jukeboxRole: boolean;
+  shareRole: boolean;
+  videoConversionRole: boolean;
+  folder: number[];
+}
+
 export interface JsonEnvelope {
   "subsonic-response": {
     status: string;
@@ -56,5 +76,7 @@ export interface JsonEnvelope {
     error?: { code: number; message: string };
     license?: { valid: boolean };
     openSubsonicExtensions?: { name: string; versions: number[] }[];
+    user?: SubsonicUser;
+    users?: { user: SubsonicUser[] };
   };
 }
