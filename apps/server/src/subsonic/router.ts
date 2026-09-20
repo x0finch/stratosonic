@@ -41,6 +41,32 @@ export function registerEndpoint(app: SubsonicApp, name: string, handler: Subson
 }
 
 /**
+ * Renders anything thrown outside an endpoint handler — by middleware, or by
+ * Hono itself — as a Subsonic envelope, so a client never receives Hono's
+ * default HTML 500.
+ */
+export function registerErrorHandler(app: SubsonicApp): void {
+  app.onError(async (error, c) => {
+    return renderSubsonicResponse(
+      { status: "failed", error: toSubsonicError(error) },
+      responseFormat(await readParamsForErrorResponse(c.req.raw)),
+    );
+  });
+}
+
+/**
+ * Like `readParams`, but tolerates a request body that has already been read:
+ * whatever failed may have consumed it, and the format still has to be decided.
+ */
+async function readParamsForErrorResponse(request: Request): Promise<URLSearchParams> {
+  try {
+    return await readParams(request);
+  } catch {
+    return new URL(request.url).searchParams;
+  }
+}
+
+/**
  * Answers unknown `/rest/` endpoints inside the envelope rather than with a
  * bare HTTP 404, so a client's XML/JSON parser still sees a response it
  * understands. gonic answers the same way: error 70, "view not found".
@@ -89,6 +115,9 @@ function toSubsonicError(error: unknown): SubsonicError {
     return error;
   }
 
-  const detail = error instanceof Error ? error.message : String(error);
-  return new SubsonicError(SubsonicErrorCode.Generic, `Internal Server Error: ${detail}`);
+  // An unexpected exception can carry internals a client has no business
+  // seeing (SQL, bindings, stack text), so it goes to the log and the client
+  // gets the generic Subsonic error instead.
+  console.error(error);
+  return new SubsonicError(SubsonicErrorCode.Generic);
 }
