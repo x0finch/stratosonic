@@ -45,6 +45,28 @@ describe("XML rendering", () => {
     );
   });
 
+  it("defaults to HTTP 200 and honours an explicit status", () => {
+    const payload = {
+      status: "failed",
+      error: new SubsonicError(SubsonicErrorCode.Generic),
+    } as const;
+
+    expect(renderSubsonicResponse(payload, "xml").status).toBe(200);
+    expect(renderSubsonicResponse(payload, "xml", 501).status).toBe(501);
+    expect(renderSubsonicResponse(payload, "json", 501).status).toBe(501);
+  });
+
+  it("keeps the envelope intact when a custom status is used", async () => {
+    const xml = await renderSubsonicResponse(
+      { status: "failed", error: new SubsonicError(SubsonicErrorCode.Generic, "not implemented") },
+      "xml",
+      501,
+    ).text();
+
+    expect(xml).toContain('status="failed"');
+    expect(xml).toContain('<error code="0" message="not implemented"/>');
+  });
+
   it("declares application/xml", () => {
     const response = renderSubsonicResponse({ status: "ok", body: {} }, "xml");
 

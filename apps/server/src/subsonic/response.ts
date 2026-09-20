@@ -76,20 +76,29 @@ export function responseFormat(params: URLSearchParams): ResponseFormat {
   return params.get("f") === "json" ? "json" : "xml";
 }
 
+/** HTTP status used unless a caller asks for another one. */
+const DEFAULT_HTTP_STATUS = 200;
+
 /**
  * Renders a payload as a complete HTTP response.
  *
  * Subsonic reports failures inside the envelope rather than through the HTTP
- * status, so this always answers 200 — as Navidrome does.
+ * status, so the default is 200 — as Navidrome does. `httpStatus` overrides it
+ * for the few endpoints that must say something at the HTTP level too, such as
+ * the user-write endpoints Navidrome answers with 501 plus an error envelope.
  */
-export function renderSubsonicResponse(payload: SubsonicPayload, format: ResponseFormat): Response {
+export function renderSubsonicResponse(
+  payload: SubsonicPayload,
+  format: ResponseFormat,
+  httpStatus: number = DEFAULT_HTTP_STATUS,
+): Response {
   const [body, contentType] =
     format === "json"
       ? [renderJson(payload), "application/json"]
       : [renderXml(payload), "application/xml"];
 
   return new Response(body, {
-    status: 200,
+    status: httpStatus,
     headers: { "Content-Type": `${contentType}; charset=utf-8` },
   });
 }
