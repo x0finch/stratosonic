@@ -56,6 +56,15 @@ describe("XML rendering", () => {
     expect(renderSubsonicResponse(payload, "json", 501).status).toBe(501);
   });
 
+  it("marks a response with a custom status uncacheable, and leaves 200 alone", () => {
+    const payload = { status: "ok", body: {} } as const;
+
+    expect(renderSubsonicResponse(payload, "xml", 501).headers.get("Cache-Control")).toBe(
+      "no-cache",
+    );
+    expect(renderSubsonicResponse(payload, "xml").headers.get("Cache-Control")).toBeNull();
+  });
+
   it("lets an error carry the HTTP status it should be rendered with", () => {
     const generic = new SubsonicError(SubsonicErrorCode.Generic);
     const notImplemented = new SubsonicError(SubsonicErrorCode.Generic, "not implemented", 501);

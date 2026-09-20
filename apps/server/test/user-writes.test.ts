@@ -13,6 +13,9 @@ const USER = "editor";
 const PASSWORD = "sesame";
 const ENDPOINTS = ["createUser", "updateUser", "deleteUser", "changePassword"];
 
+/** Navidrome's wording, spelled out here so the test pins it, not the source. */
+const MESSAGE = "This endpoint is not implemented, but may be in future releases";
+
 function query(extra: Record<string, string> = {}): string {
   return new URLSearchParams({
     u: USER,
@@ -28,6 +31,10 @@ beforeAll(async () => {
 });
 
 describe("user-write endpoints", () => {
+  it("uses Navidrome's wording for the refusal", () => {
+    expect(NOT_IMPLEMENTED_MESSAGE).toBe(MESSAGE);
+  });
+
   it.each(ENDPOINTS)("answers %s with HTTP 501 and an error envelope", async (name) => {
     const response = await SELF.fetch(`${BASE}/rest/${name}?${query({ username: "someone" })}`);
     const xml = await response.text();
@@ -35,7 +42,9 @@ describe("user-write endpoints", () => {
     expect(response.status).toBe(501);
     expect(response.headers.get("Content-Type")).toBe("application/xml; charset=utf-8");
     expect(xml).toContain('status="failed"');
-    expect(xml).toContain(`<error code="0" message="${NOT_IMPLEMENTED_MESSAGE}"/>`);
+    expect(xml).toContain(`<error code="0" message="${MESSAGE}"/>`);
+    // A 501 is cacheable by heuristic, so it says not to be, as Navidrome does.
+    expect(response.headers.get("Cache-Control")).toBe("no-cache");
   });
 
   it.each(ENDPOINTS)("answers %s the same way on the .view form", async (name) => {
@@ -53,7 +62,7 @@ describe("user-write endpoints", () => {
     expect(response.headers.get("Content-Type")).toBe("application/json; charset=utf-8");
     expect(body["subsonic-response"]).toMatchObject({
       status: "failed",
-      error: { code: 0, message: NOT_IMPLEMENTED_MESSAGE },
+      error: { code: 0, message: MESSAGE },
     });
   });
 
@@ -75,8 +84,10 @@ describe("user-write endpoints", () => {
     );
     const body = (await response.json()) as JsonEnvelope;
 
-    // A failed login is a normal Subsonic failure, so it keeps HTTP 200.
+    // A failed login is a normal Subsonic failure, so it keeps HTTP 200 and
+    // stays a plain response.
     expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBeNull();
     expect(body["subsonic-response"]).toMatchObject({ status: "failed", error: { code: 40 } });
   });
 
