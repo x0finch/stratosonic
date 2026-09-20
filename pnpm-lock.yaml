@@ -49,6 +49,9 @@ importers:
         specifier: 0.45.2
         version: 0.45.2(@cloudflare/workers-types@5.20260920.1)
     devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^5.20260918.1
+        version: 5.20260920.1
       drizzle-kit:
         specifier: 0.31.10
         version: 0.31.10
