@@ -1,5 +1,6 @@
 import { database } from "../db";
 import type { Env } from "../env";
+import { requiredParameter } from "../subsonic/params";
 import { SubsonicError, SubsonicErrorCode } from "../subsonic/response";
 import { findUserByUsername } from "../users/repository";
 import { constantTimeEquals, decodeHex, decryptPassword, subsonicToken } from "./crypto";
@@ -14,6 +15,8 @@ import { constantTimeEquals, decodeHex, decryptPassword, subsonicToken } from ".
 export interface AuthenticatedUser {
   readonly id: string;
   readonly userName: string;
+  /** Empty when the account has no address; `getUser` then omits the attribute. */
+  readonly email: string;
   readonly isAdmin: boolean;
 }
 
@@ -30,9 +33,7 @@ const REQUIRED_PARAMETERS = ["u", "v", "c"] as const;
  */
 export function checkRequiredParameters(params: URLSearchParams): void {
   for (const name of REQUIRED_PARAMETERS) {
-    if (!params.get(name)) {
-      throw new SubsonicError(SubsonicErrorCode.MissingParameter, `missing parameter: '${name}'`);
-    }
+    requiredParameter(params, name);
   }
 }
 
@@ -54,7 +55,16 @@ export async function authenticate(env: Env, params: URLSearchParams): Promise<A
     throw authenticationFailed();
   }
 
-  return { id: found.id, userName: found.userName, isAdmin: found.isAdmin };
+  // `last_login_at` stays untouched on purpose: Navidrome writes it only when
+  // someone logs in to its own web or Jellyfin UI (server/auth.go), never from
+  // a Subsonic request, and a write per request is exactly what the throttled
+  // `last_access_at` update exists to avoid.
+  return {
+    id: found.id,
+    userName: found.userName,
+    email: found.email,
+    isAdmin: found.isAdmin,
+  };
 }
 
 function authenticationFailed(): SubsonicError {

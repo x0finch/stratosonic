@@ -7,6 +7,7 @@ import {
 import { recordLastAccess } from "../auth/last-access";
 import type { Env } from "../env";
 import {
+  type ResponseFormat,
   renderSubsonicResponse,
   responseFormat,
   SubsonicError,
@@ -49,6 +50,14 @@ export interface EndpointOptions {
    * reach before it has credentials.
    */
   readonly public?: boolean;
+
+  /**
+   * `true` lets only an admin through, with error 50 for everyone else —
+   * Navidrome's `adminOnly` middleware, which it wraps the same endpoints in
+   * (server/subsonic/api.go). Saying it here keeps the rule visible where the
+   * endpoint is mounted rather than buried in the handler.
+   */
+  readonly adminOnly?: boolean;
 }
 
 /**
@@ -88,7 +97,7 @@ export function registerEndpoint(
       });
       return renderSubsonicResponse({ status: "ok", body }, format);
     } catch (error) {
-      return renderSubsonicResponse({ status: "failed", error: toSubsonicError(error) }, format);
+      return renderFailure(error, format);
     }
   });
 }
@@ -114,6 +123,12 @@ async function callHandler(
   const user = await authenticate(request.env, request.params);
   await recordLastAccess(request.env, user.id);
 
+  // After the access is recorded, as in Navidrome, where `adminOnly` wraps the
+  // endpoint inside the middleware chain that has already run.
+  if (options.adminOnly && !user.isAdmin) {
+    throw new SubsonicError(SubsonicErrorCode.NotAuthorized);
+  }
+
   return (handler as SubsonicHandler)({ ...request, user });
 }
 
@@ -124,11 +139,23 @@ async function callHandler(
  */
 export function registerErrorHandler(app: SubsonicApp): void {
   app.onError(async (error, c) => {
-    return renderSubsonicResponse(
-      { status: "failed", error: toSubsonicError(error) },
-      responseFormat(await readParamsForErrorResponse(c.req.raw)),
-    );
+    return renderFailure(error, responseFormat(await readParamsForErrorResponse(c.req.raw)));
   });
+}
+
+/**
+ * Renders a thrown error as a failed envelope. A `SubsonicError` may ask for an
+ * HTTP status of its own — the 501 the user-write endpoints answer with — and
+ * everything else keeps the protocol's default of 200.
+ */
+function renderFailure(error: unknown, format: ResponseFormat): Response {
+  const subsonicError = toSubsonicError(error);
+
+  return renderSubsonicResponse(
+    { status: "failed", error: subsonicError },
+    format,
+    subsonicError.httpStatus,
+  );
 }
 
 /**

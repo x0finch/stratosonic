@@ -40,14 +40,26 @@ const DEFAULT_ERROR_MESSAGES: Record<SubsonicErrorCode, string> = {
   [SubsonicErrorCode.NotFound]: "The requested data was not found",
 };
 
+/** HTTP status used unless a caller asks for another one. */
+const DEFAULT_HTTP_STATUS = 200;
+
 /** An error a handler can throw to produce a `status="failed"` response. */
 export class SubsonicError extends Error {
   readonly code: SubsonicErrorCode;
 
-  constructor(code: SubsonicErrorCode, message?: string) {
+  /**
+   * The HTTP status the failure is rendered with. A Subsonic failure is an HTTP
+   * 200 carrying an `<error>` child, so this is 200 for almost everything; it
+   * exists for the endpoints Navidrome answers at the HTTP level too, such as
+   * the user-write endpoints it returns 501 for.
+   */
+  readonly httpStatus: number;
+
+  constructor(code: SubsonicErrorCode, message?: string, httpStatus: number = DEFAULT_HTTP_STATUS) {
     super(message ?? DEFAULT_ERROR_MESSAGES[code]);
     this.name = "SubsonicError";
     this.code = code;
+    this.httpStatus = httpStatus;
   }
 }
 
@@ -76,16 +88,14 @@ export function responseFormat(params: URLSearchParams): ResponseFormat {
   return params.get("f") === "json" ? "json" : "xml";
 }
 
-/** HTTP status used unless a caller asks for another one. */
-const DEFAULT_HTTP_STATUS = 200;
-
 /**
  * Renders a payload as a complete HTTP response.
  *
  * Subsonic reports failures inside the envelope rather than through the HTTP
  * status, so the default is 200 — as Navidrome does. `httpStatus` overrides it
  * for the few endpoints that must say something at the HTTP level too, such as
- * the user-write endpoints Navidrome answers with 501 plus an error envelope.
+ * the user-write endpoints Navidrome answers with 501 plus an error envelope;
+ * such a response also says it must not be cached.
  */
 export function renderSubsonicResponse(
   payload: SubsonicPayload,
@@ -97,10 +107,16 @@ export function renderSubsonicResponse(
       ? [renderJson(payload), "application/json"]
       : [renderXml(payload), "application/xml"];
 
-  return new Response(body, {
-    status: httpStatus,
-    headers: { "Content-Type": `${contentType}; charset=utf-8` },
-  });
+  const headers: Record<string, string> = { "Content-Type": `${contentType}; charset=utf-8` };
+
+  if (httpStatus !== DEFAULT_HTTP_STATUS) {
+    // A status such as 501 is cacheable by heuristic (RFC 9110 §15.1), so a
+    // cache between the client and here could keep answering it after the
+    // endpoint is implemented. Navidrome's `h501` sends the same header.
+    headers["Cache-Control"] = "no-cache";
+  }
+
+  return new Response(body, { status: httpStatus, headers });
 }
 
 function envelopeAttributes(payload: SubsonicPayload): SubsonicNode {

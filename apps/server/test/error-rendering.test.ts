@@ -73,6 +73,29 @@ describe("error rendering", () => {
     );
   });
 
+  it("answers with the HTTP status a SubsonicError asks for", async () => {
+    const error = new SubsonicError(SubsonicErrorCode.Generic, "not implemented", 501);
+    const response = await appThatThrows(error).request("/rest/boom");
+
+    expect(response.status).toBe(501);
+    expect(response.headers.get("Content-Type")).toBe("application/xml; charset=utf-8");
+    await expect(response.text()).resolves.toContain('<error code="0" message="not implemented"/>');
+  });
+
+  it("answers with that status for a middleware throw too", async () => {
+    const error = new SubsonicError(SubsonicErrorCode.Generic, "not implemented", 501);
+    const response = await appThatThrows(error, true).request("/rest/boom?f=json");
+
+    expect(response.status).toBe(501);
+    expect(response.headers.get("Content-Type")).toBe("application/json; charset=utf-8");
+  });
+
+  it("keeps an unexpected exception at HTTP 200", async () => {
+    const response = await appThatThrows(new Error(LEAKY_MESSAGE), true).request("/rest/boom");
+
+    expect(response.status).toBe(200);
+  });
+
   it("renders an exception thrown by middleware as a Subsonic envelope", async () => {
     const response = await appThatThrows(new Error(LEAKY_MESSAGE), true).request("/rest/boom");
     const xml = await response.text();
