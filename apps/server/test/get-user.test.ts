@@ -10,6 +10,8 @@ import { BASE, type JsonEnvelope, type SubsonicUser, seedUser } from "./support"
 
 const ADMIN = "admin";
 const LISTENER = "listener";
+const CURATOR = "curator";
+const CURATOR_EMAIL = "curator@stratosonic.test";
 const PASSWORD = "sesame";
 
 /** Credentials plus whatever the call needs, as a query string. */
@@ -45,6 +47,7 @@ beforeAll(async () => {
   // first request has to reach the Worker before anything else is seeded.
   await SELF.fetch(`${BASE}/rest/ping`);
   await seedUser(LISTENER, PASSWORD);
+  await seedUser(CURATOR, PASSWORD, false, CURATOR_EMAIL);
 });
 
 describe("getUser", () => {
@@ -112,6 +115,16 @@ describe("getUser", () => {
 
     expect(body.user?.email).toBeUndefined();
     expect(xml).not.toContain("email=");
+  });
+
+  it("reports the address of an account that has one", async () => {
+    const body = await getUser(CURATOR, { username: CURATOR });
+    const xml = await (
+      await SELF.fetch(`${BASE}/rest/getUser?${query(CURATOR, { username: CURATOR })}`)
+    ).text();
+
+    expect(body.user?.email).toBe(CURATOR_EMAIL);
+    expect(xml).toContain(`email="${CURATOR_EMAIL}"`);
   });
 
   it("matches the requested username case-insensitively", async () => {

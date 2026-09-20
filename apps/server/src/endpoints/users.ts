@@ -3,6 +3,7 @@ import { MUSIC_FOLDER_ID } from "../library/music-folder";
 import { requiredParameter } from "../subsonic/params";
 import { SubsonicError, SubsonicErrorCode, type SubsonicNode } from "../subsonic/response";
 import type { SubsonicHandler } from "../subsonic/router";
+import { userNamesMatch } from "../users/repository";
 
 /**
  * The Users module, read-only: a caller can look at their own account and an
@@ -55,7 +56,7 @@ function buildUserResponse(user: AuthenticatedUser): SubsonicNode {
 export const getUser: SubsonicHandler = (request) => {
   const username = requiredParameter(request.params, "username");
 
-  if (!equalsIgnoringCase(username, request.user.userName)) {
+  if (!userNamesMatch(username, request.user.userName)) {
     throw new SubsonicError(SubsonicErrorCode.NotAuthorized);
   }
 
@@ -71,8 +72,3 @@ export const getUser: SubsonicHandler = (request) => {
 export const getUsers: SubsonicHandler = (request) => ({
   users: { user: [buildUserResponse(request.user)] },
 });
-
-/** Usernames match case-insensitively, as everywhere else in this server. */
-function equalsIgnoringCase(left: string, right: string): boolean {
-  return left.toLowerCase() === right.toLowerCase();
-}

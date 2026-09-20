@@ -29,6 +29,7 @@ export async function seedUser(
   userName: string,
   password: string,
   isAdmin = false,
+  email = "",
 ): Promise<string> {
   const id = newRandomId();
   const now = new Date();
@@ -37,6 +38,7 @@ export async function seedUser(
     id,
     userName,
     name: userName,
+    email,
     password: await encryptPassword(encryptionKey(), password),
     isAdmin,
     createdAt: now,

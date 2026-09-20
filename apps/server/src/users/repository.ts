@@ -23,6 +23,20 @@ export async function findUserByUsername(db: Database, userName: string): Promis
   return rows[0] ?? null;
 }
 
+/**
+ * Whether two usernames name the same account, by the same rule the lookup
+ * uses. SQLite's `lower()` folds ASCII letters and nothing else, so this folds
+ * ASCII only too: `toLowerCase()` would also fold characters the query leaves
+ * alone, and the two rules would then disagree about who a name refers to.
+ */
+export function userNamesMatch(left: string, right: string): boolean {
+  return foldAsciiCase(left) === foldAsciiCase(right);
+}
+
+function foldAsciiCase(value: string): string {
+  return value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+}
+
 /** Inserts a user. Fails if the name is taken, whatever its case. */
 export async function insertUser(db: Database, values: NewUser): Promise<void> {
   await db.insert(user).values(values);
