@@ -1,0 +1,21 @@
+{
+  "name": "@stratosonic/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "generate": "drizzle-kit generate",
+    "typecheck": "tsc --noEmit",
+    "test": "echo \"no tests in @stratosonic/db\""
+  },
+  "dependencies": {
+    "drizzle-orm": "0.45.2"
+  },
+  "devDependencies": {
+    "drizzle-kit": "0.31.10",
+    "typescript": "5.9.3"
+  }
+}
