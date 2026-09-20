@@ -70,8 +70,10 @@ async function readParams(request: Request): Promise<URLSearchParams> {
   const contentType = request.headers.get("Content-Type") ?? "";
 
   if (request.method === "POST" && contentType.includes("application/x-www-form-urlencoded")) {
-    for (const [key, value] of new URLSearchParams(await request.text())) {
-      merged.append(key, value);
+    for (const [key, value] of await request.formData()) {
+      if (typeof value === "string") {
+        merged.append(key, value);
+      }
     }
   }
 
