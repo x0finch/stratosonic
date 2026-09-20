@@ -12,7 +12,8 @@
       "!**/node_modules",
       "!**/*.sql",
       "!.claude",
-      "!**/migrations/meta"
+      "!**/migrations/meta",
+      "!**/worker-configuration.d.ts"
     ]
   },
   "formatter": {

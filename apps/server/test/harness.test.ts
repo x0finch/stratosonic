@@ -22,6 +22,16 @@ describe("test harness", () => {
     expect(row?.value).toBe("written");
   });
 
+  it("applies the column defaults from the migration", async () => {
+    await env.DB.prepare("INSERT INTO property (id) VALUES (?1)").bind("harness-default").run();
+
+    const row = await env.DB.prepare("SELECT value FROM property WHERE id = ?1")
+      .bind("harness-default")
+      .first<{ value: string }>();
+
+    expect(row?.value).toBe("");
+  });
+
   it("exposes the R2 music bucket binding", async () => {
     await env.MUSIC.put("probe.txt", "ok");
 
