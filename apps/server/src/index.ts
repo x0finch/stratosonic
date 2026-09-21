@@ -1,10 +1,12 @@
 import { createApp } from "./app";
 import type { Env } from "./env";
-import { importPlaylists } from "./playlists/import";
-import { runScan } from "./scanner/scan";
+import { SCAN_DRIVER_INSTANCE } from "./scanner/driver";
 import { ensureInitialSetup } from "./setup/initial-setup";
 
 const app = createApp();
+
+/** The Durable Object that drives the Scan (ADR-0004, #31). */
+export { ScanDriver } from "./scanner/driver";
 
 export default {
   async fetch(request, env, ctx) {
@@ -18,53 +20,47 @@ export default {
   },
   /**
    * Library ingestion runs on a cron schedule (ADR-0004), declared in
-   * wrangler.jsonc. One run is one bounded step of the Scan, which resumes
-   * from where the last one stopped; the schedule is what makes the pass
-   * finish.
+   * wrangler.jsonc, but the cron no longer does the ingesting: it pokes the
+   * scan driver and returns (#31).
    *
-   * The bootstrap runs here too, because a cron run can reach a new
-   * deployment before any client does. The scan is stamped with the cron's
-   * scheduled time rather than the wall clock, so a run that starts late does
-   * not stamp its rows later than the pass it belongs to.
+   * The reason is the clock. One step of the Scan is all the free plan's 50
+   * subrequests buy, and cron cannot tick faster than once a minute, so a
+   * pass driven by cron alone takes days over a large library. The driver is
+   * a Durable Object whose alarm runs one step and schedules the next a
+   * second later, which turns the same steps into minutes. A cron invocation
+   * also has 10 ms of CPU, which is no place to parse a tag; an alarm
+   * invocation has far more (#30).
    *
-   * The playlist import runs after the scan, in the same invocation and in
-   * that order (#17): an `.m3u` entry can only resolve to a Track the scan
-   * has already indexed, and a playlist imported against a half-indexed
-   * library is put right by the next pass, which re-reads every file.
+   * So the schedule now decides only how often a pass *starts*. A poke while
+   * a pass is in flight is a no-op, and the driver runs the playlist import
+   * itself once the scan's pass completes, in that order (#17), for the same
+   * reason as before: an `.m3u` entry can only resolve to a Track the scan
+   * has already indexed.
    *
-   * Each step that throws is logged and swallowed rather than allowed to fail
-   * the invocation, and each is caught on its own. Both commit each listing
-   * page with its own cursor, so whatever they had finished is already
-   * durable and the next cron run resumes there; letting the error out would
-   * add nothing but a failed invocation in the dashboard, and would skip the
-   * work that follows - which for the scan is the import, and the import has
-   * its own reason to run even when the scan could not.
+   * The bootstrap runs here rather than in the driver, because a cron run can
+   * reach a new deployment before any client does and the import needs an
+   * admin to own the playlists it creates; it always precedes the first
+   * alarm. The poke is stamped with the cron's scheduled time rather than the
+   * wall clock, so a pass whose steps are spread over minutes still records
+   * the instant it began.
+   *
+   * A failed poke is logged and swallowed rather than allowed to fail the
+   * invocation: the pass the driver is already running is untouched by it,
+   * and the next cron run pokes again.
    */
   async scheduled(controller, env) {
     await ensureInitialSetup(env);
 
-    const now = new Date(controller.scheduledTime);
-
     try {
-      const run = await runScan(env, now);
+      const driver = env.SCAN_DRIVER.get(env.SCAN_DRIVER.idFromName(SCAN_DRIVER_INSTANCE));
+      const outcome = await driver.start(controller.scheduledTime);
       console.log(
-        run.completed
-          ? `scan: pass complete, ${JSON.stringify(run.totals)}`
-          : `scan: step complete, ${JSON.stringify(run.counts)}`,
+        outcome === "started"
+          ? "scan driver: a pass has started"
+          : "scan driver: a pass is already running",
       );
     } catch (error) {
-      console.error("scan: the run failed; it resumes from its cursor next run", error);
-    }
-
-    try {
-      const imported = await importPlaylists(env, now);
-      console.log(
-        imported.completed
-          ? `playlists: pass complete, ${JSON.stringify(imported.totals)}`
-          : `playlists: step complete, ${JSON.stringify(imported.counts)}`,
-      );
-    } catch (error) {
-      console.error("playlists: the run failed; it resumes from its cursor next run", error);
+      console.error("scan driver: the poke failed; the next cron run pokes again", error);
     }
   },
 } satisfies ExportedHandler<Env>;

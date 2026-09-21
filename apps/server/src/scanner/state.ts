@@ -47,6 +47,11 @@ const BROKEN_OBJECTS_KEY = "BrokenObjects";
 
 /** What a pass has done so far, or did in total. */
 export interface ScanCounts {
+  /**
+   * Steps the pass has taken, this one included: always 1 for a single run,
+   * and for a whole pass however many the driver had to chain (#31).
+   */
+  steps: number;
   /** Objects the listing offered and the scan looked at, music or not. */
   examined: number;
   /** Tracks whose bytes were read and whose rows were written. */
@@ -73,6 +78,7 @@ export interface ScanCounts {
 
 export function noCounts(): ScanCounts {
   return {
+    steps: 0,
     examined: 0,
     indexed: 0,
     added: 0,

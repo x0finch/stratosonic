@@ -129,6 +129,7 @@ export async function importPlaylists(
   const startedAt = previous?.startedAt ?? now.getTime();
   const before = previous?.counts ?? noPlaylistImportCounts();
   const counts = noPlaylistImportCounts();
+  counts.steps = 1;
 
   const owner = await findFirstAdmin(db);
   if (owner === null) {

@@ -6,9 +6,28 @@ audio headers via Range GET, parses tags, extracts embedded cover art, upserts
 artist/album/track into D1, incrementally, skipping unchanged objects by
 etag+size) and imports `.m3u` playlists from R2. Music is uploaded to R2 out of
 band with rclone; the first admin user is created on first run from the
-`INITIAL_USER` / `INITIAL_PASSWORD` variables. We use only D1, R2, and the Cache
-API (no Durable Objects or Queues), and v1 runs on the `workers.dev` domain
+`INITIAL_USER` / `INITIAL_PASSWORD` variables. We use only D1, R2, the Cache
+API and one Durable Object (no Queues), and v1 runs on the `workers.dev` domain
 without a custom domain.
+
+**Amendment (#31): one Durable Object drives the scan.** A step of the scan is
+bounded by the free plan's 50 subrequests per invocation, which is about six
+tracks, and cron cannot tick more than once a minute — so a first pass over
+5,000 tracks driven by cron alone takes days. v1 therefore adds a single
+SQLite-backed Durable Object, `ScanDriver`, with one well-known instance. It is
+a scheduler, not storage: the cron trigger pokes it, its `alarm()` runs one
+step and schedules the next about a second later until the scan's pass and the
+playlist import are done, and D1's `property` table stays the source of truth
+for what a pass has done. The object's own storage holds only the driver's
+bookkeeping — the pass in flight, the consecutive-failure count and its
+backoff — and is emptied when a pass ends. Queues are still unused, and the
+free-tier posture is unchanged: Durable Objects are available on the free plan
+with the SQLite backend, the per-step subrequest budget is untouched, and a
+full pass over 5,000 tracks costs about 840 of the 100,000 Durable Object
+requests a day and a negligible slice of the 13,000 GB-s. The Durable Objects
+limits table gives 30 s of CPU per request with no free/paid split, which — if
+it holds in production, as #30 will confirm — retires the 10 ms cron CPU risk
+named below, because a cron invocation now only pokes.
 
 ## Consequences
 

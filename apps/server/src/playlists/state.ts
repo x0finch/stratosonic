@@ -23,6 +23,11 @@ const IMPORT_PROGRESS_KEY = "PlaylistImportProgress";
 
 /** What a pass has done so far. */
 export interface PlaylistImportCounts {
+  /**
+   * Steps the pass has taken, this one included: always 1 for a single run,
+   * and for a whole pass however many the driver had to chain (#31).
+   */
+  steps: number;
   /** Objects the listing offered and the import looked at, playlist or not. */
   examined: number;
   /** Playlists read from the bucket and written to the library. */
@@ -38,7 +43,7 @@ export interface PlaylistImportCounts {
 }
 
 export function noPlaylistImportCounts(): PlaylistImportCounts {
-  return { examined: 0, imported: 0, entries: 0, unmatched: 0, deferred: 0, removed: 0 };
+  return { steps: 0, examined: 0, imported: 0, entries: 0, unmatched: 0, deferred: 0, removed: 0 };
 }
 
 export function addPlaylistImportCounts(
