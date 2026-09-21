@@ -8,15 +8,26 @@
  * user's alone, so two accounts sharing a library keep separate stars and
  * ratings, and a write names the item type because an album and a track could
  * in principle share an id.
+ *
+ * **No statement binds more than D1 allows.** The existence check binds one
+ * parameter per id, so it is chunked with the scan's `chunked` and
+ * `KEYS_PER_STATEMENT` (`scanner/repository.ts`) - the budget belongs to the
+ * platform rather than to the scan, and D1's ceiling of 100 bound parameters
+ * per query would otherwise throw `too many SQL variables` in production for
+ * a request naming more than a hundred ids, while passing every test, because
+ * Miniflare is real SQLite, whose limit is 999.
  */
 
 import { album, annotation, artist, track } from "@stratosonic/db";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import type { Database } from "../db";
+import { chunked } from "../scanner/repository";
 
 /** The kinds of item a star or a rating can attach to. */
-export type AnnotatedType = "track" | "album" | "artist";
+export const ANNOTATED_TYPES = ["track", "album", "artist"] as const;
+
+export type AnnotatedType = (typeof ANNOTATED_TYPES)[number];
 
 /** An item a write names: its type, and its stored id. */
 export interface AnnotatedItem {
@@ -32,41 +43,56 @@ const ITEM_TABLES = { track, album, artist } as const;
  *
  * `star` on an id that resolves to no track, album or artist is error 70, so
  * the items are checked before anything is written — one query per kind that
- * appears, never one per id. An id whose row is present is fine; the rest are
- * returned for the endpoint to refuse.
+ * appears, and per `KEYS_PER_STATEMENT` ids of that kind, never one per id.
+ * The kinds are asked together, as the reads ask their statements together.
+ * An id whose row is present is fine; the rest are returned for the endpoint
+ * to refuse.
  */
 export async function findMissingItems(
   db: Database,
   items: readonly AnnotatedItem[],
 ): Promise<AnnotatedItem[]> {
-  const missing: AnnotatedItem[] = [];
+  const lookups: Promise<string[]>[] = [];
 
-  for (const type of ["track", "album", "artist"] as const) {
+  for (const type of ANNOTATED_TYPES) {
     const ofType = items.filter((item) => item.type === type);
     if (ofType.length === 0) {
       continue;
     }
 
-    const idColumn = ITEM_TABLES[type].id;
-    const rows = await db
-      .select({ id: idColumn })
-      .from(ITEM_TABLES[type])
-      .where(
-        inArray(
-          idColumn,
-          ofType.map((item) => item.id),
-        ),
-      );
-
-    const present = new Set(rows.map((row) => row.id));
-    for (const item of ofType) {
-      if (!present.has(item.id)) {
-        missing.push(item);
-      }
+    for (const chunk of chunked(ofType)) {
+      lookups.push(findPresentOfType(db, type, chunk));
     }
   }
 
-  return missing;
+  // One key per (kind, id), so an album and a track sharing an id stay apart.
+  const present = new Set((await Promise.all(lookups)).flat());
+
+  return items.filter((item) => !present.has(itemKey(item.type, item.id)));
+}
+
+/** The ids of this chunk that a row of this kind answers to, as keys. */
+async function findPresentOfType(
+  db: Database,
+  type: AnnotatedType,
+  chunk: readonly AnnotatedItem[],
+): Promise<string[]> {
+  const idColumn = ITEM_TABLES[type].id;
+  const rows = await db
+    .select({ id: idColumn })
+    .from(ITEM_TABLES[type])
+    .where(
+      inArray(
+        idColumn,
+        chunk.map((item) => item.id),
+      ),
+    );
+
+  return rows.map((row) => itemKey(type, row.id));
+}
+
+function itemKey(type: AnnotatedType, id: string): string {
+  return `${type}:${id}`;
 }
 
 /**
