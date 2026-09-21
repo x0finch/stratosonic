@@ -45,6 +45,31 @@ export function runNextAlarm(): Promise<boolean> {
   return runDurableObjectAlarm(driver());
 }
 
+/**
+ * Pokes the driver in the middle of a step, and says what the poke answered.
+ *
+ * This is the race a quiescent poke cannot reach. The step is started but
+ * not awaited, so the poke is delivered while it is waiting on R2 and D1 —
+ * which the runtime allows, because input gates only cover storage
+ * operations — and the alarm is deleted first, as the platform deletes it
+ * before invoking the handler, so `getAlarm()` answers null throughout, just
+ * as it does during a real alarm.
+ */
+export function pokeDuringAStep(
+  now: Date,
+  tuning: ScanDriverTuning = slowTuning,
+): Promise<PokeOutcome> {
+  return runInDurableObject(driver(), async (instance: ScanDriver, state) => {
+    await state.storage.deleteAlarm();
+
+    const step = instance.alarm();
+    const outcome = await instance.start(now.getTime(), tuning);
+    await step;
+
+    return outcome;
+  });
+}
+
 /** When the next alarm is due, or null when the driver has scheduled none. */
 export function nextAlarmAt(): Promise<number | null> {
   return runInDurableObject(driver(), (_instance: ScanDriver, state) => state.storage.getAlarm());

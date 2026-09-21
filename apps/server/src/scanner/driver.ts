@@ -117,9 +117,30 @@ interface DriverState {
   readonly phase: Phase;
   /** The instant the pass was poked at; every step of it is stamped with it. */
   readonly startedAt: number;
+  /**
+   * When the alarm this state belongs to was scheduled. It is how a poke
+   * that arrives *during* a step can tell that the pass is alive, which
+   * `getAlarm()` alone cannot: see `livelyFor` and `start`.
+   */
+  readonly armedAt: number;
   /** How many steps have failed in a row without one succeeding. */
   readonly failures: number;
   readonly tuning: Tuning;
+}
+
+/**
+ * How long a state stays believable after its alarm was scheduled, with no
+ * alarm in sight.
+ *
+ * The window has to cover the whole life of one alarm: the delay it was
+ * scheduled with, and then the step itself, which the platform allows to run
+ * for **15 minutes** (developers.cloudflare.com/workers/platform/limits,
+ * "Duration", Durable Object Alarm). Anything older than that is a state
+ * whose alarm never arrived, which is the one thing that would wedge the
+ * driver for ever, so a poke is allowed to take it over.
+ */
+function livelyFor(tuning: Tuning): number {
+  return tuning.maxRetryDelayMs + 15 * 60_000 + 60_000;
 }
 
 /** What a poke did. */
@@ -145,20 +166,36 @@ export class ScanDriver extends DurableObject<Env> {
    * the pass began rather than the wall clock of whichever step wrote them.
    *
    * A poke while a pass is in flight is a no-op, which is what makes the cron
-   * schedule harmless: it only decides how often a pass *starts*. A state
-   * that says a pass is running while no alarm is scheduled cannot happen by
-   * itself, but it would wedge the driver for ever, so it is treated as no
-   * pass at all.
+   * schedule harmless: it only decides how often a pass *starts*.
+   *
+   * Recognising that pass takes both of the questions below. A scheduled
+   * alarm is the obvious sign, but it is not there while the alarm handler
+   * is running: `getAlarm()` "returns null if called while an alarm is
+   * already running, unless `setAlarm` has also been called since the alarm
+   * handler started" (developers.cloudflare.com/durable-objects/api/alarms,
+   * "getAlarm"). And a step is not atomic - input gates "only protect during
+   * storage operations", so a poke *can* be delivered while `runScan` is
+   * waiting on R2 or D1
+   * (developers.cloudflare.com/durable-objects/best-practices/rules-of-durable-objects,
+   * "Avoid race conditions with non-storage I/O"). Without the second
+   * question, a cron poke landing in the middle of a step - which is most of
+   * a step's wall-clock time - would rewind the pass's stamp, phase and
+   * failure count, and arm a second alarm beside the one the step is about
+   * to arm.
+   *
+   * So a state is also taken as live while it is younger than `livelyFor`.
+   * A state older than that whose alarm never arrived is the one thing that
+   * would wedge the driver for ever, and a poke takes it over.
    */
   async start(pokedAt: number = Date.now(), tuning: ScanDriverTuning = {}): Promise<PokeOutcome> {
     const running = await this.read();
-    if (running !== null && (await this.ctx.storage.getAlarm()) !== null) {
+    if (running !== null && (await this.alive(running))) {
       return "running";
     }
 
     const settings = resolved(tuning);
     await this.arm(
-      { phase: "scan", startedAt: pokedAt, failures: 0, tuning: settings },
+      { phase: "scan", startedAt: pokedAt, armedAt: 0, failures: 0, tuning: settings },
       settings.stepDelayMs,
     );
 
@@ -173,8 +210,21 @@ export class ScanDriver extends DurableObject<Env> {
    * cron poke starts a fresh pass rather than resuming a dead one - and the
    * scan itself resumes from the cursor in D1 either way, so nothing is lost
    * but the attempt.
+   *
+   * `alarmInfo` should never say this is a platform retry, because every
+   * failure inside a step is caught here and rescheduled by the driver
+   * itself. If one ever arrives, something threw outside that `try` - the
+   * storage write or `setAlarm` - and it is worth saying so in the log; the
+   * attempt is still counted as an attempt, because it is one.
    */
-  override async alarm(): Promise<void> {
+  override async alarm(alarmInfo?: AlarmInvocationInfo): Promise<void> {
+    if (alarmInfo?.isRetry) {
+      console.error(
+        `scan driver: the platform retried this alarm (attempt ${alarmInfo.retryCount}); ` +
+          "a step failed outside the handler's own error path",
+      );
+    }
+
     const state = await this.read();
     if (state === null) {
       // An alarm that outlived its pass: the driver has already stopped.
@@ -250,10 +300,26 @@ export class ScanDriver extends DurableObject<Env> {
     await this.arm({ ...state, failures }, delay);
   }
 
-  /** Writes the state the next alarm reads, then schedules that alarm. */
+  /**
+   * Writes the state the next alarm reads, then schedules that alarm.
+   *
+   * The state is stamped with the instant it was armed at, which costs
+   * nothing - it rides in the row the step writes anyway - and is what a
+   * poke arriving mid-step reads to see that the pass is alive.
+   */
   private async arm(state: DriverState, delayMs: number): Promise<void> {
-    await this.ctx.storage.put(STATE_KEY, state);
-    await this.ctx.storage.setAlarm(Date.now() + delayMs);
+    const now = Date.now();
+    await this.ctx.storage.put(STATE_KEY, { ...state, armedAt: now });
+    await this.ctx.storage.setAlarm(now + delayMs);
+  }
+
+  /** Whether this state belongs to a pass that is still going. */
+  private async alive(state: DriverState): Promise<boolean> {
+    if ((await this.ctx.storage.getAlarm()) !== null) {
+      return true;
+    }
+
+    return Date.now() - state.armedAt < livelyFor(state.tuning);
   }
 
   /**
@@ -282,15 +348,46 @@ export class ScanDriver extends DurableObject<Env> {
 
 /* ------------------------------------------------------- the state -- */
 
+/**
+ * The tuning with every question answered.
+ *
+ * Every number is checked rather than taken as given, because this is also
+ * the path a stored row comes back through, and a row written by an older
+ * version of this class - or half written - could otherwise put a `NaN`
+ * into `setAlarm` or a zero into a scan limit. Anything that is not a
+ * positive, finite number is the default.
+ */
 function resolved(tuning: ScanDriverTuning): Tuning {
+  const scan = tuning.scanLimits ?? {};
+  const playlists = tuning.playlistLimits ?? {};
+
   return {
-    stepDelayMs: tuning.stepDelayMs ?? STEP_DELAY_MS,
-    firstRetryDelayMs: tuning.firstRetryDelayMs ?? FIRST_RETRY_DELAY_MS,
-    maxRetryDelayMs: tuning.maxRetryDelayMs ?? MAX_RETRY_DELAY_MS,
-    maxFailures: tuning.maxFailures ?? MAX_FAILURES,
-    scanLimits: { ...DEFAULT_SCAN_LIMITS, ...tuning.scanLimits },
-    playlistLimits: { ...DEFAULT_PLAYLIST_IMPORT_LIMITS, ...tuning.playlistLimits },
+    stepDelayMs: positive(tuning.stepDelayMs, STEP_DELAY_MS),
+    firstRetryDelayMs: positive(tuning.firstRetryDelayMs, FIRST_RETRY_DELAY_MS),
+    maxRetryDelayMs: positive(tuning.maxRetryDelayMs, MAX_RETRY_DELAY_MS),
+    maxFailures: positive(tuning.maxFailures, MAX_FAILURES),
+    scanLimits: {
+      pageSize: positive(scan.pageSize, DEFAULT_SCAN_LIMITS.pageSize),
+      pagesPerRun: positive(scan.pagesPerRun, DEFAULT_SCAN_LIMITS.pagesPerRun),
+      extractionsPerRun: positive(scan.extractionsPerRun, DEFAULT_SCAN_LIMITS.extractionsPerRun),
+      deletionsPerPage: positive(scan.deletionsPerPage, DEFAULT_SCAN_LIMITS.deletionsPerPage),
+    },
+    playlistLimits: {
+      pageSize: positive(playlists.pageSize, DEFAULT_PLAYLIST_IMPORT_LIMITS.pageSize),
+      importsPerRun: positive(
+        playlists.importsPerRun,
+        DEFAULT_PLAYLIST_IMPORT_LIMITS.importsPerRun,
+      ),
+      objectsPerRun: positive(
+        playlists.objectsPerRun,
+        DEFAULT_PLAYLIST_IMPORT_LIMITS.objectsPerRun,
+      ),
+    },
   };
+}
+
+function positive(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 function restored(stored: unknown): DriverState | null {
@@ -313,7 +410,10 @@ function restored(stored: unknown): DriverState | null {
   return {
     phase,
     startedAt,
-    failures: typeof state.failures === "number" ? state.failures : 0,
+    armedAt:
+      typeof state.armedAt === "number" && Number.isFinite(state.armedAt) ? state.armedAt : 0,
+    failures:
+      typeof state.failures === "number" && state.failures > 0 ? Math.floor(state.failures) : 0,
     tuning: resolved(tuning),
   };
 }
