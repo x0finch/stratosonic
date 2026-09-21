@@ -91,8 +91,9 @@ export function artistElement(artist: ArtistView): SubsonicNode {
 /**
  * `<album>`, Navidrome's `AlbumID3`. `songCount`, `duration` and `created` are
  * always emitted there; `artist`, `year` and `genre` only when they have a
- * value. The duration is truncated to whole seconds, as Navidrome's
- * `int32(album.Duration)` does.
+ * value — and a year of 0 is no year, which is how Go's `omitempty` reads the
+ * `MaxYear` Navidrome puts there. The duration is truncated to whole seconds,
+ * as Navidrome's `int32(album.Duration)` does.
  */
 export function albumElement(album: Album): SubsonicNode {
   return {
@@ -104,7 +105,7 @@ export function albumElement(album: Album): SubsonicNode {
     songCount: album.songCount,
     duration: Math.trunc(album.duration),
     created: subsonicTimestamp(album.createdAt),
-    year: album.year ?? undefined,
+    year: album.year || undefined,
     genre: album.genre || undefined,
   };
 }

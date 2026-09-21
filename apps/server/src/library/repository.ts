@@ -83,8 +83,9 @@ export async function findAlbum(db: Database, id: string): Promise<Album | null>
 /**
  * An album's tracks, by disc and then track number — the order a record plays
  * in, which is what Navidrome's `SongsByAlbum` sort comes down to within one
- * album (`disc_number, track_number, title`). The title, and then the id,
- * break a tie so an album whose tags carry no track numbers still has one
+ * album: `disc_number, track_number, order_artist_name, title`
+ * (persistence/mediafile_repository.go). The artist, the title and then the
+ * id break a tie, so an album whose tags carry no track numbers still has one
  * order rather than whatever the database happens to return.
  *
  * The album is passed rather than looked up: the endpoint has already read it,
@@ -95,7 +96,13 @@ export async function listTracksOfAlbum(db: Database, of: Album): Promise<SongVi
     .select()
     .from(track)
     .where(eq(track.albumId, of.id))
-    .orderBy(asc(track.discNumber), asc(track.trackNumber), asc(track.title), asc(track.id));
+    .orderBy(
+      asc(track.discNumber),
+      asc(track.trackNumber),
+      asc(track.artist),
+      asc(track.title),
+      asc(track.id),
+    );
 
   return rows.map((row) => ({ ...row, albumName: of.name, albumCoverKey: of.coverKey }));
 }

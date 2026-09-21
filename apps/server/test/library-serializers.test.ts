@@ -135,6 +135,10 @@ describe("albumElement", () => {
     expect(element).not.toContain("genre");
   });
 
+  it("treats a year of zero as no year, as omitempty does", async () => {
+    expect(await render("album", albumElement(albumRow({ year: 0 })))).not.toContain("year");
+  });
+
   it("keeps a song count and a duration of zero, which are not optional", async () => {
     const element = await render("album", albumElement(albumRow({ songCount: 0, duration: 0 })));
 
