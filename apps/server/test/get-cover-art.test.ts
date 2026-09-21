@@ -7,6 +7,7 @@ import {
   BASE,
   fixtureCoverKey,
   type JsonEnvelope,
+  seedAlbum,
   seedFixtureLibrary,
   seedFixtureObjects,
   testEnv,
@@ -57,8 +58,19 @@ function albumNamed(name: string): FixtureAlbum {
   return found;
 }
 
-function idOfAlbum(album: FixtureAlbum): string {
+/** An album named by the three things its id is derived from. */
+interface NamedAlbum {
+  readonly name: string;
+  readonly albumArtist: string;
+  readonly year: number | null;
+}
+
+function idOfAlbum(album: NamedAlbum): string {
   return prefixedId("album", albumId(album.albumArtist, album.name, album.year));
+}
+
+function coverKeyOf(album: NamedAlbum, extension: string): string {
+  return `_covers/${albumId(album.albumArtist, album.name, album.year)}.${extension}`;
 }
 
 /** An album with a cover, and one of its tracks. */
@@ -69,10 +81,28 @@ const BARE = albumNamed("Fallback Album");
 /** The artist with two covered albums, for the "which one?" rule. */
 const TWO_ALBUM_ARTIST = "Mute Ensemble";
 
+/** An album whose cover object carries the content type it was written with. */
+const LABELLED: NamedAlbum = { name: "Labelled Sleeve", albumArtist: "Studio Marker", year: 2020 };
+const LABELLED_TYPE = "image/jpeg";
+const LABELLED_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+
+/** An album whose cover object is there, and empty: nothing to recognise. */
+const EMPTY: NamedAlbum = { name: "Empty Sleeve", albumArtist: "Blank Studio", year: 2021 };
+
 beforeAll(async () => {
   await SELF.fetch(`${BASE}/rest/ping`);
   await seedFixtureLibrary();
   await seedFixtureObjects();
+
+  const labelledKey = coverKeyOf(LABELLED, "jpg");
+  await seedAlbum({ ...LABELLED, coverKey: labelledKey });
+  await testEnv.MUSIC.put(labelledKey, LABELLED_BYTES, {
+    httpMetadata: { contentType: LABELLED_TYPE },
+  });
+
+  const emptyKey = coverKeyOf(EMPTY, "png");
+  await seedAlbum({ ...EMPTY, coverKey: emptyKey });
+  await testEnv.MUSIC.put(emptyKey, new Uint8Array());
 });
 
 describe("getCoverArt", () => {
@@ -135,14 +165,57 @@ describe("getCoverArt", () => {
     expect(await bytesOf(response)).toEqual(fixtureCoverBytes());
   });
 
-  it("recognises the image from its bytes when nothing was stored with it", async () => {
+  it("has nothing but the bytes to go on: the seeded covers store no type", async () => {
     // The seeds write the cover objects without an httpMetadata content type,
-    // as rclone would; every PNG above was therefore recognised by its
-    // signature rather than by what R2 remembered.
+    // as rclone would; every "image/png" above was therefore recognised by
+    // the signature rather than read back from R2.
     const key = fixtureCoverKey(COVERED);
     const stored = key === null ? null : await testEnv.MUSIC.head(key);
 
     expect(stored?.httpMetadata?.contentType).toBeUndefined();
+  });
+
+  it("prefers the content type the object was stored with", async () => {
+    const response = await coverOf(idOfAlbum(LABELLED));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe(LABELLED_TYPE);
+  });
+
+  it("serves an empty cover object as bytes rather than reading a signature", async () => {
+    // R2 refuses a range that reaches past an object's end, and an empty
+    // object has no first bytes to read — so nothing is read at all.
+    const response = await coverOf(idOfAlbum(EMPTY));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("application/octet-stream");
+    expect(response.headers.get("Content-Length")).toBe("0");
+    expect(await bytesOf(response)).toEqual(new Uint8Array());
+  });
+
+  it("answers a HEAD without reading the image", async () => {
+    // The seeded cover stores no content type, and a HEAD does not read the
+    // signature that would supply one — a request carrying no image must not
+    // cost a second R2 operation. So it is told what the object itself says.
+    const response = await SELF.fetch(
+      `${BASE}/rest/getCoverArt?${query({ id: idOfAlbum(COVERED) })}`,
+      { method: "HEAD" },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("application/octet-stream");
+    expect(response.headers.get("Content-Length")).toBe(String(fixtureCoverBytes().length));
+    expect(await bytesOf(response)).toEqual(new Uint8Array());
+  });
+
+  it("answers a HEAD with the stored type when the object carries one", async () => {
+    const response = await SELF.fetch(
+      `${BASE}/rest/getCoverArt?${query({ id: idOfAlbum(LABELLED) })}`,
+      { method: "HEAD" },
+    );
+
+    expect(response.headers.get("Content-Type")).toBe(LABELLED_TYPE);
+    expect(await bytesOf(response)).toEqual(new Uint8Array());
   });
 
   it("serves a range of the cover, for a client that asks for one", async () => {

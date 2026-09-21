@@ -2,7 +2,7 @@ import { parseIdOfType, parsePrefixedId, type Track } from "@stratosonic/db";
 import { database } from "../db";
 import { audioContentType } from "../library/audio-formats";
 import { attachmentDisposition, baseName } from "../media/content-disposition";
-import { coverContentType } from "../media/images";
+import { coverContentType, declaredCoverContentType } from "../media/images";
 import { headStoredObject, serveStoredObject } from "../media/objects";
 import { findCoverKey, findTrackById } from "../media/repository";
 import { requiredParameter } from "../subsonic/params";
@@ -83,9 +83,15 @@ export const getCoverArt: SubsonicHandler = async (request) => {
   // "no artwork" to a client as an album that never had one.
   const head = await headStoredObject(request.env, key, ARTWORK_NOT_FOUND);
 
-  return serveStoredObject(request.env, key, head, request.raw, {
-    contentType: await coverContentType(request.env, key, head),
-  });
+  // A HEAD is answered from the head() alone, as it is for a track: reading
+  // the image's signature would spend a second R2 operation on a response
+  // that carries no image. Such a request is told what the object says it is.
+  const contentType =
+    request.raw.method === "HEAD"
+      ? declaredCoverContentType(head)
+      : await coverContentType(request.env, key, head);
+
+  return serveStoredObject(request.env, key, head, request.raw, { contentType });
 };
 
 /**

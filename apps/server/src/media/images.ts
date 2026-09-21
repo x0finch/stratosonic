@@ -26,16 +26,37 @@ const SIGNATURES: readonly { readonly type: string; readonly bytes: readonly num
 const UNKNOWN_IMAGE_TYPE = "application/octet-stream";
 
 /**
+ * What the object itself says it is: the stored content type when it names an
+ * image, and otherwise nothing better than "bytes".
+ *
+ * This is the whole answer for a HEAD, which must cost the `head()` and
+ * nothing else — reading the signature would spend a second R2 operation on a
+ * request that carries no body.
+ */
+export function declaredCoverContentType(head: R2Object): string {
+  const stored = head.httpMetadata?.contentType;
+
+  return stored?.startsWith("image/") ? stored : UNKNOWN_IMAGE_TYPE;
+}
+
+/**
  * The content type of a cover object: what it was stored with, or what its
  * first bytes say it is.
  */
 export async function coverContentType(env: Env, key: string, head: R2Object): Promise<string> {
-  const stored = head.httpMetadata?.contentType;
-  if (stored?.startsWith("image/")) {
-    return stored;
+  const declared = declaredCoverContentType(head);
+  if (declared !== UNKNOWN_IMAGE_TYPE) {
+    return declared;
   }
 
-  const probe = await env.MUSIC.get(key, { range: { offset: 0, length: SIGNATURE_LENGTH } });
+  // The range is clamped to the object: R2 throws on a range that reaches past
+  // its end (error 10039), and an empty object has no signature to read at all.
+  const length = Math.min(SIGNATURE_LENGTH, head.size);
+  if (length === 0) {
+    return UNKNOWN_IMAGE_TYPE;
+  }
+
+  const probe = await env.MUSIC.get(key, { range: { offset: 0, length } });
   if (probe === null) {
     return UNKNOWN_IMAGE_TYPE;
   }
