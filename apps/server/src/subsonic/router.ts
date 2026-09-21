@@ -32,15 +32,29 @@ export interface AuthenticatedSubsonicRequest extends SubsonicRequest {
   readonly user: AuthenticatedUser;
 }
 
+/**
+ * What a handler answers with: the body of the envelope, or — for the few
+ * endpoints that serve bytes rather than a document — a `Response` of its own,
+ * which is sent exactly as it is.
+ *
+ * `stream`, `download` and `getCoverArt` are ordinary Subsonic endpoints in
+ * every other respect: the same credentials, the same two URL forms, and a
+ * failure reported inside the envelope. Only their success is not a document.
+ * Letting a handler return a `Response` keeps them mounted here, so they
+ * cannot miss the required-parameter check, the authentication or the
+ * last-access record every other endpoint goes through.
+ */
+export type SubsonicResult = SubsonicNode | Response;
+
 /** A handler returns the body of the envelope, or throws a `SubsonicError`. */
 export type SubsonicHandler = (
   request: AuthenticatedSubsonicRequest,
-) => SubsonicNode | Promise<SubsonicNode>;
+) => SubsonicResult | Promise<SubsonicResult>;
 
 /** A handler for an endpoint that is reachable without credentials. */
 export type PublicSubsonicHandler = (
   request: SubsonicRequest,
-) => SubsonicNode | Promise<SubsonicNode>;
+) => SubsonicResult | Promise<SubsonicResult>;
 
 /** How an endpoint is mounted. */
 export interface EndpointOptions {
@@ -65,6 +79,11 @@ export interface EndpointOptions {
  * `/rest/<name>` and `/rest/<name>.view`, over GET and POST. This is the only
  * place endpoints are mounted, so every endpoint gets both URL forms, both
  * methods, and the shared response rendering for free.
+ *
+ * A HEAD request — which players send at a stream URL before they play it —
+ * is routed to the GET handler by Hono, so the endpoints that serve bytes
+ * answer it without being mounted for it; each of them decides what a HEAD
+ * costs, since it must not send a body.
  */
 export function registerEndpoint(
   app: SubsonicApp,
@@ -95,7 +114,11 @@ export function registerEndpoint(
         raw: c.req.raw,
         user: null,
       });
-      return renderSubsonicResponse({ status: "ok", body }, format);
+      // A handler that served bytes has already decided everything about its
+      // response — status, headers and body — so it is sent untouched.
+      return body instanceof Response
+        ? body
+        : renderSubsonicResponse({ status: "ok", body }, format);
     } catch (error) {
       return renderFailure(error, format);
     }
@@ -114,7 +137,7 @@ async function callHandler(
   handler: SubsonicHandler | PublicSubsonicHandler,
   options: EndpointOptions,
   request: SubsonicRequest,
-): Promise<SubsonicNode> {
+): Promise<SubsonicResult> {
   if (options.public) {
     return (handler as PublicSubsonicHandler)(request);
   }
