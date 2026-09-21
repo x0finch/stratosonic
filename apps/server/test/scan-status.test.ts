@@ -323,11 +323,12 @@ describe("a pass in its playlist-import phase", () => {
     expect(duringImport.scanStatus?.scanning).toBe(true);
   });
 
-  it("counts no tracks for a phase that indexes none", () => {
-    // The import's counts are playlists and entries, not tracks, so the
-    // running count is 0 rather than the previous pass's total - a number a
-    // client would otherwise watch fall when the next pass overtook it.
-    expect(duringImport.scanStatus?.count).toBe(0);
+  it("keeps the count this pass's own scan half reached", () => {
+    // The import indexes no tracks, but the scan that preceded it in this
+    // same pass has already written its summary, so the number a client
+    // watches climb stays where the scan left it instead of dipping to 0
+    // for the second half of the pass.
+    expect(duringImport.scanStatus?.count).toBe(fixtures.tracks.length);
   });
 
   it("is reported as idle once the import is over too", async () => {

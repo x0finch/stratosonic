@@ -101,11 +101,14 @@ function inFlight(report: ScanReport): boolean {
  * it (`responses.ScanStatus`).
  *
  * `count` is read from whichever pass the status is about: the one in flight
- * while there is one, and the last completed one otherwise. A pass that is
- * running but has written no counts yet — the moment after `startScan` armed
- * it, and the import phase, whose counts are its own — says 0 rather than
- * borrowing the previous pass's total, which would have a client watching the
- * number fall as the new pass caught up with it.
+ * while there is one, and the last completed one otherwise. A pass that has
+ * just been armed and has written nothing says 0 rather than borrowing the
+ * previous pass's total, which would have a client watching the number fall
+ * as the new pass caught up with it. The import phase is the exception: the
+ * scan half of *this* pass has already finished and written its summary, so
+ * that summary is the count, and the number a client watches climbs to the
+ * library's total and stays there rather than dipping to 0 for the second
+ * half of the pass.
  *
  * `lastScan` is the end of the last completed pass, omitted before there has
  * been one, as Navidrome's pointer field is; it stays what it is during a
@@ -114,8 +117,10 @@ function inFlight(report: ScanReport): boolean {
  * and an invented zero would only mislead a client that shows it.
  */
 function scanStatusElement(report: ScanReport, scanning: boolean): SubsonicNode {
-  const { progress, lastCompleted } = report;
-  const counted = scanning ? progress : lastCompleted;
+  const { progress, importingPlaylists, lastCompleted } = report;
+  const counted = scanning
+    ? (progress ?? (importingPlaylists ? lastCompleted : null))
+    : lastCompleted;
 
   return {
     scanning,
