@@ -50,6 +50,14 @@ export function newPlaylistKey(): string {
 
 /** A playlist as a client write leaves it: the whole file, every time. */
 export interface PlaylistWrite {
+  /**
+   * Whether the `comment` and `public` passed here replace what the row
+   * holds. `updatePlaylist` says yes - changing them may be the whole point
+   * of the call - and the other writes pass what they read, so it makes no
+   * difference to them. An import never says yes: neither lives in the
+   * `.m3u`, so re-reading the file is no reason to touch either.
+   */
+  readonly writesDetails?: boolean;
   /** The `.m3u` to write. An existing playlist keeps its key, and so its id. */
   readonly r2Key: string;
   readonly name: string;
@@ -97,7 +105,10 @@ export async function writePlaylist(env: Env, db: Database, write: PlaylistWrite
     trackIds: write.tracks.map((entry) => entry.id),
   };
 
-  await runBatch(db, upsertPlaylistStatements(db, imported));
+  await runBatch(
+    db,
+    upsertPlaylistStatements(db, imported, { writesDetails: write.writesDetails }),
+  );
 
   return imported.id;
 }

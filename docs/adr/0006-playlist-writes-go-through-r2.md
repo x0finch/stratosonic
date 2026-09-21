@@ -44,3 +44,10 @@ without this rule would delete it seconds after the listener made it.
 - A `put` that R2 refuses fails the request with no row written, and an
   orphaned `.m3u` left by a crash becomes a playlist on the next pass rather
   than rubbish nothing reads.
+- **A playlist's `comment` and `public` live only in the row, not in the
+  file.** The name and the entries are recovered from the `.m3u` by the next
+  pass, so a crash between the `put` and the D1 write costs nothing; an
+  `updatePlaylist` that only changed those two loses that edit silently,
+  because there is nowhere in the bucket for the next pass to read it back
+  from. Both are cheap for a listener to re-apply, and putting them in the
+  file would mean inventing directives no other tool writes.
