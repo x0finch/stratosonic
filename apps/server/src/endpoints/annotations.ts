@@ -23,12 +23,19 @@
  *   writes are one batch however many there are: sixteen subrequests at the
  *   cap, well inside the budget. A client with more to star sends more
  *   requests.
+ *
+ *   `scrobble` is held to the same cap and for the same reason. A client
+ *   flushing an offline backlog is the one caller that really does send
+ *   hundreds of ids at once, and its submission path reads them in chunks
+ *   too (`findTrackAlbums`), so a thousand ids are ceil(1000 / 90) = 12
+ *   selects and one batch.
  */
 
 import { parseIdOfType, parsePrefixedId } from "@stratosonic/db";
 import {
   type AnnotatedItem,
   findMissingItems,
+  findTrackAlbums,
   type Play,
   recordPlays,
   setRating as saveRating,
@@ -64,19 +71,33 @@ export const scrobble: SubsonicHandler = async (request) => {
   const times = requestedTimes(params, ids.length);
   const db = database(request.env);
 
-  const missing = await findMissingItems(
-    db,
-    ids.map((id) => ({ type: "track", id })),
-  );
-  if (missing.length > 0) {
-    throw new SubsonicError(SubsonicErrorCode.NotFound);
-  }
-
   if (isSubmission(params)) {
+    // A play counts for the track and for its album, so `frequent`/`recent`
+    // album lists reflect what was played. One query answers both questions
+    // this path asks of `track` — which ids are real, and what album each one
+    // belongs to — because an id the map does not carry is precisely a track
+    // that is not in the library.
+    const albumOf = await findTrackAlbums(db, ids);
     const now = new Date();
-    const plays: Play[] = ids.map((id, index) => ({ trackId: id, playDate: times[index] ?? now }));
-    await recordPlays(db, request.user.id, plays);
+    const played = ids.map((id, index) => ({ id, playDate: times[index] ?? now }));
+    if (played.some(({ id }) => !albumOf.has(id))) {
+      throw new SubsonicError(SubsonicErrorCode.NotFound);
+    }
+
+    const trackPlays: Play[] = played.map(({ id, playDate }) => ({
+      item: { type: "track", id },
+      playDate,
+    }));
+    await recordPlays(db, request.user.id, [...trackPlays, ...albumPlays(played, albumOf)]);
   } else {
+    const missing = await findMissingItems(
+      db,
+      ids.map((id) => ({ type: "track", id })),
+    );
+    if (missing.length > 0) {
+      throw new SubsonicError(SubsonicErrorCode.NotFound);
+    }
+
     // `now_playing` holds one row per user, so registering every id in turn
     // would leave only the last of them anyway — each write overwrites the row
     // the one before it made. A client that names several tracks is playing
@@ -94,11 +115,60 @@ export const scrobble: SubsonicHandler = async (request) => {
   return {};
 };
 
-/** The track ids of a `scrobble`: required, and each a real track id. */
+/** One track a submission named, and when it was played. */
+interface PlayedTrack {
+  readonly id: string;
+  readonly playDate: Date;
+}
+
+/**
+ * The album side of a submission: one play row per album, however many of its
+ * tracks the request named.
+ *
+ * A client that finishes a sync sends a whole album at once, and a row per
+ * track would be as many statements — each overwriting the same album row — to
+ * reach a count the request already knows. Grouping makes it one upsert per
+ * album, adding that many plays and carrying the latest of their instants,
+ * which is the one `recent` should order by.
+ */
+function albumPlays(played: readonly PlayedTrack[], albumOf: ReadonlyMap<string, string>): Play[] {
+  const byAlbum = new Map<string, { playDate: Date; count: number }>();
+
+  for (const { id, playDate } of played) {
+    const albumId = albumOf.get(id);
+    if (albumId === undefined) {
+      continue;
+    }
+
+    const current = byAlbum.get(albumId);
+    byAlbum.set(albumId, {
+      playDate: current && current.playDate > playDate ? current.playDate : playDate,
+      count: (current?.count ?? 0) + 1,
+    });
+  }
+
+  return [...byAlbum].map(([id, { playDate, count }]) => ({
+    item: { type: "album", id },
+    playDate,
+    count,
+  }));
+}
+
+/**
+ * The track ids of a `scrobble`: required, at most `MAX_ITEMS_PER_REQUEST` of
+ * them, and each a real track id.
+ */
 function requestedTrackIds(params: URLSearchParams): string[] {
   const raw = params.getAll("id");
   if (raw.length === 0) {
     throw new SubsonicError(SubsonicErrorCode.MissingParameter, "missing parameter: 'id'");
+  }
+
+  if (raw.length > MAX_ITEMS_PER_REQUEST) {
+    throw new SubsonicError(
+      SubsonicErrorCode.Generic,
+      `too many ids: ${raw.length}, at most ${MAX_ITEMS_PER_REQUEST} per request`,
+    );
   }
 
   return raw.map((value) => {
@@ -144,7 +214,10 @@ function requestedTimes(params: URLSearchParams, idCount: number): Date[] {
   return raw.map((value) => new Date(integerParameterValue("time", value)));
 }
 
-/** How many items one `star` or `unstar` may name, ids of all kinds together. */
+/**
+ * How many items one write may name: for `star` and `unstar`, ids of all
+ * kinds together; for `scrobble`, the tracks of one submission.
+ */
 const MAX_ITEMS_PER_REQUEST = 1000;
 
 /** `star` — starring the caller's songs, albums, artists and playlists. */
