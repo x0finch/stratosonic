@@ -233,6 +233,12 @@ describe("search request handling", () => {
     expect(body.error).toEqual({ code: 10, message: "missing parameter: 'query'" });
   });
 
+  it("is error 70 for a music folder this server does not have", async () => {
+    const body = await search("search3", { query: "beat", musicFolderId: "2" });
+
+    expect(body.error).toEqual({ code: 70, message: "Library 2 not found or not accessible" });
+  });
+
   it.each(["/rest/search3", "/rest/search3.view"])(
     "answers on %s with the XML container",
     async (path) => {

@@ -26,6 +26,7 @@
  */
 
 import { database } from "../db";
+import { checkMusicFolderIds } from "../library/music-folder";
 import { type SearchQuery, type SearchWindow, searchLibrary } from "../library/search";
 import {
   albumChildElement,
@@ -71,12 +72,24 @@ export const search2: SubsonicHandler = async (request) => {
   };
 };
 
-/** The words to match and each kind's window, read in Navidrome's order. */
+/**
+ * The words to match and each kind's window, read in Navidrome's order: the
+ * query, then the folder the client says it is searching, then the windows.
+ *
+ * `musicFolderId` is checked although this server has only ever one folder, as
+ * every other endpoint that accepts it checks it: a client asking to search a
+ * folder that is not here has asked for something that does not exist, and
+ * searching the whole library instead would answer with music it did not ask
+ * for. An unknown id is error 70, the same one those endpoints give.
+ */
 function requestedSearch(request: AuthenticatedSubsonicRequest): SearchQuery {
   const { params } = request;
+  const words = searchWords(params);
+
+  checkMusicFolderIds(params);
 
   return {
-    words: searchWords(params),
+    words,
     artists: window(params, "artistCount", "artistOffset"),
     albums: window(params, "albumCount", "albumOffset"),
     songs: window(params, "songCount", "songOffset"),
