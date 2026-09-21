@@ -151,18 +151,26 @@ export async function setRating(
     });
 }
 
-/** One track's play, at the instant it was played. */
+/** One item's play, at the instant it was played. */
 export interface Play {
-  readonly trackId: string;
+  readonly item: AnnotatedItem;
   readonly playDate: Date;
+  /**
+   * How many plays this row stands for; one unless the caller collapsed
+   * several into it, as a submission of an album's tracks collapses into a
+   * single play row for the album. `playDate` is then the latest of them.
+   */
+  readonly count?: number;
 }
 
 /**
- * Records the caller's plays: each increments the track's play count and moves
+ * Records the caller's plays: each increments the item's play count and moves
  * its last-played instant forward, leaving its star and rating alone. A play
  * the caller has never annotated starts the count at 1. Written in one D1
- * batch; the same track named twice in one call counts twice, as each
- * `scrobble` submission is a play.
+ * batch; the same item named twice in one call counts twice, as each
+ * `scrobble` submission is a play — and a played track's album is one such
+ * item, so `frequent` and `recent` album lists reflect the tracks played
+ * from it.
  *
  * "Forward" is the whole of it: a client flushing an offline backlog sends
  * plays out of order, and an older `time` arriving after a newer one must not
@@ -175,27 +183,29 @@ export async function recordPlays(
   userId: string,
   plays: readonly Play[],
 ): Promise<void> {
-  const statements = plays.map((play) =>
-    db
+  const statements = plays.map((play) => {
+    const count = play.count ?? 1;
+
+    return db
       .insert(annotation)
       .values({
         userId,
-        itemId: play.trackId,
-        itemType: "track",
-        playCount: 1,
+        itemId: play.item.id,
+        itemType: play.item.type,
+        playCount: count,
         playDate: play.playDate,
       })
       .onConflictDoUpdate({
         target: [annotation.userId, annotation.itemId, annotation.itemType],
         set: {
-          playCount: sql`${annotation.playCount} + 1`,
+          playCount: sql`${annotation.playCount} + ${count}`,
           // `play_date` is stored as epoch milliseconds, so the incoming
           // instant is bound as a number and the two compare on one scale;
           // a row that has never been played counts as 0, the earliest.
           playDate: sql`max(ifnull(${annotation.playDate}, 0), ${play.playDate.getTime()})`,
         },
-      }),
-  );
+      });
+  });
 
   const [first, ...rest] = statements;
   if (first === undefined) {
@@ -203,6 +213,24 @@ export async function recordPlays(
   }
 
   await db.batch([first, ...rest]);
+}
+
+/** The album each of these tracks belongs to, by track id. */
+export async function findTrackAlbums(
+  db: Database,
+  trackIds: readonly string[],
+): Promise<Map<string, string>> {
+  // One parameter is bound per id, so the ids are taken
+  // `KEYS_PER_STATEMENT` at a time, as the existence check above takes them:
+  // a `scrobble` flushing an offline backlog of more than a hundred tracks
+  // would otherwise throw `too many SQL variables` against D1 while passing
+  // every test, because Miniflare is SQLite and allows 999. The chunks are
+  // asked together, as that check asks its statements together.
+  const lookups = [...chunked(trackIds)].map((chunk) =>
+    db.select({ id: track.id, albumId: track.albumId }).from(track).where(inArray(track.id, chunk)),
+  );
+
+  return new Map((await Promise.all(lookups)).flat().map((row) => [row.id, row.albumId] as const));
 }
 
 function starStatement(

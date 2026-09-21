@@ -287,8 +287,12 @@ describe("getAlbumList2 starred", () => {
 });
 
 describe("getAlbumList2 types", () => {
-  it.each(["recent", "frequent", "highest"])(
-    "answers %s with an empty list rather than an error",
+  // With nothing played in this file, recent and frequent are empty rather
+  // than an error (#9). The full data behaviour of recent/frequent/highest —
+  // including highest reflecting a rating — lives in
+  // play-data-album-lists.test.ts.
+  it.each(["recent", "frequent"])(
+    "answers %s with an empty list when nothing has been played",
     async (type) => {
       const body = await list("getAlbumList2", { type });
 

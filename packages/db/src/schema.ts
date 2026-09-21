@@ -306,3 +306,73 @@ export const nowPlaying = sqliteTable("now_playing", {
 
 export type NowPlaying = typeof nowPlaying.$inferSelect;
 export type NewNowPlaying = typeof nowPlaying.$inferInsert;
+
+/**
+ * The play queue a listener carries between devices, one row per user — as
+ * Navidrome keeps one queue per user (`model/playqueue.go`, whose repository
+ * clears the user's queue before storing the new one).
+ *
+ * `savePlayQueue` replaces the whole row and `getPlayQueue` reads it back in
+ * one statement, so the queue is stored the way it arrives: `trackIds` is the
+ * ordered list of track ids as a JSON array of strings, not a row per entry.
+ * A queue is written and read whole and never queried into, and one statement
+ * rather than one per entry is what keeps a long queue inside the free tier's
+ * subrequest budget.
+ *
+ * `current` is the track the listener is on — null when the client names none
+ * — and `position` is how far into it, in milliseconds, the unit Subsonic's
+ * `position` parameter carries. `changedBy` is the client's `c` parameter, so
+ * the next device can tell which client left the queue behind.
+ */
+export const playQueue = sqliteTable("play_queue", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => user.id, { onDelete: "cascade" }),
+  /** The queue in order, a JSON array of bare track ids. */
+  trackIds: text("track_ids").notNull().default("[]"),
+  current: text("current"),
+  /** Milliseconds into the current track. */
+  position: integer("position").notNull().default(0),
+  /** The client's `c` parameter, which `getPlayQueue` answers with. */
+  changedBy: text("changed_by").notNull().default(""),
+  changedAt: integer("changed_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+export type PlayQueue = typeof playQueue.$inferSelect;
+export type NewPlayQueue = typeof playQueue.$inferInsert;
+
+/**
+ * Where a listener stopped in one track, so any client can offer to resume
+ * there — Navidrome's `bookmark` table (`model/bookmark.go`), keyed by the
+ * user and the item.
+ *
+ * `position` is milliseconds into the track, the unit Subsonic's `position`
+ * parameter carries, and `comment` is whatever note the client attached.
+ * `createdAt` is when the bookmark was first made and `changedAt` when it was
+ * last moved: `createBookmark` on a track that is already bookmarked updates
+ * the position and the comment and keeps the original instant, which is what
+ * the `created`/`changed` pair `getBookmarks` answers with means.
+ *
+ * Navidrome's key carries an `item_type` alongside the id, because it also
+ * bookmarks podcast episodes; a Stratosonic library holds nothing but tracks,
+ * so the key is (user, track) and the track id needs no qualifier. The rows
+ * belong to their user and go when the user does.
+ */
+export const bookmark = sqliteTable(
+  "bookmark",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    trackId: text("track_id").notNull(),
+    /** Milliseconds into the track. */
+    position: integer("position").notNull().default(0),
+    comment: text("comment").notNull().default(""),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    changedAt: integer("changed_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.trackId] })],
+);
+
+export type Bookmark = typeof bookmark.$inferSelect;
+export type NewBookmark = typeof bookmark.$inferInsert;

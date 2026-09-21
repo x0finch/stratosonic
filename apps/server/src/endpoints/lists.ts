@@ -53,44 +53,32 @@ const DEFAULT_TOP_SONGS_COUNT = 50;
 const MAX_SIZE = 500;
 
 /**
- * The album-list types Navidrome supports whose data this server does not
- * keep: `recent` and `frequent` need play history, `highest` needs ratings,
- * and Phase 1 records none of it.
- *
- * They answer with an empty list rather than an error. Navidrome would answer
- * with rows; a client that meets an error here can stop syncing altogether
- * (#9), and "nothing has been played yet" is the truth anyway.
- */
-const TYPES_WITHOUT_DATA = new Set(["recent", "frequent", "highest"]);
-
-/**
  * `getAlbumList2` — one page of albums, chosen and ordered by `type`.
  *
  * An unknown type is error 0 with Navidrome's wording, which is what its
  * `getAlbumList` falls through to: a type nobody implements is a client bug,
- * and a silent empty list would hide it. The known-but-dataless types above
- * never reach that branch.
+ * and a silent empty list would hide it.
  */
 export const getAlbumList2: SubsonicHandler = async (request) => {
   const query = requestedAlbumList(request);
   checkMusicFolderIds(request.params);
   const page = requestedPage(request.params, "size");
 
-  const albums =
-    query === null ? [] : await listAlbums(database(request.env), request.user.id, query, page);
+  const albums = await listAlbums(database(request.env), request.user.id, query, page);
 
   return { albumList2: { album: omitWhenEmpty(albums.map(albumElement)) } };
 };
 
 /**
- * The list the request asks for, or `null` when it names a type this server
- * has no data for.
+ * The list the request asks for.
  *
  * Each branch reads exactly what its type needs, and does so before anything
  * else is validated — `byGenre` with no `genre` is error 10 whatever else the
- * request gets wrong, as it is in Navidrome.
+ * request gets wrong, as it is in Navidrome. `recent`, `frequent` and
+ * `highest` read the caller's own play and rating data (library/lists.ts);
+ * before any of it exists they answer an empty list, never an error (#9).
  */
-function requestedAlbumList(request: AuthenticatedSubsonicRequest): AlbumListQuery | null {
+function requestedAlbumList(request: AuthenticatedSubsonicRequest): AlbumListQuery {
   const { params } = request;
   const type = requiredParameter(params, "type");
 
@@ -99,6 +87,10 @@ function requestedAlbumList(request: AuthenticatedSubsonicRequest): AlbumListQue
     case "alphabeticalByName":
     case "alphabeticalByArtist":
     case "random":
+    case "starred":
+    case "recent":
+    case "frequent":
+    case "highest":
       return { type };
     case "byGenre":
       return { type, genre: requiredParameter(params, "genre") };
@@ -108,13 +100,7 @@ function requestedAlbumList(request: AuthenticatedSubsonicRequest): AlbumListQue
         fromYear: requiredIntegerParameter(params, "fromYear"),
         toYear: requiredIntegerParameter(params, "toYear"),
       };
-    case "starred":
-      return { type };
     default:
-      if (TYPES_WITHOUT_DATA.has(type)) {
-        return null;
-      }
-
       throw new SubsonicError(SubsonicErrorCode.Generic, `type '${type}' not implemented`);
   }
 }
