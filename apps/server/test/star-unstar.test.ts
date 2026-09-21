@@ -1,7 +1,7 @@
 import { albumId, artistId, playlistId, prefixedId, trackId } from "@stratosonic/db";
 import { beforeAll, describe, expect, it } from "vitest";
 import { write, writeXml } from "./annotations-support";
-import { bootstrapAdmin, browse } from "./browsing-support";
+import { bootstrapAdmin, browse, browseXml } from "./browsing-support";
 import { adminUserId, list, listAs } from "./lists-support";
 import {
   seedAlbum,
@@ -63,6 +63,17 @@ describe("starring a song", () => {
 
     const song = (await browse("getSong", { id: songId })).song;
     expect(song?.starred).toBeTruthy();
+
+    await write("unstar", { id: songId });
+  });
+
+  it("marks it on getSong in XML too, which is the default rendering", async () => {
+    await write("star", { id: songId });
+
+    const xml = await browseXml("/rest/getSong", { id: songId });
+    expect(xml).toMatch(/<song [^>]*starred="[^"]+"/);
+
+    await write("unstar", { id: songId });
   });
 
   it("removes it again on unstar", async () => {
@@ -113,6 +124,10 @@ describe("idempotence and ordering", () => {
     await write("unstar", { id: otherSongId });
 
     await write("star", { id: songId });
+    // The instant is stamped in whole milliseconds, so two stars inside one
+    // millisecond would tie and the order would fall to the tiebreak on id.
+    // Let the clock move on between them.
+    await new Promise((resolve) => setTimeout(resolve, 2));
     await write("star", { id: otherSongId });
 
     const titles = (await list("getStarred2")).starred2?.song?.map((song) => song.title);
@@ -161,6 +176,42 @@ describe("isolation between accounts", () => {
     expect(theirs).toEqual(["Two"]);
 
     await write("unstar", { id: songId });
+  });
+});
+
+describe("a row that carries a rating and plays", () => {
+  // A star writes the star and nothing else: the row's rating, play count and
+  // last play are the same afterwards, and unstarring leaves them too.
+  it("keeps them through a star and an unstar", async () => {
+    const key = `${ARTIST}/${ALBUM}/04 Four.mp3`;
+    const id = prefixedId("track", trackId(key));
+    const playedAt = new Date("2024-03-04T05:06:07.000Z");
+    await seedTrack({ r2Key: key, title: "Four", album: ALBUM, albumArtist: ARTIST, year: YEAR });
+    await seedAnnotation({
+      userId: admin,
+      itemId: trackId(key),
+      itemType: "track",
+      starred: false,
+      rating: 4,
+      playCount: 7,
+      playDate: playedAt,
+    });
+
+    await write("star", { id });
+
+    const starredSong = (await browse("getSong", { id })).song;
+    expect(starredSong?.starred).toBeTruthy();
+    expect(starredSong?.userRating).toBe(4);
+    expect(starredSong?.playCount).toBe(7);
+    expect(starredSong?.played).toBe(playedAt.toISOString());
+
+    await write("unstar", { id });
+
+    const unstarredSong = (await browse("getSong", { id })).song;
+    expect(unstarredSong?.starred).toBeUndefined();
+    expect(unstarredSong?.userRating).toBe(4);
+    expect(unstarredSong?.playCount).toBe(7);
+    expect(unstarredSong?.played).toBe(playedAt.toISOString());
   });
 });
 
