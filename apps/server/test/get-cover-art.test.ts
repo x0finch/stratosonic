@@ -1,6 +1,7 @@
 import { SELF } from "cloudflare:test";
 import { albumId, artistId, prefixedId, trackId } from "@stratosonic/db";
 import { beforeAll, describe, expect, it } from "vitest";
+import { sniffImageType } from "../src/media/images";
 import { type FixtureAlbum, fixtureCoverBytes, fixtures, fixtureTrack } from "./fixtures/files";
 import {
   BASE,
@@ -154,6 +155,40 @@ describe("getCoverArt", () => {
 
     expect(partial.status).toBe(206);
     expect(await bytesOf(partial)).toEqual(whole.slice(0, 8));
+  });
+});
+
+describe("the image a cover's first bytes name", () => {
+  function bytes(...values: number[]): Uint8Array {
+    return new Uint8Array(values);
+  }
+
+  function ascii(text: string, ...rest: number[]): Uint8Array {
+    return new Uint8Array([...[...text].map((character) => character.charCodeAt(0)), ...rest]);
+  }
+
+  it("recognises the PNG the fixtures use", () => {
+    expect(sniffImageType(fixtureCoverBytes())).toBe("image/png");
+  });
+
+  it("recognises a JPEG", () => {
+    expect(sniffImageType(bytes(0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10))).toBe("image/jpeg");
+  });
+
+  it("recognises a GIF", () => {
+    expect(sniffImageType(ascii("GIF89a"))).toBe("image/gif");
+  });
+
+  it("recognises a WebP, whose marker sits after the file's length", () => {
+    expect(sniffImageType(ascii("RIFF\u0010\u0000\u0000\u0000WEBPVP8 "))).toBe("image/webp");
+  });
+
+  it("does not call something an image on the strength of a few bytes", () => {
+    expect(sniffImageType(ascii("ID3\u0004"))).toBe("application/octet-stream");
+    expect(sniffImageType(ascii("RIFF\u0010\u0000\u0000\u0000WAVE"))).toBe(
+      "application/octet-stream",
+    );
+    expect(sniffImageType(bytes())).toBe("application/octet-stream");
   });
 });
 
