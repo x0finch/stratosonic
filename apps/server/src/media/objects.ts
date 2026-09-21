@@ -31,10 +31,10 @@ export interface StoredObjectHeaders {
  * "not found" here is an ordinary answer, reported inside the envelope as any
  * other missing thing is.
  */
-export async function headStoredObject(env: Env, key: string): Promise<R2Object> {
+export async function headStoredObject(env: Env, key: string, message?: string): Promise<R2Object> {
   const head = await env.MUSIC.head(key);
   if (head === null) {
-    throw new SubsonicError(SubsonicErrorCode.NotFound);
+    throw new SubsonicError(SubsonicErrorCode.NotFound, message);
   }
 
   return head;

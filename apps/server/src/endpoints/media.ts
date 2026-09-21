@@ -1,9 +1,10 @@
-import { parseIdOfType, type Track } from "@stratosonic/db";
+import { parseIdOfType, parsePrefixedId, type Track } from "@stratosonic/db";
 import { database } from "../db";
 import { audioContentType } from "../library/audio-formats";
 import { attachmentDisposition, baseName } from "../media/content-disposition";
+import { coverContentType } from "../media/images";
 import { headStoredObject, serveStoredObject } from "../media/objects";
-import { findTrackById } from "../media/repository";
+import { findCoverKey, findTrackById } from "../media/repository";
 import { requiredParameter } from "../subsonic/params";
 import { SubsonicError, SubsonicErrorCode } from "../subsonic/response";
 import type { AuthenticatedSubsonicRequest, SubsonicHandler } from "../subsonic/router";
@@ -26,6 +27,9 @@ import type { AuthenticatedSubsonicRequest, SubsonicHandler } from "../subsonic/
 
 /** What an object is sent as when its suffix is not one we know. */
 const UNKNOWN_CONTENT_TYPE = "application/octet-stream";
+
+/** Navidrome's message for a cover it cannot produce. */
+const ARTWORK_NOT_FOUND = "Artwork not found";
 
 /**
  * Serves a track's original bytes, honouring a `Range` so a client can seek.
@@ -54,6 +58,33 @@ export const download: SubsonicHandler = async (request) => {
   return serveStoredObject(request.env, track.r2Key, head, request.raw, {
     contentType: audioContentType(track.suffix) ?? UNKNOWN_CONTENT_TYPE,
     contentDisposition: attachmentDisposition(baseName(track.r2Key)),
+  });
+};
+
+/**
+ * Serves the cover an `al-`, `ar-` or `tr-` id resolves to.
+ *
+ * `size` is accepted and ignored: the stored cover is served unchanged.
+ * Resizing needs either Cloudflare Images, which wants a zone, or a decoder
+ * running on a Worker's CPU budget, and neither is available on the free tier
+ * (ADR-0004) — so thumbnails are backlog, and a client that asked for 300
+ * pixels gets a picture that is merely larger than it wanted.
+ */
+export const getCoverArt: SubsonicHandler = async (request) => {
+  const id = requiredParameter(request.params, "id");
+  const entity = parsePrefixedId(id);
+
+  const key = entity === null ? null : await findCoverKey(database(request.env), entity);
+  if (key === null) {
+    throw new SubsonicError(SubsonicErrorCode.NotFound, ARTWORK_NOT_FOUND);
+  }
+
+  // An album can name a cover the bucket no longer holds, which is the same
+  // "no artwork" to a client as an album that never had one.
+  const head = await headStoredObject(request.env, key, ARTWORK_NOT_FOUND);
+
+  return serveStoredObject(request.env, key, head, request.raw, {
+    contentType: await coverContentType(request.env, key, head),
   });
 };
 

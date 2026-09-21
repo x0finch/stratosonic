@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { download, stream } from "./endpoints/media";
+import { download, getCoverArt, stream } from "./endpoints/media";
 import { notImplemented } from "./endpoints/not-implemented";
 import { getLicense, getOpenSubsonicExtensions, ping } from "./endpoints/system";
 import { getUser, getUsers } from "./endpoints/users";
@@ -36,6 +36,7 @@ export function createApp(): SubsonicApp {
   // error envelope when there are no bytes to send.
   registerEndpoint(app, "stream", stream);
   registerEndpoint(app, "download", download);
+  registerEndpoint(app, "getCoverArt", getCoverArt);
 
   // Managing accounts is not implemented. These stay authenticated, as they are
   // in Navidrome, where `h501` registers them inside the group that checks the
