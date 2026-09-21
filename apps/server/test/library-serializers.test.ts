@@ -1,9 +1,11 @@
 import { type Album, albumId, artistId, trackId } from "@stratosonic/db";
 import { describe, expect, it } from "vitest";
 import {
+  albumChildElement,
   albumElement,
   artistElement,
   genreElement,
+  indexArtistElement,
   omitWhenEmpty,
   type SongView,
   songElement,
@@ -113,6 +115,27 @@ describe("artistElement", () => {
   });
 });
 
+describe("indexArtistElement", () => {
+  const artist = {
+    id: artistId(ALBUM_ARTIST),
+    name: ALBUM_ARTIST,
+    albumCount: 3,
+    coverAlbumId: albumId(ALBUM_ARTIST, ALBUM_NAME, 2019),
+  };
+
+  it("carries id, name and cover, and no count: Artist is not ArtistID3", async () => {
+    expect(await render("artist", indexArtistElement(artist))).toBe(
+      `<artist id="ar-${artist.id}" name="${ALBUM_ARTIST}" coverArt="al-${artist.coverAlbumId}"/>`,
+    );
+  });
+
+  it("omits coverArt when no album of the artist has one", async () => {
+    const element = await render("artist", indexArtistElement({ ...artist, coverAlbumId: null }));
+
+    expect(element).toBe(`<artist id="ar-${artist.id}" name="${ALBUM_ARTIST}"/>`);
+  });
+});
+
 describe("albumElement", () => {
   it("carries every attribute Navidrome's AlbumID3 declares, in its order", async () => {
     const album = albumRow();
@@ -144,6 +167,48 @@ describe("albumElement", () => {
 
     expect(element).toContain('songCount="0"');
     expect(element).toContain('duration="0"');
+  });
+});
+
+describe("albumChildElement", () => {
+  it("carries the attributes Navidrome's childFromAlbum sets, in Child's order", async () => {
+    const album = albumRow();
+
+    expect(await render("child", albumChildElement(album))).toBe(
+      `<child id="al-${album.id}" parent="ar-${album.artistId}" isDir="true"` +
+        ` title="${ALBUM_NAME}" name="${ALBUM_NAME}" album="${ALBUM_NAME}"` +
+        ` artist="${ALBUM_ARTIST}" year="2019" genre="Ambient" coverArt="al-${album.id}"` +
+        ` duration="431" created="2023-11-14T22:13:20.123Z" artistId="ar-${album.artistId}"` +
+        ` songCount="2"/>`,
+    );
+  });
+
+  it("says isDir with the literal word, never a digit", async () => {
+    const element = await render("child", albumChildElement(albumRow()));
+
+    expect(element).toContain('isDir="true"');
+    expect(element).not.toContain('isDir="1"');
+  });
+
+  it("omits coverArt, year, genre, duration and songCount when there are none", async () => {
+    const element = await render(
+      "child",
+      albumChildElement(
+        albumRow({ coverKey: null, year: null, genre: null, duration: 0, songCount: 0 }),
+      ),
+    );
+
+    expect(element).not.toContain("coverArt");
+    expect(element).not.toContain("year");
+    expect(element).not.toContain("genre");
+    expect(element).not.toContain("duration");
+    expect(element).not.toContain("songCount");
+  });
+
+  it("keeps created, which is never dropped", async () => {
+    expect(await render("child", albumChildElement(albumRow()))).toContain(
+      'created="2023-11-14T22:13:20.123Z"',
+    );
   });
 });
 

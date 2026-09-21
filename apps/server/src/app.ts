@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { getAlbum, getArtist, getArtists, getGenres, getSong } from "./endpoints/browsing";
+import { getIndexes, getMusicDirectory, getMusicFolders } from "./endpoints/folders";
 import { download, getCoverArt, stream } from "./endpoints/media";
 import { notImplemented } from "./endpoints/not-implemented";
 import { getLicense, getOpenSubsonicExtensions, ping } from "./endpoints/system";
@@ -36,6 +37,11 @@ export function createApp(): SubsonicApp {
   registerEndpoint(app, "getAlbum", getAlbum);
   registerEndpoint(app, "getSong", getSong);
   registerEndpoint(app, "getGenres", getGenres);
+
+  // Browsing (folders): the same library as one music folder of directories.
+  registerEndpoint(app, "getMusicFolders", getMusicFolders);
+  registerEndpoint(app, "getIndexes", getIndexes);
+  registerEndpoint(app, "getMusicDirectory", getMusicDirectory);
 
   registerEndpoint(app, "getUser", getUser);
   registerEndpoint(app, "getUsers", getUsers, { adminOnly: true });

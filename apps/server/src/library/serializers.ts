@@ -89,6 +89,27 @@ export function artistElement(artist: ArtistView): SubsonicNode {
 }
 
 /**
+ * `<artist>` as the *folder* side of the protocol spells it, Navidrome's
+ * `responses.Artist` filled by `toArtist` (server/subsonic/helpers.go): id,
+ * name and the cover the artist borrows from its albums — and **no
+ * `albumCount`**, which only `ArtistID3` carries. `getIndexes` answers with
+ * these, and so does anything else that lists artists outside the ID3
+ * endpoints.
+ *
+ * `artistImageUrl` is left out: Navidrome fills it with an absolute URL to an
+ * image endpoint Stratosonic does not serve. A client falls back to
+ * `coverArt`, which is the trap #9 names — artist images only via
+ * `<artist coverArt>`.
+ */
+export function indexArtistElement(artist: ArtistView): SubsonicNode {
+  return {
+    id: prefixedId("artist", artist.id),
+    name: artist.name,
+    coverArt: artist.coverAlbumId === null ? undefined : prefixedId("album", artist.coverAlbumId),
+  };
+}
+
+/**
  * `<album>`, Navidrome's `AlbumID3`. `songCount`, `duration` and `created` are
  * always emitted there; `artist`, `year` and `genre` only when they have a
  * value — and a year of 0 is no year, which is how Go's `omitempty` reads the
@@ -149,6 +170,47 @@ export function songElement(song: SongView): SubsonicNode {
     albumId: prefixedId("album", song.albumId),
     artistId: prefixedId("artist", song.artistId),
     type: "music",
+  };
+}
+
+/**
+ * An album as a `<child>` of a directory, Navidrome's `childFromAlbum`
+ * (server/subsonic/helpers.go). Folder browsing shows an album as a
+ * sub-directory of its artist, so this is the same `Child` element a track
+ * renders as — with `isDir` true — and the attributes come in the order the
+ * `Child` struct declares them, which is the order Navidrome's XML carries.
+ *
+ * What it says that `albumElement` does not: `isDir`, a `parent` pointing at
+ * the album artist, and the album's name three times over — as `title`, as
+ * `name` and as `album` — because a client browsing folders reads whichever
+ * of the three it was written against. Navidrome puts `FullName()` in all
+ * three, which is the album's name unless an album-version suffix is
+ * configured; Stratosonic stores no such suffix, so it is the name.
+ *
+ * `duration` and `songCount` are dropped when zero, as Go's `omitempty`
+ * drops them, and `created` is always present. `year` is the album's one
+ * year: Navidrome sends `cmp.Or(MaxOriginalYear, MaxYear)` because it tracks
+ * an original and a release year per album, and Stratosonic stores a single
+ * `year`, which is what both of those collapse to here. The annotation attributes
+ * (`starred`, `playCount`, `userRating`) wait for Phase 2, as they do in
+ * `songElement`.
+ */
+export function albumChildElement(album: Album): SubsonicNode {
+  return {
+    id: prefixedId("album", album.id),
+    parent: prefixedId("artist", album.artistId),
+    isDir: true,
+    title: album.name,
+    name: album.name,
+    album: album.name,
+    artist: album.albumArtist || undefined,
+    year: album.year || undefined,
+    genre: album.genre || undefined,
+    coverArt: album.coverKey === null ? undefined : prefixedId("album", album.id),
+    duration: Math.trunc(album.duration) || undefined,
+    created: subsonicTimestamp(album.createdAt),
+    artistId: prefixedId("artist", album.artistId),
+    songCount: album.songCount || undefined,
   };
 }
 
