@@ -131,6 +131,27 @@ export async function findTracksByIds(
   return found;
 }
 
+/**
+ * The tracks one playlist holds, in the order it lists them, with only what a
+ * write needs: the id, the key that goes in the `.m3u`, and the duration the
+ * row's total is built from.
+ *
+ * `listPlaylistEntries` below answers the same question for a client, with the
+ * album and the caller's annotation joined in for the `<song>` it renders.
+ * `updatePlaylist` renders no song - it re-writes the file and the row - so it
+ * asks for the three columns it uses and joins nothing. The join is inner, as
+ * it is there: an entry pointing at a track that has gone is not an entry the
+ * file can name.
+ */
+export async function listPlaylistEntryTracks(db: Database, id: string): Promise<EntryTrack[]> {
+  return db
+    .select({ id: track.id, r2Key: track.r2Key, duration: track.duration })
+    .from(playlistTrack)
+    .innerJoin(track, eq(track.id, playlistTrack.trackId))
+    .where(eq(playlistTrack.playlistId, id))
+    .orderBy(asc(playlistTrack.position));
+}
+
 /** A stored playlist as a write endpoint needs it: everything it must keep. */
 export interface WritablePlaylist extends StoredPlaylist {
   readonly name: string;
@@ -197,12 +218,20 @@ export interface ImportedPlaylist {
  * What an existing row keeps is what Navidrome keeps when it re-imports a
  * synced playlist (`updatePlaylist` in core/playlists/import.go): its owner,
  * its comment, its visibility and the instant it was first seen. Those are
- * the columns a person - or, in Phase 2, a write endpoint - can change, and
- * re-reading the file is not a reason to undo that.
+ * the columns a person - or a write endpoint - can change, and re-reading the
+ * file is not a reason to undo that.
+ *
+ * `writesDetails` is how the write endpoint says it is the person: the
+ * comment and the visibility are then taken from what it passed rather than
+ * left as they are, because `updatePlaylist` is the one caller whose whole
+ * purpose may be to change them. They live nowhere in the `.m3u`, so an
+ * import has nothing to say about them and leaves them alone. The owner is
+ * not in the set either way: nothing hands a playlist to somebody else.
  */
 export function upsertPlaylistStatements(
   db: Database,
   imported: ImportedPlaylist,
+  { writesDetails = false }: { readonly writesDetails?: boolean } = {},
 ): PlaylistStatement[] {
   const statements: PlaylistStatement[] = [
     db
@@ -227,6 +256,7 @@ export function upsertPlaylistStatements(
           duration: imported.duration,
           r2Key: imported.r2Key,
           changedAt: imported.changedAt,
+          ...(writesDetails ? { comment: imported.comment, public: imported.public } : {}),
         },
       }),
     db.delete(playlistTrack).where(eq(playlistTrack.playlistId, imported.id)),
