@@ -2,27 +2,50 @@
  * The D1 side of a scan: what it looks up before reading an object, the rows
  * it writes, and the deletions that keep the library in step with the bucket.
  *
- * Two rules shape everything here.
+ * Three rules shape everything here, and all three come from the same place -
+ * on the Workers free plan **a D1 query is a subrequest, and an invocation
+ * has fifty of them** (developers.cloudflare.com/workers/platform/limits,
+ * "Subrequests": a subrequest is any request to a Cloudflare service such as
+ * R2, KV or D1).
  *
- * **A write is a statement, not a round trip.** The upserts return the
- * statement to run rather than running it, so a whole page of objects reaches
- * D1 in one `batch` - one transaction, one subrequest - instead of three per
- * track. Only the reads and the deletions, whose results the scan has to see,
- * are awaited on their own.
+ * **A write is a statement, not a round trip.** The writes return the
+ * statement to run rather than running it, so a whole listing page - its
+ * upserts, its deletions, its album recomputes and the scan's own cursor -
+ * reaches D1 as one `batch`. A batch is "a single call to the database"
+ * (D1's Worker API reference), so it is one subrequest, and it is one
+ * transaction, so a page's rows and the cursor that stands for them commit
+ * together or not at all.
  *
- * **A lookup covers a page, not a row.** A page of listed objects is resolved
- * against the `track` table in a single `in (...)` query, so an unchanged
- * library costs one read per page rather than one per file.
+ * **A lookup covers a key range, not a list of keys.** `findTracksInRange`
+ * binds two parameters whatever the page holds. That is not only cheap: **D1
+ * allows at most 100 bound parameters per query** (developers.cloudflare.com
+ * /d1/platform/limits), so a `where r2_key in (...)` over a listing page
+ * would throw `too many SQL variables` in production for any page above a
+ * hundred objects - and pass every test, because Miniflare is real SQLite,
+ * whose limit is 999.
+ *
+ * **Anything that must bind per row is chunked** below that hundred, which is
+ * what `KEYS_PER_STATEMENT` is for.
  */
 
-import { type Album, album, artist, playlistTrack, type Track, track } from "@stratosonic/db";
-import { and, eq, gt, inArray, lte, notInArray, sql } from "drizzle-orm";
+import { type Album, album, artist, playlistTrack, track } from "@stratosonic/db";
+import { and, eq, gt, inArray, lte, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import type { Database } from "../db";
 import type { DerivedRows } from "./derive";
 
 /** A statement built now and run later, as part of a batch. */
 export type ScanStatement = BatchItem<"sqlite">;
+
+/**
+ * D1's ceiling on bound parameters in one query. Miniflare does not enforce
+ * it - it is SQLite, which allows 999 - so nothing but this constant stands
+ * between a statement that binds per row and a production-only failure.
+ */
+export const D1_MAX_BOUND_PARAMETERS = 100;
+
+/** How many ids or keys one statement may bind, with room for the rest. */
+export const KEYS_PER_STATEMENT = 90;
 
 /** What the scan needs to know about a track it may already hold. */
 export interface StoredTrack {
@@ -34,21 +57,27 @@ export interface StoredTrack {
 }
 
 /**
- * The tracks the library already holds for these keys, by key.
+ * The tracks whose key falls in `(after, through]`, in key order, at most
+ * `limit` of them.
  *
- * D1 binds each key as a parameter and SQLite allows 999 of them, so a caller
- * asks about one listing page at a time; the scan's page size is set well
- * under that.
+ * One query answers both of a page's questions. R2 lists keys in order, so a
+ * listing page occupies exactly such an interval: the rows that come back
+ * either belong to an object the page listed - and say whether its bytes have
+ * changed - or belong to an object that is no longer there, and are what the
+ * deletion sweep removes.
+ *
+ * `through` is null for the final page, whose interval runs to the end of the
+ * key space. The `limit` is what keeps an interval holding a huge deletion
+ * from returning the whole table; the caller notices a full result and deals
+ * with the backlog before indexing anything.
  */
-export async function findTracksByKeys(
+export async function findTracksInRange(
   db: Database,
-  keys: readonly string[],
-): Promise<Map<string, StoredTrack>> {
-  if (keys.length === 0) {
-    return new Map();
-  }
-
-  const rows = await db
+  after: string,
+  through: string | null,
+  limit: number,
+): Promise<StoredTrack[]> {
+  return db
     .select({
       id: track.id,
       r2Key: track.r2Key,
@@ -57,30 +86,37 @@ export async function findTracksByKeys(
       size: track.size,
     })
     .from(track)
-    .where(inArray(track.r2Key, [...keys]));
-
-  return new Map(rows.map((row) => [row.r2Key, row]));
+    .where(and(gt(track.r2Key, after), through === null ? undefined : lte(track.r2Key, through)))
+    .orderBy(track.r2Key)
+    .limit(limit);
 }
 
 /**
  * The cover each of these albums already has, for the albums that exist. An
  * album missing from the map has no row yet, so it has no cover either; one
  * present with `null` has a row and no artwork.
+ *
+ * The ids are bound, so they are chunked - though a page cannot produce more
+ * albums than it has extractions, which is far below the limit.
  */
 export async function findAlbumCovers(
   db: Database,
   ids: readonly string[],
 ): Promise<Map<string, string | null>> {
-  if (ids.length === 0) {
-    return new Map();
+  const found = new Map<string, string | null>();
+
+  for (const chunk of chunked(ids)) {
+    const rows = await db
+      .select({ id: album.id, coverKey: album.coverKey })
+      .from(album)
+      .where(inArray(album.id, chunk));
+
+    for (const row of rows) {
+      found.set(row.id, row.coverKey);
+    }
   }
 
-  const rows = await db
-    .select({ id: album.id, coverKey: album.coverKey })
-    .from(album)
-    .where(inArray(album.id, [...ids]));
-
-  return new Map(rows.map((row) => [row.id, row.coverKey]));
+  return found;
 }
 
 /**
@@ -155,6 +191,19 @@ export function setAlbumCoverStatement(
 }
 
 /**
+ * Removes the tracks the sweep found missing, in statements that bind at most
+ * `KEYS_PER_STATEMENT` ids each.
+ *
+ * They are statements rather than a call so they can go in the page's batch:
+ * a deletion that commits without the cursor that covered it would be redone
+ * harmlessly, but a cursor that commits without its deletions would carry the
+ * sweep past rows nothing will look at again until the next pass.
+ */
+export function deleteTracksStatements(db: Database, ids: readonly string[]): ScanStatement[] {
+  return chunked(ids).map((chunk) => db.delete(track).where(inArray(track.id, chunk)));
+}
+
+/**
  * Brings one album's stored aggregates back in line with its tracks.
  *
  * Navidrome recomputes the same values from the album's media files
@@ -165,9 +214,10 @@ export function setAlbumCoverStatement(
  * for an album, with the name breaking a tie so the answer does not depend on
  * row order.
  *
- * It is a single statement so a page's worth of albums can be recomputed in
- * the same batch as the rows that made them stale. Every column is written
- * from the `track` table, so running it twice changes nothing.
+ * It belongs in the same batch as the rows that made it stale, and after
+ * them: the statements of a batch run in order, so this sees the page's
+ * inserts and deletions. Every column is written from the `track` table, so
+ * running it twice changes nothing.
  *
  * Each subquery is written out rather than composed from the schema objects,
  * and qualifies `album.id` by hand: the `UPDATE` names one table, so Drizzle
@@ -192,38 +242,6 @@ export function recomputeAlbumStatement(db: Database, id: string, now: Date): Sc
       updatedAt: now,
     })
     .where(eq(album.id, id));
-}
-
-/**
- * Deletes the tracks of one stretch of the key space that the bucket no
- * longer holds, and hands them back so their albums can be recomputed.
- *
- * This is the deletion sweep, done a listing page at a time rather than all at
- * the end. R2 lists keys in order, so a page is a closed interval of the key
- * space: every key between the previous page's last and this page's last that
- * is *not* in this page belongs to an object that has gone. Sweeping that way
- * needs no memory of the pass beyond one key, which is what lets a scan spread
- * over many cron runs still delete accurately.
- *
- * `through` is the page's last key, or null for the final page - after which
- * nothing is left, so everything beyond `after` that was not listed is gone.
- */
-export async function sweepMissingTracks(
-  db: Database,
-  after: string,
-  through: string | null,
-  listed: readonly string[],
-): Promise<Track[]> {
-  return db
-    .delete(track)
-    .where(
-      and(
-        gt(track.r2Key, after),
-        through === null ? undefined : lte(track.r2Key, through),
-        listed.length === 0 ? undefined : notInArray(track.r2Key, [...listed]),
-      ),
-    )
-    .returning();
 }
 
 /**
@@ -261,8 +279,8 @@ export async function pruneOrphanPlaylistEntries(db: Database): Promise<void> {
 
 /**
  * Runs queued statements as one D1 batch, which is one transaction and one
- * subrequest. D1 insists on at least one statement, so an empty queue - a page
- * of nothing but unchanged files - does nothing at all.
+ * subrequest. D1 insists on at least one statement, so an empty queue does
+ * nothing at all.
  */
 export async function runBatch(db: Database, statements: readonly ScanStatement[]): Promise<void> {
   const [first, ...rest] = statements;
@@ -271,4 +289,14 @@ export async function runBatch(db: Database, statements: readonly ScanStatement[
   }
 
   await db.batch([first, ...rest]);
+}
+
+/** Splits values into groups small enough for one statement to bind. */
+export function chunked<T>(values: readonly T[], size = KEYS_PER_STATEMENT): T[][] {
+  const chunks: T[][] = [];
+  for (let start = 0; start < values.length; start += size) {
+    chunks.push(values.slice(start, start + size));
+  }
+
+  return chunks;
 }
