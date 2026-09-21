@@ -26,6 +26,7 @@
 
 import { type Album, album, artist, track } from "@stratosonic/db";
 import { and, asc, eq, or, type SQL, type SQLWrapper, sql } from "drizzle-orm";
+import { D1_MAX_BOUND_PARAMETERS } from "../d1-limits";
 import type { Database } from "../db";
 import { artistColumns } from "./repository";
 import type { ArtistView, SongView } from "./serializers";
@@ -147,29 +148,64 @@ async function searchTracks(
  * The filter that keeps rows matching every word, or nothing at all for an
  * empty query — an absent `WHERE`, which is how "match everything" is spelled.
  * Each word may match any of the columns (OR); all words are required (AND).
+ *
+ * A query longer than the statement can bind loses its surplus words rather
+ * than failing: see `wordsThatFit`.
  */
 function matchesEveryWord(
   columns: readonly SQLWrapper[],
   words: readonly string[],
 ): SQL | undefined {
-  if (words.length === 0) {
+  const matched = wordsThatFit(columns, words);
+
+  if (matched.length === 0) {
     return undefined;
   }
 
-  return and(...words.map((word) => matchesWord(columns, word)));
+  return and(...matched.map((word) => matchesWord(columns, word)));
 }
 
-/** One word against a kind's columns: it may match any of them. */
+/**
+ * As many leading words as the statement may bind, which for a long query is
+ * fewer than were typed.
+ *
+ * Every word binds one parameter per column, and the window binds two more, so
+ * the track query — four columns — could otherwise exceed D1's hundred at
+ * twenty-five words and fail the whole read, on a statement Miniflare's SQLite
+ * runs happily. Dropping the surplus words only widens what matches, which is
+ * a better answer to a client that pasted a paragraph into its search box than
+ * an error is. Navidrome, with one bound `full_text` pattern per term, has no
+ * such ceiling.
+ */
+function wordsThatFit(columns: readonly SQLWrapper[], words: readonly string[]): readonly string[] {
+  const budget = D1_MAX_BOUND_PARAMETERS - WINDOW_BOUND_PARAMETERS;
+
+  return words.slice(0, Math.floor(budget / columns.length));
+}
+
+/** The two parameters every search statement binds besides its words. */
+const WINDOW_BOUND_PARAMETERS = 2;
+
+/**
+ * One word against a kind's columns: it may match any of them.
+ *
+ * Only the pattern is bound. The escape character is written into the SQL
+ * instead, because a second parameter per column would halve how many words a
+ * query may carry (`wordsThatFit`) for a character that never varies.
+ */
 function matchesWord(columns: readonly SQLWrapper[], word: string): SQL {
   const pattern = `%${escapeLike(word)}%`;
 
   return or(
-    ...columns.map((column) => sql`${column} like ${pattern} escape ${LIKE_ESCAPE}`),
+    ...columns.map((column) => sql`${column} like ${pattern} ${LIKE_ESCAPE_CLAUSE}`),
   ) as SQL;
 }
 
 /** The character that turns a `LIKE` wildcard into a literal. */
 const LIKE_ESCAPE = "\\";
+
+/** That character as literal SQL, so naming it costs no bound parameter. */
+const LIKE_ESCAPE_CLAUSE = sql.raw(`escape '${LIKE_ESCAPE}'`);
 
 /**
  * Escapes a word for `LIKE`, so a query that contains `%` or `_` — a client

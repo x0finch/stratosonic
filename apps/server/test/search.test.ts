@@ -113,6 +113,17 @@ describe("search3 matching", () => {
     expect(result).toEqual({});
   });
 
+  it("serves a query with more words than one statement may bind", async () => {
+    // D1 allows a hundred bound parameters per query and every word binds one
+    // per column, so a long query drops its surplus words instead of failing
+    // the read. None of these words is in the library, so nothing comes back.
+    const query = Array.from({ length: 40 }, (_, at) => `nowhere${at}`).join(" ");
+    const body = await search("search3", { query });
+
+    expect(body.error).toBeUndefined();
+    expect(body.searchResult3).toEqual({});
+  });
+
   it("treats a wildcard character as a literal, not a pattern", async () => {
     // "%" would match every row if it leaked into LIKE unescaped.
     const result = (await search("search3", { query: "%" })).searchResult3;
