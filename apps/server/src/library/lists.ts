@@ -1,7 +1,7 @@
 /**
  * Reads of the library tables for the Lists module: the album lists a client's
- * home screens are built from, a handful of random tracks, and what one user
- * has starred.
+ * home screens are built from, a handful of random tracks, one genre's tracks
+ * by the page, an artist's most-played tracks, and what one user has starred.
  *
  * Every question is one SQL statement, as in `library/repository`, because D1
  * bills by the query. The orderings are Navidrome's, translated from its sort
@@ -167,6 +167,24 @@ function starredBy(
   ) as SQL;
 }
 
+/**
+ * A track select carrying everything a `<song>` needs: the track, the two
+ * things it takes from its album, and the caller's annotation.
+ *
+ * The album is joined left so that a track whose album row a half-finished
+ * scan has not written yet is still playable - the same choice `findTrack`
+ * makes - and the annotation is joined left so an item the caller has never
+ * touched still comes back. Both ride in the one statement, so no list here
+ * pays a second D1 query for a name, a cover or a play count.
+ */
+function selectTracks(db: Database, userId: string) {
+  return db
+    .select({ track, albumName: album.name, albumCoverKey: album.coverKey, ...annotationColumns })
+    .from(track)
+    .leftJoin(album, eq(album.id, track.albumId))
+    .leftJoin(annotation, annotationJoin(userId, "track", track.id));
+}
+
 /** What `getRandomSongs` was asked to pick from; `null` means "do not filter". */
 export interface RandomTracksQuery {
   readonly genre: string | null;
@@ -179,10 +197,6 @@ export interface RandomTracksQuery {
  * A random handful of tracks, matching Navidrome's `GetRandomSongs`: the genre
  * by name, the year range inclusive on both ends, each applied only when the
  * client sent it (`filter.SongsByGenreAndYearRange`).
- *
- * The album is joined in for the name and cover every `<song>` carries, left
- * so that a track whose album row a half-finished scan has not written yet is
- * still playable - the same choice `findTrack` makes.
  */
 export async function listRandomTracks(
   db: Database,
@@ -201,14 +215,83 @@ export async function listRandomTracks(
     filters.push(lte(track.year, query.toYear));
   }
 
-  const rows = await db
-    .select({ track, albumName: album.name, albumCoverKey: album.coverKey, ...annotationColumns })
-    .from(track)
-    .leftJoin(album, eq(album.id, track.albumId))
-    .leftJoin(annotation, annotationJoin(userId, "track", track.id))
+  const rows = await selectTracks(db, userId)
     .where(filters.length > 0 ? and(...filters) : undefined)
     .orderBy(sql`random()`)
     .limit(query.size);
+
+  return rows.map(toSongView);
+}
+
+/**
+ * One page of a genre's tracks, for `getSongsByGenre`.
+ *
+ * The genre is matched with SQL `LIKE`, as `getRandomSongs?genre=` and
+ * `getAlbumList2?type=byGenre` match theirs and as Navidrome matches a genre
+ * name (`persistence.SongGenres.ByName`), so a client that echoes back a name
+ * from `getGenres` in another case still gets its songs.
+ *
+ * The order is this server's, not Navidrome's. Navidrome asks for the sort
+ * `name` (`filter.SongsByGenre`), which its media-file repository has no
+ * mapping for, so what comes back is whatever order the database chose - fine
+ * for one page, wrong for a client paging with `offset`, which would then see
+ * a track twice and never see another. The title is the media-file analogue of
+ * the album list's `name` ordering, lowercased for the same reason, and the id
+ * breaks a tie so a page boundary falls in the same place every time.
+ */
+export async function listTracksOfGenre(
+  db: Database,
+  userId: string,
+  genre: string,
+  page: Page,
+): Promise<SongView[]> {
+  const rows = await selectTracks(db, userId)
+    .where(like(track.genre, genre))
+    .orderBy(byName(track.title), asc(track.id))
+    .limit(page.size)
+    .offset(page.offset);
+
+  return rows.map(toSongView);
+}
+
+/**
+ * An artist's own tracks, most played by the caller first, for `getTopSongs`.
+ *
+ * **Navidrome answers this from last.fm** — its provider looks the artist up
+ * and asks an agent for that artist's top tracks (core/external, `TopSongs`).
+ * Stratosonic makes no outbound calls, so it answers from the only ranking it
+ * has: what this account has actually listened to. An artist nobody has played
+ * still gets its tracks back, ordered by title, rather than an error — which
+ * is what the endpoint is for, and an empty answer would leave an artist page
+ * blank.
+ *
+ * The artist is matched by name with `LIKE`, as Navidrome's `findArtist`
+ * matches it (`squirrel.Like{"artist.name": artistName}`), against the track's
+ * album artist: the album artist is what an artist *is* here (CONTEXT.md), and
+ * matching the column rather than joining the `artist` table keeps this to one
+ * statement.
+ *
+ * The ordering is `play_count desc, rating desc, title asc, id asc`, all from
+ * the caller's own annotation row. SQLite sorts nulls last under `desc`, so a
+ * track the caller has never touched — no annotation row at all — sorts below
+ * every track they have, without a `coalesce` that would also flatten a real
+ * count of zero.
+ */
+export async function listTopTracks(
+  db: Database,
+  userId: string,
+  artistName: string,
+  count: number,
+): Promise<SongView[]> {
+  const rows = await selectTracks(db, userId)
+    .where(like(track.albumArtist, artistName))
+    .orderBy(
+      desc(annotation.playCount),
+      desc(annotation.rating),
+      byName(track.title),
+      asc(track.id),
+    )
+    .limit(count);
 
   return rows.map(toSongView);
 }

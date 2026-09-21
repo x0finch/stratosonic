@@ -1,7 +1,7 @@
 /**
  * The Lists module: what a client asks for to fill its home screens and to
- * finish its first sync — album lists, a random handful of songs, and what the
- * caller has starred.
+ * finish its first sync — album lists, a random handful of songs, one genre's
+ * songs by the page, an artist's top songs, and what the caller has starred.
  *
  * Three rules hold across the module:
  *
@@ -10,7 +10,9 @@
  *   this server does not keep all produce a valid, empty container (#9).
  * - **`size` defaults to 10 and is capped at 500**, as Navidrome caps it
  *   (`min(p.IntOr("size", 10), 500)` in server/subsonic/album_lists.go), so a
- *   client cannot ask for the whole library in one request.
+ *   client cannot ask for the whole library in one request. The endpoints that
+ *   spell it `count` are capped the same way, off the same default where they
+ *   share it.
  * - **Parameters are read in Navidrome's order** — the list type and what that
  *   type needs, then `musicFolderId`, then the page — because that order
  *   decides which error a request with two problems gets.
@@ -22,6 +24,8 @@ import {
   listAlbums,
   listRandomTracks,
   listStarred,
+  listTopTracks,
+  listTracksOfGenre,
   type Page,
 } from "../library/lists";
 import { checkMusicFolderIds } from "../library/music-folder";
@@ -36,6 +40,14 @@ import type { AuthenticatedSubsonicRequest, SubsonicHandler } from "../subsonic/
 
 /** How many items a list carries when the client does not say. */
 const DEFAULT_SIZE = 10;
+
+/**
+ * How many songs `getTopSongs` carries when the client does not say.
+ * Navidrome's own default (`p.IntOr("count", 50)` in server/subsonic/
+ * browsing.go), and larger than the other lists' because it fills one screen
+ * of an artist page rather than a home-screen shelf.
+ */
+const DEFAULT_TOP_SONGS_COUNT = 50;
 
 /** The most a list can carry however large a `size` the client sends. */
 const MAX_SIZE = 500;
@@ -62,7 +74,7 @@ const TYPES_WITHOUT_DATA = new Set(["recent", "frequent", "highest"]);
 export const getAlbumList2: SubsonicHandler = async (request) => {
   const query = requestedAlbumList(request);
   checkMusicFolderIds(request.params);
-  const page = requestedPage(request.params);
+  const page = requestedPage(request.params, "size");
 
   const albums =
     query === null ? [] : await listAlbums(database(request.env), request.user.id, query, page);
@@ -107,10 +119,15 @@ function requestedAlbumList(request: AuthenticatedSubsonicRequest): AlbumListQue
   }
 }
 
-/** The window the client asked for, within the bounds the server allows. */
-function requestedPage(params: URLSearchParams): Page {
+/**
+ * The window the client asked for, within the bounds the server allows. The
+ * parameter that carries the size is named because the endpoints disagree
+ * about it: `getAlbumList2` calls it `size`, `getSongsByGenre` calls it
+ * `count`, and both page with `offset`.
+ */
+function requestedPage(params: URLSearchParams, sizeParameter: string): Page {
   return {
-    size: boundedSize(params),
+    size: boundedCount(params, sizeParameter),
     // Navidrome applies an offset only when it is positive, so a negative one
     // is the same as none.
     offset: Math.max(integerParameterOr(params, "offset", 0), 0),
@@ -118,7 +135,8 @@ function requestedPage(params: URLSearchParams): Page {
 }
 
 /**
- * `size`, defaulted and capped.
+ * How many rows a list may carry: the client's `size` or `count`, defaulted
+ * and capped at `MAX_SIZE`, which is Navidrome's `min(p.IntOr(…), 500)`.
  *
  * The lower bound is a deliberate departure: Navidrome passes its `Max`
  * straight to the query builder, which applies no `LIMIT` at all when it is
@@ -126,10 +144,14 @@ function requestedPage(params: URLSearchParams): Page {
  * request the free tier cannot afford to serve, and no client means it, so 0
  * means zero rows here.
  */
-function boundedSize(params: URLSearchParams): number {
-  const size = integerParameterOr(params, "size", DEFAULT_SIZE);
+function boundedCount(
+  params: URLSearchParams,
+  name: string,
+  fallback: number = DEFAULT_SIZE,
+): number {
+  const count = integerParameterOr(params, name, fallback);
 
-  return Math.min(Math.max(size, 0), MAX_SIZE);
+  return Math.min(Math.max(count, 0), MAX_SIZE);
 }
 
 /**
@@ -141,7 +163,7 @@ function boundedSize(params: URLSearchParams): number {
  */
 export const getRandomSongs: SubsonicHandler = async (request) => {
   const { params } = request;
-  const size = boundedSize(params);
+  const size = boundedCount(params, "size");
   const genre = params.get("genre") || null;
   const fromYear = integerParameterOr(params, "fromYear", 0) || null;
   const toYear = integerParameterOr(params, "toYear", 0) || null;
@@ -155,6 +177,61 @@ export const getRandomSongs: SubsonicHandler = async (request) => {
   });
 
   return { randomSongs: { song: omitWhenEmpty(tracks.map(songElement)) } };
+};
+
+/**
+ * `getSongsByGenre` — one page of the songs carrying a genre.
+ *
+ * Navidrome reads `count` (default 10, capped at 500), `offset` and the genre,
+ * then the music folder (server/subsonic/album_lists.go). The genre is
+ * required here and missing it is error 10: current Navidrome discards that
+ * error (`genre, _ := p.String("genre")`) and answers with the songs of the
+ * genre named by the empty string, which is no songs at all — a client with a
+ * bug would see an empty shelf and no reason for it, where the spec makes
+ * `genre` a required parameter.
+ *
+ * A genre nothing carries is an empty `<songsByGenre/>` rather than an error:
+ * the client asked a question with an answer, and the answer is none (#9).
+ */
+export const getSongsByGenre: SubsonicHandler = async (request) => {
+  const { params } = request;
+  const genre = requiredParameter(params, "genre");
+  checkMusicFolderIds(params);
+  const page = requestedPage(params, "count");
+
+  const tracks = await listTracksOfGenre(database(request.env), request.user.id, genre, page);
+
+  return { songsByGenre: { song: omitWhenEmpty(tracks.map(songElement)) } };
+};
+
+/**
+ * `getTopSongs` — the artist's songs a client puts at the top of its artist
+ * page.
+ *
+ * Navidrome fills this from last.fm; Stratosonic makes no outbound calls, so
+ * it answers with the artist's own tracks ranked by what the caller has played
+ * (library/lists.ts). An artist this library has never heard of, and an artist
+ * with no tracks, both get an empty `<topSongs/>` rather than an error —
+ * Navidrome answers an artist it cannot find the same way, with an empty list
+ * and a 200.
+ *
+ * `artist` is the artist's *name*, and it is required, as the Subsonic spec
+ * makes it. Navidrome also accepts an `id` and needs only one of the two;
+ * `getArtist` already hands a client the name it would send here, so the id
+ * form is not implemented.
+ *
+ * `count` defaults to 50 as it does there, and is capped at 500 as it is not:
+ * Navidrome's list is however much last.fm returned, while this one is however
+ * much of the library one artist holds, and every row of it is read from D1.
+ */
+export const getTopSongs: SubsonicHandler = async (request) => {
+  const { params } = request;
+  const artist = requiredParameter(params, "artist");
+  const count = boundedCount(params, "count", DEFAULT_TOP_SONGS_COUNT);
+
+  const tracks = await listTopTracks(database(request.env), request.user.id, artist, count);
+
+  return { topSongs: { song: omitWhenEmpty(tracks.map(songElement)) } };
 };
 
 /**

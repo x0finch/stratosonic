@@ -23,6 +23,8 @@ export interface ListsResponse {
   error?: { code: number; message: string };
   albumList2?: { album?: SubsonicAlbumElement[] };
   randomSongs?: { song?: SubsonicSongElement[] };
+  songsByGenre?: { song?: SubsonicSongElement[] };
+  topSongs?: { song?: SubsonicSongElement[] };
   starred2?: {
     artist?: SubsonicArtistElement[];
     album?: SubsonicAlbumElement[];
@@ -78,4 +80,9 @@ export async function adminUserId(): Promise<string> {
 /** The albums of a list, by name, which is how a test states an ordering. */
 export function albumNames(response: ListsResponse): string[] {
   return (response.albumList2?.album ?? []).map((album) => album.name);
+}
+
+/** The songs of a list, by title, which is how a test states an ordering. */
+export function songTitles(songs: { title: string }[] | undefined): string[] {
+  return (songs ?? []).map((song) => song.title);
 }
