@@ -1,9 +1,16 @@
-import { albumId, artistId, prefixedId, trackId } from "@stratosonic/db";
+import { albumId, artistId, playlistId, prefixedId, trackId } from "@stratosonic/db";
 import { beforeAll, describe, expect, it } from "vitest";
 import { write, writeXml } from "./annotations-support";
-import { bootstrapAdmin, browse } from "./browsing-support";
+import { bootstrapAdmin, browse, browseXml } from "./browsing-support";
 import { adminUserId, list, listAs } from "./lists-support";
-import { seedAlbum, seedAnnotation, seedArtist, seedTrack, seedUser } from "./support";
+import {
+  seedAlbum,
+  seedAnnotation,
+  seedArtist,
+  seedPlaylist,
+  seedTrack,
+  seedUser,
+} from "./support";
 
 /**
  * `star` and `unstar`: the caller taps a heart and it sticks.
@@ -25,19 +32,24 @@ const otherSongId = prefixedId("track", trackId(TWO_KEY));
 const theAlbumId = prefixedId("album", albumId(ARTIST, ALBUM, YEAR));
 const theArtistId = prefixedId("artist", artistId(ARTIST));
 
+const PLAYLIST_KEY = "playlists/favourites.m3u";
+const thePlaylistId = prefixedId("playlist", playlistId(PLAYLIST_KEY));
+
 const OTHER_USER = { user: "listener", password: "open-sesame" };
 
+let admin = "";
 let other = "";
 
 beforeAll(async () => {
   await bootstrapAdmin();
-  await adminUserId();
+  admin = await adminUserId();
   other = await seedUser(OTHER_USER.user, OTHER_USER.password);
 
   await seedArtist({ name: ARTIST });
   await seedAlbum({ name: ALBUM, albumArtist: ARTIST, year: YEAR, songCount: 2 });
   await seedTrack({ r2Key: ONE_KEY, title: "One", album: ALBUM, albumArtist: ARTIST, year: YEAR });
   await seedTrack({ r2Key: TWO_KEY, title: "Two", album: ALBUM, albumArtist: ARTIST, year: YEAR });
+  await seedPlaylist({ r2Key: PLAYLIST_KEY, name: "Favourites" });
 });
 
 describe("starring a song", () => {
@@ -51,6 +63,17 @@ describe("starring a song", () => {
 
     const song = (await browse("getSong", { id: songId })).song;
     expect(song?.starred).toBeTruthy();
+
+    await write("unstar", { id: songId });
+  });
+
+  it("marks it on getSong in XML too, which is the default rendering", async () => {
+    await write("star", { id: songId });
+
+    const xml = await browseXml("/rest/getSong", { id: songId });
+    expect(xml).toMatch(/<song [^>]*starred="[^"]+"/);
+
+    await write("unstar", { id: songId });
   });
 
   it("removes it again on unstar", async () => {
@@ -101,6 +124,10 @@ describe("idempotence and ordering", () => {
     await write("unstar", { id: otherSongId });
 
     await write("star", { id: songId });
+    // The instant is stamped in whole milliseconds, so two stars inside one
+    // millisecond would tie and the order would fall to the tiebreak on id.
+    // Let the clock move on between them.
+    await new Promise((resolve) => setTimeout(resolve, 2));
     await write("star", { id: otherSongId });
 
     const titles = (await list("getStarred2")).starred2?.song?.map((song) => song.title);
@@ -108,6 +135,27 @@ describe("idempotence and ordering", () => {
 
     await write("unstar", { id: songId });
     await write("unstar", { id: otherSongId });
+  });
+});
+
+describe("starring a playlist", () => {
+  // Navidrome's setStar stars playlists too. Nothing reads the star back:
+  // its <playlist> element carries no `starred` attribute, so the row is
+  // written and the ok envelope is all a client sees.
+  it("answers an empty ok", async () => {
+    const ok = await write("star", { id: thePlaylistId });
+
+    expect(ok.status).toBe("ok");
+    expect(ok.error).toBeUndefined();
+
+    await write("unstar", { id: thePlaylistId });
+  });
+
+  it("is error 70 for a playlist id that names nothing", async () => {
+    const unknown = prefixedId("playlist", playlistId("playlists/nowhere.m3u"));
+    const body = await write("star", { id: unknown });
+
+    expect(body.error).toEqual({ code: 70, message: "The requested data was not found" });
   });
 });
 
@@ -131,6 +179,68 @@ describe("isolation between accounts", () => {
   });
 });
 
+describe("a row that carries a rating and plays", () => {
+  // A star writes the star and nothing else: the row's rating, play count and
+  // last play are the same afterwards, and unstarring leaves them too.
+  it("keeps them through a star and an unstar", async () => {
+    const key = `${ARTIST}/${ALBUM}/04 Four.mp3`;
+    const id = prefixedId("track", trackId(key));
+    const playedAt = new Date("2024-03-04T05:06:07.000Z");
+    await seedTrack({ r2Key: key, title: "Four", album: ALBUM, albumArtist: ARTIST, year: YEAR });
+    await seedAnnotation({
+      userId: admin,
+      itemId: trackId(key),
+      itemType: "track",
+      starred: false,
+      rating: 4,
+      playCount: 7,
+      playDate: playedAt,
+    });
+
+    await write("star", { id });
+
+    const starredSong = (await browse("getSong", { id })).song;
+    expect(starredSong?.starred).toBeTruthy();
+    expect(starredSong?.userRating).toBe(4);
+    expect(starredSong?.playCount).toBe(7);
+    expect(starredSong?.played).toBe(playedAt.toISOString());
+
+    await write("unstar", { id });
+
+    const unstarredSong = (await browse("getSong", { id })).song;
+    expect(unstarredSong?.starred).toBeUndefined();
+    expect(unstarredSong?.userRating).toBe(4);
+    expect(unstarredSong?.playCount).toBe(7);
+    expect(unstarredSong?.played).toBe(playedAt.toISOString());
+  });
+});
+
+describe("a row starred without an instant", () => {
+  // A migrated row can carry starred = 1 with starred_at null. Re-starring it
+  // has to stamp the instant, or getStarred2 - which orders by it - never
+  // shows the item.
+  it("gets its starred_at stamped by a star", async () => {
+    const key = `${ARTIST}/${ALBUM}/03 Three.mp3`;
+    const migratedId = prefixedId("track", trackId(key));
+    await seedTrack({ r2Key: key, title: "Three", album: ALBUM, albumArtist: ARTIST, year: YEAR });
+    await seedAnnotation({
+      userId: admin,
+      itemId: trackId(key),
+      itemType: "track",
+      starred: true,
+      starredAt: null,
+    });
+
+    expect((await browse("getSong", { id: migratedId })).song?.starred).toBeUndefined();
+
+    await write("star", { id: migratedId });
+
+    expect((await browse("getSong", { id: migratedId })).song?.starred).toBeTruthy();
+
+    await write("unstar", { id: migratedId });
+  });
+});
+
 describe("bad requests", () => {
   it("is error 10 with none of id, albumId or artistId", async () => {
     const body = await write("star", {});
@@ -145,6 +255,16 @@ describe("bad requests", () => {
   it("is error 70 for a malformed id", async () => {
     const body = await write("star", { id: "not-an-id" });
     expect(body.error?.code).toBe(70);
+  });
+
+  // The cap is counted before the ids are parsed, so these need not name rows.
+  it("is error 0 for more ids than one request may name", async () => {
+    const body = await write("star", { id: Array.from({ length: 1200 }, () => "x") });
+
+    expect(body.error).toEqual({
+      code: 0,
+      message: "too many ids: 1200, at most 1000 per request",
+    });
   });
 });
 

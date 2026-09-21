@@ -127,14 +127,15 @@ export async function listArtists(db: Database, userId: string): Promise<ArtistV
 }
 
 /**
- * One artist, or null when no artist has this id. `userId` defaults to none,
- * for the internal reads that only need the row (cover resolution): an empty
- * user matches no annotation, so the artist comes back undecorated.
+ * One artist, or null when no artist has this id. The user is required: a read
+ * that serves a caller decorates the artist with that caller's annotation, and
+ * an internal read that only needs the row (cover resolution) says so by
+ * passing `NO_USER`.
  */
 export async function findArtist(
   db: Database,
   id: string,
-  userId = "",
+  userId: string,
 ): Promise<ArtistView | null> {
   const rows = await selectArtists(db, userId).where(eq(artist.id, id)).limit(1);
 
@@ -154,8 +155,12 @@ export async function listAlbumsOfArtist(
   return rows.map(toAlbumView);
 }
 
-/** One album, or null when no album has this id. `userId` defaults to none. */
-export async function findAlbum(db: Database, id: string, userId = ""): Promise<AlbumView | null> {
+/** One album, or null when no album has this id; `NO_USER` reads it plain. */
+export async function findAlbum(
+  db: Database,
+  id: string,
+  userId: string,
+): Promise<AlbumView | null> {
   const rows = await selectAlbums(db, userId).where(eq(album.id, id)).limit(1);
 
   return rows[0] ? toAlbumView(rows[0]) : null;
@@ -199,7 +204,11 @@ export async function listTracksOfAlbum(
  * query; the join is left, so a track whose album row is missing — a state a
  * half-finished scan can leave behind — is still served, without a cover.
  */
-export async function findTrack(db: Database, id: string, userId = ""): Promise<SongView | null> {
+export async function findTrack(
+  db: Database,
+  id: string,
+  userId: string,
+): Promise<SongView | null> {
   const rows = await db
     .select({ track, albumName: album.name, albumCoverKey: album.coverKey, ...annotationColumns })
     .from(track)

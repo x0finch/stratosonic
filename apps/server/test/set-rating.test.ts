@@ -1,9 +1,9 @@
-import { albumId, prefixedId, trackId } from "@stratosonic/db";
+import { albumId, artistId, prefixedId, trackId } from "@stratosonic/db";
 import { beforeAll, describe, expect, it } from "vitest";
-import { write } from "./annotations-support";
+import { write, writeXml } from "./annotations-support";
 import { bootstrapAdmin, browse } from "./browsing-support";
 import { adminUserId } from "./lists-support";
-import { seedAlbum, seedAnnotation, seedArtist, seedTrack } from "./support";
+import { seedAlbum, seedAnnotation, seedArtist, seedTrack, seedUser } from "./support";
 
 /**
  * `setRating`: the caller rates an item, and sees it as `userRating` wherever
@@ -21,12 +21,16 @@ const HALO_KEY = `${ARTIST}/${ALBUM}/02 Halo.mp3`;
 const songId = prefixedId("track", trackId(TRACK_KEY));
 const haloId = prefixedId("track", trackId(HALO_KEY));
 const theAlbumId = prefixedId("album", albumId(ARTIST, ALBUM, YEAR));
+const theArtistId = prefixedId("artist", artistId(ARTIST));
+
+const OTHER_USER = { user: "rater", password: "open-sesame" };
 
 let admin = "";
 
 beforeAll(async () => {
   await bootstrapAdmin();
   admin = await adminUserId();
+  await seedUser(OTHER_USER.user, OTHER_USER.password);
 
   await seedArtist({ name: ARTIST });
   await seedAlbum({ name: ALBUM, albumArtist: ARTIST, year: YEAR, songCount: 2 });
@@ -74,6 +78,15 @@ describe("rating an item", () => {
     await write("setRating", { id: theAlbumId, rating: "0" });
   });
 
+  it("shows an artist's rating on getArtist", async () => {
+    await write("setRating", { id: theArtistId, rating: "3" });
+
+    const artist = (await browse("getArtist", { id: theArtistId })).artist;
+    expect(artist?.userRating).toBe(3);
+
+    await write("setRating", { id: theArtistId, rating: "0" });
+  });
+
   it("clears a rating with 0, dropping the attribute", async () => {
     await write("setRating", { id: songId, rating: "3" });
     await write("setRating", { id: songId, rating: "0" });
@@ -115,11 +128,67 @@ describe("bad requests", () => {
     expect((await write("setRating", { id: songId })).error?.code).toBe(10);
   });
 
+  it("is error 10 for a missing rating even when the id is malformed", async () => {
+    const body = await write("setRating", { id: "garbage" });
+    expect(body.error?.code).toBe(10);
+  });
+
   it("is error 70 for an id that names nothing", async () => {
     const body = await write("setRating", {
       id: prefixedId("track", trackId("Ghost/None/x.mp3")),
       rating: "4",
     });
     expect(body.error?.code).toBe(70);
+  });
+});
+
+/**
+ * How the rating itself is read: Go's `strconv.ParseInt`, which Navidrome's
+ * `p.Int` bottoms out in, takes an optional sign and nothing else — no
+ * decimal point, no surrounding space.
+ */
+describe("reading the rating", () => {
+  it("is error 0 for a rating written as a decimal", async () => {
+    const body = await write("setRating", { id: songId, rating: "4.0" });
+    expect(body.error?.code).toBe(0);
+  });
+
+  it("is error 0 for a rating with a leading space", async () => {
+    const body = await write("setRating", { id: songId, rating: " 4" });
+    expect(body.error?.code).toBe(0);
+  });
+
+  it("takes a signed rating, as ParseInt does", async () => {
+    const ok = await write("setRating", { id: songId, rating: "+4" });
+    expect(ok.status).toBe("ok");
+
+    const song = (await browse("getSong", { id: songId })).song;
+    expect(song?.userRating).toBe(4);
+
+    await write("setRating", { id: songId, rating: "0" });
+  });
+});
+
+describe("isolation between accounts", () => {
+  it("rates only for the caller", async () => {
+    await write("setRating", { id: songId, rating: "0" });
+    const ok = await write("setRating", { id: songId, rating: "5" }, OTHER_USER);
+    expect(ok.status).toBe("ok");
+
+    const song = (await browse("getSong", { id: songId })).song;
+    expect(song?.userRating).toBeUndefined();
+
+    await write("setRating", { id: songId, rating: "0" }, OTHER_USER);
+  });
+});
+
+describe("envelope", () => {
+  it("answers an empty ok in XML", async () => {
+    const xml = await writeXml("setRating", { id: songId, rating: "4" });
+
+    expect(xml).toContain('status="ok"');
+    expect(xml).not.toContain("<error");
+
+    await write("setRating", { id: songId, rating: "0" });
   });
 });

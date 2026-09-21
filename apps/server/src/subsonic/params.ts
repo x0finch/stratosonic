@@ -81,7 +81,20 @@ export function integerParameterOr(
  * message, so it reads the same as a value that was never a number.
  */
 export function requiredIntegerParameter(params: URLSearchParams, name: string): number {
-  const value = requiredParameter(params, name);
+  return integerParameterValue(name, requiredParameter(params, name));
+}
+
+/**
+ * Reads one already-held value of an integer parameter, refusing what Go's
+ * `ParseInt` refuses.
+ *
+ * `requiredIntegerParameter` is this plus the presence check; a repeatable
+ * parameter such as `scrobble`'s `time` cannot use that one — a request
+ * carries several values, and `URLSearchParams.get` would only ever see the
+ * first — so the refusal lives here, where both reach it and a client sees the
+ * same error 0 and the same wording whichever parameter it was.
+ */
+export function integerParameterValue(name: string, value: string): number {
   const parsed = parseGoInt64(value);
   if (parsed === null) {
     throw new SubsonicError(

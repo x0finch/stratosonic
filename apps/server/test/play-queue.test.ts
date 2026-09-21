@@ -280,4 +280,15 @@ describe("bad requests", () => {
 
     expect((await savedQueue()).position).toBeUndefined();
   });
+
+  it("refuses a queue longer than the cap, rather than saving one it cannot read back", async () => {
+    const tooMany = Array.from({ length: 1001 }, (_, index) =>
+      prefixedId("track", trackId(`${ARTIST}/${ALBUM}/never-${index}.mp3`)),
+    );
+
+    const body = await call("savePlayQueue", { id: tooMany });
+
+    expect(body.error?.code).toBe(0);
+    expect(body.error?.message).toContain("too many ids");
+  });
 });
