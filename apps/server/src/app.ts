@@ -1,7 +1,13 @@
 import { Hono } from "hono";
 import { getAlbum, getArtist, getArtists, getGenres, getSong } from "./endpoints/browsing";
 import { getIndexes, getMusicDirectory, getMusicFolders } from "./endpoints/folders";
-import { getAlbumList2, getRandomSongs, getSongsByGenre, getStarred2 } from "./endpoints/lists";
+import {
+  getAlbumList2,
+  getRandomSongs,
+  getSongsByGenre,
+  getStarred2,
+  getTopSongs,
+} from "./endpoints/lists";
 import { download, getCoverArt, stream } from "./endpoints/media";
 import { notImplemented } from "./endpoints/not-implemented";
 import { getPlaylist, getPlaylists } from "./endpoints/playlists";
@@ -48,6 +54,11 @@ export function createApp(): SubsonicApp {
   registerEndpoint(app, "getAlbum", getAlbum);
   registerEndpoint(app, "getSong", getSong);
   registerEndpoint(app, "getGenres", getGenres);
+
+  // Navidrome mounts `getTopSongs` here, with the browsing endpoints, because
+  // it answers one artist's page rather than a home screen; the handler lives
+  // in the Lists module with the other song lists.
+  registerEndpoint(app, "getTopSongs", getTopSongs);
 
   // Browsing (folders): the same library as one music folder of directories.
   registerEndpoint(app, "getMusicFolders", getMusicFolders);

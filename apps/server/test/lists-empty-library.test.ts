@@ -26,6 +26,7 @@ const EMPTY = [
   ["getAlbumList2", { type: "starred" }, "albumList2"],
   ["getRandomSongs", {}, "randomSongs"],
   ["getSongsByGenre", { genre: "Ambient" }, "songsByGenre"],
+  ["getTopSongs", { artist: "Nobody" }, "topSongs"],
   ["getStarred2", {}, "starred2"],
 ] as const;
 

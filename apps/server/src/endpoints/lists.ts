@@ -1,7 +1,7 @@
 /**
  * The Lists module: what a client asks for to fill its home screens and to
  * finish its first sync — album lists, a random handful of songs, one genre's
- * songs by the page, and what the caller has starred.
+ * songs by the page, an artist's top songs, and what the caller has starred.
  *
  * Three rules hold across the module:
  *
@@ -24,6 +24,7 @@ import {
   listAlbums,
   listRandomTracks,
   listStarred,
+  listTopTracks,
   listTracksOfGenre,
   type Page,
 } from "../library/lists";
@@ -39,6 +40,14 @@ import type { AuthenticatedSubsonicRequest, SubsonicHandler } from "../subsonic/
 
 /** How many items a list carries when the client does not say. */
 const DEFAULT_SIZE = 10;
+
+/**
+ * How many songs `getTopSongs` carries when the client does not say.
+ * Navidrome's own default (`p.IntOr("count", 50)` in server/subsonic/
+ * browsing.go), and larger than the other lists' because it fills one screen
+ * of an artist page rather than a home-screen shelf.
+ */
+const DEFAULT_TOP_SONGS_COUNT = 50;
 
 /** The most a list can carry however large a `size` the client sends. */
 const MAX_SIZE = 500;
@@ -193,6 +202,36 @@ export const getSongsByGenre: SubsonicHandler = async (request) => {
   const tracks = await listTracksOfGenre(database(request.env), request.user.id, genre, page);
 
   return { songsByGenre: { song: omitWhenEmpty(tracks.map(songElement)) } };
+};
+
+/**
+ * `getTopSongs` — the artist's songs a client puts at the top of its artist
+ * page.
+ *
+ * Navidrome fills this from last.fm; Stratosonic makes no outbound calls, so
+ * it answers with the artist's own tracks ranked by what the caller has played
+ * (library/lists.ts). An artist this library has never heard of, and an artist
+ * with no tracks, both get an empty `<topSongs/>` rather than an error —
+ * Navidrome answers an artist it cannot find the same way, with an empty list
+ * and a 200.
+ *
+ * `artist` is the artist's *name*, and it is required, as the Subsonic spec
+ * makes it. Navidrome also accepts an `id` and needs only one of the two;
+ * `getArtist` already hands a client the name it would send here, so the id
+ * form is not implemented.
+ *
+ * `count` defaults to 50 as it does there, and is capped at 500 as it is not:
+ * Navidrome's list is however much last.fm returned, while this one is however
+ * much of the library one artist holds, and every row of it is read from D1.
+ */
+export const getTopSongs: SubsonicHandler = async (request) => {
+  const { params } = request;
+  const artist = requiredParameter(params, "artist");
+  const count = boundedCount(params, "count", DEFAULT_TOP_SONGS_COUNT);
+
+  const tracks = await listTopTracks(database(request.env), request.user.id, artist, count);
+
+  return { topSongs: { song: omitWhenEmpty(tracks.map(songElement)) } };
 };
 
 /**

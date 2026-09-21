@@ -24,6 +24,7 @@ export interface ListsResponse {
   albumList2?: { album?: SubsonicAlbumElement[] };
   randomSongs?: { song?: SubsonicSongElement[] };
   songsByGenre?: { song?: SubsonicSongElement[] };
+  topSongs?: { song?: SubsonicSongElement[] };
   starred2?: {
     artist?: SubsonicArtistElement[];
     album?: SubsonicAlbumElement[];

@@ -1,7 +1,7 @@
 /**
  * Reads of the library tables for the Lists module: the album lists a client's
  * home screens are built from, a handful of random tracks, one genre's tracks
- * by the page, and what one user has starred.
+ * by the page, an artist's most-played tracks, and what one user has starred.
  *
  * Every question is one SQL statement, as in `library/repository`, because D1
  * bills by the query. The orderings are Navidrome's, translated from its sort
@@ -250,6 +250,48 @@ export async function listTracksOfGenre(
     .orderBy(byName(track.title), asc(track.id))
     .limit(page.size)
     .offset(page.offset);
+
+  return rows.map(toSongView);
+}
+
+/**
+ * An artist's own tracks, most played by the caller first, for `getTopSongs`.
+ *
+ * **Navidrome answers this from last.fm** — its provider looks the artist up
+ * and asks an agent for that artist's top tracks (core/external, `TopSongs`).
+ * Stratosonic makes no outbound calls, so it answers from the only ranking it
+ * has: what this account has actually listened to. An artist nobody has played
+ * still gets its tracks back, ordered by title, rather than an error — which
+ * is what the endpoint is for, and an empty answer would leave an artist page
+ * blank.
+ *
+ * The artist is matched by name with `LIKE`, as Navidrome's `findArtist`
+ * matches it (`squirrel.Like{"artist.name": artistName}`), against the track's
+ * album artist: the album artist is what an artist *is* here (CONTEXT.md), and
+ * matching the column rather than joining the `artist` table keeps this to one
+ * statement.
+ *
+ * The ordering is `play_count desc, rating desc, title asc, id asc`, all from
+ * the caller's own annotation row. SQLite sorts nulls last under `desc`, so a
+ * track the caller has never touched — no annotation row at all — sorts below
+ * every track they have, without a `coalesce` that would also flatten a real
+ * count of zero.
+ */
+export async function listTopTracks(
+  db: Database,
+  userId: string,
+  artistName: string,
+  count: number,
+): Promise<SongView[]> {
+  const rows = await selectTracks(db, userId)
+    .where(like(track.albumArtist, artistName))
+    .orderBy(
+      desc(annotation.playCount),
+      desc(annotation.rating),
+      byName(track.title),
+      asc(track.id),
+    )
+    .limit(count);
 
   return rows.map(toSongView);
 }
