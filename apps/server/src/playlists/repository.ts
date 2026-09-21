@@ -21,10 +21,12 @@
  * the bucket is empty".
  */
 
-import { album, playlist, playlistTrack, track } from "@stratosonic/db";
+import { album, annotation, playlist, playlistTrack, track } from "@stratosonic/db";
 import { and, asc, eq, gt, inArray, lte, or, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import type { Database } from "../db";
+import { annotationColumns, annotationJoin } from "../library/annotations";
+import { toSongView } from "../library/repository";
 import type { PlaylistView, SongView } from "../library/serializers";
 import { chunked, KEYS_PER_STATEMENT } from "../scanner/repository";
 
@@ -302,20 +304,21 @@ export async function findPlaylist(
  * track that has gone is not an entry a client can play, and the scan's sweep
  * removes those rows anyway.
  */
-export async function listPlaylistEntries(db: Database, id: string): Promise<SongView[]> {
+export async function listPlaylistEntries(
+  db: Database,
+  id: string,
+  userId: string,
+): Promise<SongView[]> {
   const rows = await db
-    .select({ track, albumName: album.name, albumCoverKey: album.coverKey })
+    .select({ track, albumName: album.name, albumCoverKey: album.coverKey, ...annotationColumns })
     .from(playlistTrack)
     .innerJoin(track, eq(track.id, playlistTrack.trackId))
     .leftJoin(album, eq(album.id, track.albumId))
+    .leftJoin(annotation, annotationJoin(userId, "track", track.id))
     .where(eq(playlistTrack.playlistId, id))
     .orderBy(asc(playlistTrack.position));
 
-  return rows.map((row) => ({
-    ...row.track,
-    albumName: row.albumName,
-    albumCoverKey: row.albumCoverKey,
-  }));
+  return rows.map(toSongView);
 }
 
 /** Runs queued statements as one D1 batch. An empty queue does nothing. */

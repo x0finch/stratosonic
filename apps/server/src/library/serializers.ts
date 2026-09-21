@@ -28,8 +28,33 @@ import { type Album, prefixedId, type Track } from "@stratosonic/db";
 import { type SubsonicNode, TEXT_KEY } from "../subsonic/response";
 import { audioContentType } from "./audio-formats";
 
+/**
+ * What the caller has done to an item, joined into a read (library/
+ * annotations.ts) and rendered onto the element here.
+ *
+ * `starred` is the flag, `starredAt` the instant it was set (rendered as the
+ * `starred` attribute); `rating`, `playCount` and `playDate` are 0 / 0 / null
+ * when the caller has never rated or played the item, in which case each
+ * attribute is omitted — exactly the Phase 1 output.
+ */
+export interface CallerAnnotation {
+  readonly starred: boolean;
+  readonly starredAt: Date | null;
+  readonly rating: number;
+  readonly playCount: number;
+  readonly playDate: Date | null;
+}
+
+/**
+ * The item's own row carries no annotation, so it rides alongside as an
+ * optional field; absent or `null`, the element renders as it did in Phase 1.
+ */
+export interface Annotated {
+  readonly annotation?: CallerAnnotation | null;
+}
+
 /** An artist as the `<artist>` element needs it. */
-export interface ArtistView {
+export interface ArtistView extends Annotated {
   readonly id: string;
   readonly name: string;
   /** How many albums this artist is the album artist of; exact, never capped. */
@@ -41,12 +66,16 @@ export interface ArtistView {
   readonly coverAlbumId: string | null;
 }
 
+/** An album row with the caller's annotation, for the two `<album>` elements. */
+export type AlbumView = Album & Annotated;
+
 /**
  * A track together with the two things about its album a `<song>` carries:
  * the album's name, and whether it has a cover. Both come from the album row,
- * so an endpoint that already holds the album does not read it again.
+ * so an endpoint that already holds the album does not read it again — plus
+ * the caller's annotation, joined in the same statement.
  */
-export interface SongView extends Track {
+export interface SongView extends Track, Annotated {
   readonly albumName: string | null;
   readonly albumCoverKey: string | null;
 }
@@ -76,6 +105,34 @@ export function omitWhenEmpty<T>(items: readonly T[]): readonly T[] | undefined 
 }
 
 /**
+ * The `starred` attribute: the instant the caller starred the item, or nothing
+ * when they have not. Navidrome renders `starred` as the timestamp, present
+ * only while the item is starred (`*time.Time` with `omitempty`).
+ */
+function starredAttribute(item: Annotated): string | undefined {
+  const { annotation } = item;
+
+  return annotation?.starred && annotation.starredAt
+    ? subsonicTimestamp(annotation.starredAt)
+    : undefined;
+}
+
+/** The `userRating`, 1–5, or nothing when the caller has not rated the item. */
+function userRatingAttribute(item: Annotated): number | undefined {
+  return item.annotation && item.annotation.rating > 0 ? item.annotation.rating : undefined;
+}
+
+/** The `playCount`, or nothing when the caller has never played the item. */
+function playCountAttribute(item: Annotated): number | undefined {
+  return item.annotation && item.annotation.playCount > 0 ? item.annotation.playCount : undefined;
+}
+
+/** The `played` instant — the caller's last play — or nothing when there is none. */
+function playedAttribute(item: Annotated): string | undefined {
+  return item.annotation?.playDate ? subsonicTimestamp(item.annotation.playDate) : undefined;
+}
+
+/**
  * `<artist>`, Navidrome's `ArtistID3`: id, name, coverArt, albumCount. The
  * count is not `omitempty` there, so an artist with no albums still says 0.
  */
@@ -85,6 +142,8 @@ export function artistElement(artist: ArtistView): SubsonicNode {
     name: artist.name,
     coverArt: artist.coverAlbumId === null ? undefined : prefixedId("album", artist.coverAlbumId),
     albumCount: artist.albumCount,
+    starred: starredAttribute(artist),
+    userRating: userRatingAttribute(artist),
   };
 }
 
@@ -106,6 +165,8 @@ export function indexArtistElement(artist: ArtistView): SubsonicNode {
     id: prefixedId("artist", artist.id),
     name: artist.name,
     coverArt: artist.coverAlbumId === null ? undefined : prefixedId("album", artist.coverAlbumId),
+    starred: starredAttribute(artist),
+    userRating: userRatingAttribute(artist),
   };
 }
 
@@ -116,7 +177,7 @@ export function indexArtistElement(artist: ArtistView): SubsonicNode {
  * `MaxYear` Navidrome puts there. The duration is truncated to whole seconds,
  * as Navidrome's `int32(album.Duration)` does.
  */
-export function albumElement(album: Album): SubsonicNode {
+export function albumElement(album: AlbumView): SubsonicNode {
   return {
     id: prefixedId("album", album.id),
     name: album.name,
@@ -125,9 +186,13 @@ export function albumElement(album: Album): SubsonicNode {
     coverArt: album.coverKey === null ? undefined : prefixedId("album", album.id),
     songCount: album.songCount,
     duration: Math.trunc(album.duration),
+    playCount: playCountAttribute(album),
     created: subsonicTimestamp(album.createdAt),
+    starred: starredAttribute(album),
     year: album.year || undefined,
     genre: album.genre || undefined,
+    played: playedAttribute(album),
+    userRating: userRatingAttribute(album),
   };
 }
 
@@ -162,14 +227,18 @@ export function songElement(song: SongView): SubsonicNode {
     size: song.size || undefined,
     contentType: audioContentType(song.suffix) ?? undefined,
     suffix: song.suffix || undefined,
+    starred: starredAttribute(song),
     duration: Math.trunc(song.duration) || undefined,
     bitRate: song.bitRate || undefined,
     path: song.r2Key || undefined,
+    playCount: playCountAttribute(song),
+    played: playedAttribute(song),
     discNumber: song.discNumber || undefined,
     created: subsonicTimestamp(song.createdAt),
     albumId: prefixedId("album", song.albumId),
     artistId: prefixedId("artist", song.artistId),
     type: "music",
+    userRating: userRatingAttribute(song),
   };
 }
 
@@ -195,7 +264,7 @@ export function songElement(song: SongView): SubsonicNode {
  * (`starred`, `playCount`, `userRating`) wait for Phase 2, as they do in
  * `songElement`.
  */
-export function albumChildElement(album: Album): SubsonicNode {
+export function albumChildElement(album: AlbumView): SubsonicNode {
   return {
     id: prefixedId("album", album.id),
     parent: prefixedId("artist", album.artistId),
@@ -207,10 +276,14 @@ export function albumChildElement(album: Album): SubsonicNode {
     year: album.year || undefined,
     genre: album.genre || undefined,
     coverArt: album.coverKey === null ? undefined : prefixedId("album", album.id),
+    starred: starredAttribute(album),
     duration: Math.trunc(album.duration) || undefined,
+    playCount: playCountAttribute(album),
+    played: playedAttribute(album),
     created: subsonicTimestamp(album.createdAt),
     artistId: prefixedId("artist", album.artistId),
     songCount: album.songCount || undefined,
+    userRating: userRatingAttribute(album),
   };
 }
 

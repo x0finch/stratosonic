@@ -64,7 +64,8 @@ export const getAlbumList2: SubsonicHandler = async (request) => {
   checkMusicFolderIds(request.params);
   const page = requestedPage(request.params);
 
-  const albums = query === null ? [] : await listAlbums(database(request.env), query, page);
+  const albums =
+    query === null ? [] : await listAlbums(database(request.env), request.user.id, query, page);
 
   return { albumList2: { album: omitWhenEmpty(albums.map(albumElement)) } };
 };
@@ -96,7 +97,7 @@ function requestedAlbumList(request: AuthenticatedSubsonicRequest): AlbumListQue
         toYear: requiredIntegerParameter(params, "toYear"),
       };
     case "starred":
-      return { type, userId: request.user.id };
+      return { type };
     default:
       if (TYPES_WITHOUT_DATA.has(type)) {
         return null;
@@ -146,7 +147,12 @@ export const getRandomSongs: SubsonicHandler = async (request) => {
   const toYear = integerParameterOr(params, "toYear", 0) || null;
   checkMusicFolderIds(params);
 
-  const tracks = await listRandomTracks(database(request.env), { genre, fromYear, toYear, size });
+  const tracks = await listRandomTracks(database(request.env), request.user.id, {
+    genre,
+    fromYear,
+    toYear,
+    size,
+  });
 
   return { randomSongs: { song: omitWhenEmpty(tracks.map(songElement)) } };
 };

@@ -20,24 +20,12 @@
  *   cannot show the same album twice and skip another.
  */
 
-import { type Album, album, annotation, artist, track } from "@stratosonic/db";
-import {
-  and,
-  asc,
-  desc,
-  eq,
-  getTableColumns,
-  gte,
-  isNull,
-  like,
-  lte,
-  or,
-  type SQL,
-  sql,
-} from "drizzle-orm";
+import { album, annotation, artist, track } from "@stratosonic/db";
+import { and, asc, desc, eq, gte, isNull, like, lte, or, type SQL, sql } from "drizzle-orm";
 import type { Database } from "../db";
-import { artistColumns } from "./repository";
-import type { ArtistView, SongView } from "./serializers";
+import { annotationColumns, annotationJoin } from "./annotations";
+import { artistColumns, toAlbumView, toArtistView, toSongView } from "./repository";
+import type { AlbumView, ArtistView, SongView } from "./serializers";
 
 /**
  * Which albums `getAlbumList2` was asked for, and what that type needs to
@@ -52,7 +40,7 @@ export type AlbumListQuery =
   | { readonly type: "byYear"; readonly fromYear: number; readonly toYear: number }
   | { readonly type: "byGenre"; readonly genre: string }
   | { readonly type: "random" }
-  | { readonly type: "starred"; readonly userId: string };
+  | { readonly type: "starred" };
 
 /** The window a client asked for. */
 export interface Page {
@@ -70,18 +58,25 @@ export interface Page {
  */
 export async function listAlbums(
   db: Database,
+  userId: string,
   query: AlbumListQuery,
   page?: Page,
-): Promise<Album[]> {
-  let statement = db.select(getTableColumns(album)).from(album).$dynamic();
+): Promise<AlbumView[]> {
+  const statement = db
+    .select({ album, ...annotationColumns })
+    .from(album)
+    // The caller's annotation is left-joined for the `<album>` it decorates;
+    // the `starred` list narrows to the same row (albumFilter), so one join
+    // serves both and no list pays a second query.
+    .leftJoin(annotation, annotationJoin(userId, "album", album.id))
+    .where(albumFilter(query))
+    .orderBy(...albumOrder(query))
+    .$dynamic();
 
-  if (query.type === "starred") {
-    statement = statement.innerJoin(annotation, starredBy(query.userId, "album", album.id));
-  }
+  const rows =
+    page === undefined ? await statement : await statement.limit(page.size).offset(page.offset);
 
-  statement = statement.where(albumFilter(query)).orderBy(...albumOrder(query));
-
-  return page === undefined ? statement : statement.limit(page.size).offset(page.offset);
+  return rows.map(toAlbumView);
 }
 
 /** What narrows an album list, or nothing for the types that filter nothing. */
@@ -108,6 +103,11 @@ function albumFilter(query: AlbumListQuery): SQL | undefined {
       // comparison matches, so it is admitted explicitly and only then.
       return from <= 0 && to >= 0 ? or(inRange, isNull(album.year)) : inRange;
     }
+    case "starred":
+      // The album is starred by the caller: the left-joined annotation row
+      // exists and its flag is set. This is what made the join effectively an
+      // inner one before decoration moved it to a left join.
+      return eq(annotation.starred, true);
     default:
       return undefined;
   }
@@ -186,6 +186,7 @@ export interface RandomTracksQuery {
  */
 export async function listRandomTracks(
   db: Database,
+  userId: string,
   query: RandomTracksQuery,
 ): Promise<SongView[]> {
   const filters: SQL[] = [];
@@ -201,24 +202,21 @@ export async function listRandomTracks(
   }
 
   const rows = await db
-    .select({ track, albumName: album.name, albumCoverKey: album.coverKey })
+    .select({ track, albumName: album.name, albumCoverKey: album.coverKey, ...annotationColumns })
     .from(track)
     .leftJoin(album, eq(album.id, track.albumId))
+    .leftJoin(annotation, annotationJoin(userId, "track", track.id))
     .where(filters.length > 0 ? and(...filters) : undefined)
     .orderBy(sql`random()`)
     .limit(query.size);
 
-  return rows.map((row) => ({
-    ...row.track,
-    albumName: row.albumName,
-    albumCoverKey: row.albumCoverKey,
-  }));
+  return rows.map(toSongView);
 }
 
 /** Everything one user has starred, in the three kinds `<starred2>` carries. */
 export interface StarredLibrary {
   readonly artists: readonly ArtistView[];
-  readonly albums: readonly Album[];
+  readonly albums: readonly AlbumView[];
   readonly tracks: readonly SongView[];
 }
 
@@ -232,29 +230,31 @@ export interface StarredLibrary {
  */
 export async function listStarred(db: Database, userId: string): Promise<StarredLibrary> {
   const [artists, albums, tracks] = await Promise.all([
-    db
-      .select(artistColumns)
-      .from(artist)
-      .innerJoin(annotation, starredBy(userId, "artist", artist.id))
-      .orderBy(desc(annotation.starredAt), desc(artist.id)),
-    listAlbums(db, { type: "starred", userId }),
+    listStarredArtists(db, userId),
+    listAlbums(db, userId, { type: "starred" }),
     listStarredTracks(db, userId),
   ]);
 
   return { artists, albums, tracks };
 }
 
+async function listStarredArtists(db: Database, userId: string): Promise<ArtistView[]> {
+  const rows = await db
+    .select({ ...artistColumns, ...annotationColumns })
+    .from(artist)
+    .innerJoin(annotation, starredBy(userId, "artist", artist.id))
+    .orderBy(desc(annotation.starredAt), desc(artist.id));
+
+  return rows.map(toArtistView);
+}
+
 async function listStarredTracks(db: Database, userId: string): Promise<SongView[]> {
   const rows = await db
-    .select({ track, albumName: album.name, albumCoverKey: album.coverKey })
+    .select({ track, albumName: album.name, albumCoverKey: album.coverKey, ...annotationColumns })
     .from(track)
     .innerJoin(annotation, starredBy(userId, "track", track.id))
     .leftJoin(album, eq(album.id, track.albumId))
     .orderBy(desc(annotation.starredAt), desc(track.id));
 
-  return rows.map((row) => ({
-    ...row.track,
-    albumName: row.albumName,
-    albumCoverKey: row.albumCoverKey,
-  }));
+  return rows.map(toSongView);
 }

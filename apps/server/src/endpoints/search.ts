@@ -40,7 +40,11 @@ const DEFAULT_COUNT = 20;
 
 /** `search3` — matches rendered as ID3 elements. */
 export const search3: SubsonicHandler = async (request) => {
-  const results = await searchLibrary(database(request.env), requestedSearch(request));
+  const results = await searchLibrary(
+    database(request.env),
+    requestedSearch(request),
+    request.user.id,
+  );
 
   return {
     searchResult3: {
@@ -53,7 +57,11 @@ export const search3: SubsonicHandler = async (request) => {
 
 /** `search2` — the same matches rendered as the folder view's elements. */
 export const search2: SubsonicHandler = async (request) => {
-  const results = await searchLibrary(database(request.env), requestedSearch(request));
+  const results = await searchLibrary(
+    database(request.env),
+    requestedSearch(request),
+    request.user.id,
+  );
 
   return {
     searchResult2: {

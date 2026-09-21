@@ -77,7 +77,7 @@ function requestedId(
 export const getArtists: SubsonicHandler = async (request) => {
   checkMusicFolderIds(request.params);
 
-  const artists = await listArtists(database(request.env));
+  const artists = await listArtists(database(request.env), request.user.id);
 
   const index = groupArtistsByIndex(artists, (artist) => artist.name).map((group) => ({
     name: group.name,
@@ -92,12 +92,12 @@ export const getArtist: SubsonicHandler = async (request) => {
   const db = database(request.env);
   const id = requestedId(request, "artist", "Artist not found");
 
-  const artist = await findArtist(db, id);
+  const artist = await findArtist(db, id, request.user.id);
   if (artist === null) {
     throw new SubsonicError(SubsonicErrorCode.NotFound, "Artist not found");
   }
 
-  const albums = await listAlbumsOfArtist(db, id);
+  const albums = await listAlbumsOfArtist(db, id, request.user.id);
 
   return { artist: { ...artistElement(artist), album: omitWhenEmpty(albums.map(albumElement)) } };
 };
@@ -107,12 +107,12 @@ export const getAlbum: SubsonicHandler = async (request) => {
   const db = database(request.env);
   const id = requestedId(request, "album", "Album not found");
 
-  const album = await findAlbum(db, id);
+  const album = await findAlbum(db, id, request.user.id);
   if (album === null) {
     throw new SubsonicError(SubsonicErrorCode.NotFound, "Album not found");
   }
 
-  const tracks = await listTracksOfAlbum(db, album);
+  const tracks = await listTracksOfAlbum(db, album, request.user.id);
 
   return { album: { ...albumElement(album), song: omitWhenEmpty(tracks.map(songElement)) } };
 };
@@ -121,7 +121,7 @@ export const getAlbum: SubsonicHandler = async (request) => {
 export const getSong: SubsonicHandler = async (request) => {
   const id = requestedId(request, "track", "Song not found");
 
-  const song = await findTrack(database(request.env), id);
+  const song = await findTrack(database(request.env), id, request.user.id);
   if (song === null) {
     throw new SubsonicError(SubsonicErrorCode.NotFound, "Song not found");
   }
