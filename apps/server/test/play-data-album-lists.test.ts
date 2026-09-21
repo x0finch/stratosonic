@@ -27,12 +27,17 @@ const ZEPHYR: AlbumFixture = { name: "Zephyr", track: `${ARTIST}/Zephyr/01 Z.mp3
 const albumIdOf = (album: AlbumFixture) => prefixedId("album", albumId(ARTIST, album.name, YEAR));
 const trackIdOf = (album: AlbumFixture) => prefixedId("track", trackId(album.track));
 
-let other = "";
+/** Someone else's account, which plays and rates an album the admin never does. */
+const LISTENER = { user: "listener", password: "open-sesame" };
+
+/** A third account that never annotates anything: its lists must stay empty. */
+const NEWCOMER = { user: "newcomer", password: "let-me-in" };
 
 beforeAll(async () => {
   await bootstrapAdmin();
   await adminUserId();
-  other = await seedUser("listener", "open-sesame");
+  const other = await seedUser(LISTENER.user, LISTENER.password);
+  await seedUser(NEWCOMER.user, NEWCOMER.password);
 
   await seedArtist({ name: ARTIST });
   for (const album of [XANDU, YONDER, ZEPHYR]) {
@@ -49,6 +54,19 @@ beforeAll(async () => {
   // Yonder rated above Xandu; Zephyr unrated.
   await write("setRating", { id: albumIdOf(XANDU), rating: "3" });
   await write("setRating", { id: albumIdOf(YONDER), rating: "5" });
+
+  // The other account plays and rates Zephyr, which the admin never touches,
+  // so every list below can be read as "the caller's own data" — no `it` has
+  // to run before another for that to hold.
+  await seedAnnotation({
+    userId: other,
+    itemId: albumId(ARTIST, ZEPHYR.name, YEAR),
+    itemType: "album",
+    starred: false,
+    rating: 5,
+    playCount: 9,
+    playDate: new Date(1_600_000_009_000),
+  });
 });
 
 describe("frequent", () => {
@@ -98,28 +116,23 @@ describe("paging", () => {
 
 describe("per-account", () => {
   it("does not let another account's data affect the caller's lists", async () => {
-    // The other account plays and rates Zephyr; the admin's lists ignore it.
-    await seedAnnotation({
-      userId: other,
-      itemId: albumId(ARTIST, ZEPHYR.name, YEAR),
-      itemType: "album",
-      starred: false,
-      rating: 5,
-      playCount: 9,
-      playDate: new Date(1_600_000_009_000),
-    });
-
     expect(albumNames(await list("getAlbumList2", { type: "frequent" }))).not.toContain("Zephyr");
     expect(albumNames(await list("getAlbumList2", { type: "highest" }))).not.toContain("Zephyr");
   });
 
-  it("gives a fresh account empty lists for all three", async () => {
-    const credentials = { user: "listener", password: "open-sesame" };
-    // The other account has only the seeded Zephyr album annotation above, so
-    // frequent/recent/highest reflect just it — the admin's plays are unseen.
-    const frequent = albumNames(await listAs(credentials, "getAlbumList2", { type: "frequent" }));
+  it("shows the other account its own data, and none of the admin's", async () => {
+    const frequent = albumNames(await listAs(LISTENER, "getAlbumList2", { type: "frequent" }));
 
     expect(frequent).toEqual(["Zephyr"]);
-    expect(frequent).not.toContain("Xandu");
   });
+
+  it.each(["recent", "frequent", "highest"])(
+    "gives an account that has annotated nothing an empty %s list",
+    async (type) => {
+      const body = await listAs(NEWCOMER, "getAlbumList2", { type });
+
+      expect(body.status).toBe("ok");
+      expect(body.albumList2).toEqual({});
+    },
+  );
 });
