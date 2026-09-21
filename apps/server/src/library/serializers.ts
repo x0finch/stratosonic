@@ -133,6 +133,27 @@ function playedAttribute(item: Annotated): string | undefined {
 }
 
 /**
+ * The annotation attributes of a `<directory>`, for the folder endpoints to
+ * spread into the attributes they build: `starred`, `playCount`, `played` and
+ * `userRating`, in the order Navidrome's `responses.Directory` declares them,
+ * between `parent` and the ID3 attributes that follow.
+ *
+ * Navidrome fills all four on both kinds of directory — an artist's and an
+ * album's (`buildArtistDirectory` and `buildAlbumDirectory`,
+ * server/subsonic/browsing.go) — from that artist's or album's own
+ * annotation, and each is omitted when the caller has none, by the same rules
+ * that omit it from a child element.
+ */
+export function directoryAnnotationAttributes(item: Annotated): SubsonicNode {
+  return {
+    starred: starredAttribute(item),
+    playCount: playCountAttribute(item),
+    played: playedAttribute(item),
+    userRating: userRatingAttribute(item),
+  };
+}
+
+/**
  * `<artist>`, Navidrome's `ArtistID3`: id, name, coverArt, albumCount. The
  * count is not `omitempty` there, so an artist with no albums still says 0.
  */
