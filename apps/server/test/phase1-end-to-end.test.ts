@@ -8,6 +8,7 @@ import { DEFAULT_SCAN_LIMITS } from "../src/scanner/scan";
 import { readLastScanSummary, readScanProgress, type ScanSummary } from "../src/scanner/state";
 import type { BrowsingResponse } from "./browsing-support";
 import { bootstrapAdmin, browse, browseXml, fixtureAlbum, query } from "./browsing-support";
+import { driveUntilIdle } from "./driver-support";
 import type { FixtureAlbum, FixtureTrack } from "./fixtures/files";
 import { fixtureBytes, fixtureCoverBytes, fixtures, fixtureTrack } from "./fixtures/files";
 import type { ListsResponse } from "./lists-support";
@@ -24,9 +25,12 @@ import { BASE, type JsonEnvelope, testEnv } from "./support";
  * This file is the proof that the parts fit together, so it goes through the
  * two seams and nothing else — the `scheduled` handler exported by
  * `src/index.ts`, exactly as the cron invokes it, and the `fetch` handler
- * every assertion reads the library through. No row is read or written
- * directly; the only thing taken from D1 is the scan's own summary of a pass,
- * which is a report of the run rather than a statement about the library.
+ * every assertion reads the library through. Since #31 the cron only pokes
+ * the scan driver, so the steps themselves are the Durable Object's alarms,
+ * fired here as soon as each one is scheduled rather than a second apart. No
+ * row is read or written directly; the only thing taken from D1 is the scan's
+ * own summary of a pass, which is a report of the run rather than a statement
+ * about the library.
  *
  * The bucket starts with the five audio fixtures and the one `.m3u`, and
  * nothing else: the covers under `_covers/` are what a scan produces. Every
@@ -37,7 +41,7 @@ import { BASE, type JsonEnvelope, testEnv } from "./support";
  * the bucket and the library follows.
  */
 
-/** The cron that carries the scan in production, from wrangler.jsonc. */
+/** The cron that pokes the scan driver in production, from wrangler.jsonc. */
 const CRON = "*/15 * * * *";
 
 /** The instant the first cron run is stamped with. */
@@ -62,8 +66,8 @@ const LONE_ALBUM = "Trailing Sessions";
 /** The artist whose two albums become one. */
 const TWO_ALBUM_ARTIST = "Mute Ensemble";
 
-/** How many cron invocations the first pass over the fixtures took. */
-let firstPassInvocations = 0;
+/** How many alarm steps the first pass over the fixtures took. */
+let firstPassSteps = 0;
 
 /* --------------------------------------------------------- the seams -- */
 
@@ -77,7 +81,7 @@ async function runScheduled(now: Date): Promise<void> {
     scheduledTime: now.getTime(),
     cron: CRON,
     noRetry() {
-      // A cron run that fails is not retried; the next one resumes the pass.
+      // A cron run that fails is not retried; the next one pokes again.
     },
   };
 
@@ -85,33 +89,39 @@ async function runScheduled(now: Date): Promise<void> {
 }
 
 /**
- * Invokes the cron until the pass it started has finished, and says how many
- * invocations that took. A pass is finished when the scan has left no
- * progress behind and has recorded a summary of this pass — the same two
- * properties the next cron run reads.
+ * Pokes the cron and then runs the driver's alarms until the pass it started
+ * has finished, and says how many alarms that took (#31).
+ *
+ * The cron no longer scans: it pokes the scan driver, whose alarm runs one
+ * step and schedules the next. A test does not want to wait a second between
+ * them, so it fires each alarm itself as soon as the one before it returns —
+ * which is also what makes the chain observable, since an alarm that the
+ * driver never scheduled cannot be fired.
+ *
+ * A pass has finished when the driver has stopped, which it says by emptying
+ * its own storage; the scan's summary is then checked against the poke, so a
+ * driver that gave up part way through is not mistaken for one that
+ * finished.
  */
 async function scheduledUntilComplete(now: Date): Promise<number> {
+  await runScheduled(now);
+
+  // A pass that has not finished after this many alarms is a loop, not a scan.
+  const steps = await driveUntilIdle(20);
+
   const db = database(testEnv);
-
-  // A pass that has not finished after this many runs is a loop, not a scan.
-  for (let invocations = 1; invocations <= 20; invocations++) {
-    await runScheduled(now);
-
-    const summary = await readLastScanSummary(db);
-    if ((await readScanProgress(db)) === null && summary?.startedAt === now.getTime()) {
-      return invocations;
-    }
-  }
-
-  // `scheduled` logs and swallows a step that throws, so the state the scan
-  // left behind is the only account of why it is not finished.
   const progress = await readScanProgress(db);
   const summary = await readLastScanSummary(db);
+  if (progress !== null || summary?.startedAt !== now.getTime()) {
+    // `alarm()` logs and swallows a step that throws, so the state the scan
+    // left behind is the only account of why the pass is not finished.
+    throw new Error(
+      `the driver stopped without completing a pass: progress ${JSON.stringify(progress)}, ` +
+        `last summary ${JSON.stringify(summary)}`,
+    );
+  }
 
-  throw new Error(
-    `the scheduled entry never completed a pass: progress ${JSON.stringify(progress)}, ` +
-      `last summary ${JSON.stringify(summary)}`,
-  );
+  return steps;
 }
 
 /** What the pass that began at this instant did, as the scan recorded it. */
@@ -256,18 +266,21 @@ async function librarySnapshot(): Promise<LibrarySnapshot> {
 beforeAll(async () => {
   await bootstrapAdmin();
   await seedFixtureFiles();
-  firstPassInvocations = await scheduledUntilComplete(FIRST_RUN);
+  firstPassSteps = await scheduledUntilComplete(FIRST_RUN);
 });
 
 /* ============================================================ the scan == */
 
 describe("the cron indexing a fresh bucket", () => {
-  it("finishes the pass in a single invocation at the production limits", () => {
-    // One invocation is enough only because the bucket holds no more audio
-    // objects than a run may read. A sixth fixture would still be indexed,
-    // over two runs; this says why the count below is what it is.
+  it("finishes the pass in one scan step and one import step", () => {
+    // One step is enough for the scan only because the bucket holds no more
+    // audio objects than a step may read; a sixth fixture would take a second
+    // alarm. The import has the step after it, which is what the driver does
+    // when the scan's pass completes. The count is an upper bound because
+    // miniflare fires a due alarm of its own accord too, which can only take
+    // a step off what the test had to fire itself.
     expect(fixtures.tracks.length).toBeLessThanOrEqual(DEFAULT_SCAN_LIMITS.extractionsPerRun);
-    expect(firstPassInvocations).toBe(1);
+    expect(firstPassSteps).toBeLessThanOrEqual(2);
   });
 
   it("reports a pass that read every fixture and broke on none", async () => {
@@ -626,7 +639,7 @@ describe("a second cron run over the unchanged bucket", () => {
     const before = await librarySnapshot();
     const indexedBefore = await browse("getIndexes");
 
-    expect(await scheduledUntilComplete(secondRun)).toBe(1);
+    expect(await scheduledUntilComplete(secondRun)).toBeLessThanOrEqual(2);
 
     expect(await librarySnapshot()).toEqual(before);
     // `getIndexes` carries when the library was last scanned, which has to
