@@ -123,10 +123,55 @@ describe("getAlbumList2 byYear", () => {
     expect(albumNames(body)).toEqual(["Delta", "Beacon", "cinder", "Aurora"]);
   });
 
-  it("leaves out an album that has no year at all", async () => {
-    const body = await list("getAlbumList2", { type: "byYear", fromYear: "0", toYear: "9999" });
+  it("leaves out an album with no year when the range does not cover zero", async () => {
+    const body = await list("getAlbumList2", { type: "byYear", fromYear: "1", toYear: "9999" });
 
     expect(albumNames(body)).not.toContain("Fathom");
+  });
+
+  it("includes an album with no year when the range covers zero, as year 0 does", async () => {
+    const body = await list("getAlbumList2", { type: "byYear", fromYear: "0", toYear: "9999" });
+
+    expect(albumNames(body)).toEqual([
+      "Fathom",
+      "Aurora",
+      "cinder",
+      "Beacon",
+      "Delta",
+      "Echo & Ash",
+    ]);
+  });
+
+  it("includes it from the other end of a reversed range too", async () => {
+    const body = await list("getAlbumList2", { type: "byYear", fromYear: "9999", toYear: "0" });
+
+    expect(albumNames(body)).toEqual([
+      "Echo & Ash",
+      "Delta",
+      "Beacon",
+      "cinder",
+      "Aurora",
+      "Fathom",
+    ]);
+  });
+
+  it("includes it for a range that is only zero", async () => {
+    const body = await list("getAlbumList2", { type: "byYear", fromYear: "0", toYear: "0" });
+
+    expect(albumNames(body)).toEqual(["Fathom"]);
+  });
+
+  it("rejects a bound no 64-bit integer can hold, as Go's ParseInt does", async () => {
+    const body = await list("getAlbumList2", {
+      type: "byYear",
+      fromYear: "0",
+      toYear: "99999999999999999999",
+    });
+
+    expect(body.error).toEqual({
+      code: 0,
+      message: "invalid parameter 'toYear': expected integer, got '99999999999999999999'",
+    });
   });
 
   it("answers a range nothing falls in with an empty list, not an error", async () => {

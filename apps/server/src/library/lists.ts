@@ -21,7 +21,20 @@
  */
 
 import { type Album, album, annotation, artist, track } from "@stratosonic/db";
-import { and, asc, desc, eq, getTableColumns, gte, like, lte, type SQL, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  getTableColumns,
+  gte,
+  isNull,
+  like,
+  lte,
+  or,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import type { Database } from "../db";
 import { artistColumns } from "./repository";
 import type { ArtistView, SongView } from "./serializers";
@@ -87,8 +100,13 @@ function albumFilter(query: AlbumListQuery): SQL | undefined {
       // backwards. The ordering picks the direction up below.
       const from = Math.min(query.fromYear, query.toYear);
       const to = Math.max(query.fromYear, query.toYear);
+      const inRange = and(gte(album.year, from), lte(album.year, to));
 
-      return and(gte(album.year, from), lte(album.year, to));
+      // An album with no year is Navidrome's year *0*, not an absent value, so
+      // a range that covers 0 - which `fromYear=0` is how a client spells "as
+      // far back as you have" - matches it there. Ours is `NULL`, which no
+      // comparison matches, so it is admitted explicitly and only then.
+      return from <= 0 && to >= 0 ? or(inRange, isNull(album.year)) : inRange;
     }
     default:
       return undefined;

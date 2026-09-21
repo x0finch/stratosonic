@@ -76,6 +76,12 @@ describe("getAlbumList2 paging", () => {
     expect(await page({ size: "plenty" })).toHaveLength(10);
   });
 
+  it("falls back to ten for a size no 64-bit integer can hold", async () => {
+    // Go's `ParseInt` reports this out of range and `IntOr` answers with the
+    // default; parsed as a float it would round to 1e20 and cap to 500.
+    expect(await page({ size: "99999999999999999999" })).toHaveLength(10);
+  });
+
   it("returns nothing for a size of zero, rather than the whole library", async () => {
     const body = await list("getAlbumList2", { type: "alphabeticalByName", size: "0" });
 
