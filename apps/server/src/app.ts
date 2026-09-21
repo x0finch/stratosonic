@@ -5,6 +5,7 @@ import { getAlbumList2, getRandomSongs, getStarred2 } from "./endpoints/lists";
 import { download, getCoverArt, stream } from "./endpoints/media";
 import { notImplemented } from "./endpoints/not-implemented";
 import { getPlaylist, getPlaylists } from "./endpoints/playlists";
+import { search2, search3 } from "./endpoints/search";
 import { getLicense, getOpenSubsonicExtensions, ping } from "./endpoints/system";
 import { getUser, getUsers } from "./endpoints/users";
 import {
@@ -57,6 +58,11 @@ export function createApp(): SubsonicApp {
   registerEndpoint(app, "getAlbumList2", getAlbumList2);
   registerEndpoint(app, "getRandomSongs", getRandomSongs);
   registerEndpoint(app, "getStarred2", getStarred2);
+
+  // Searching: the search box, over the library the client already has.
+  // Navidrome mounts these between the lists and the playlists.
+  registerEndpoint(app, "search2", search2);
+  registerEndpoint(app, "search3", search3);
 
   // Playlists, read side: what the cron imported from the `.m3u` files in
   // the bucket. The write endpoints are Phase 2 and stay unmounted, so they
