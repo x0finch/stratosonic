@@ -94,6 +94,10 @@ export interface SubsonicDirectoryElement {
   id: string;
   name: string;
   parent?: string;
+  starred?: string;
+  playCount?: number;
+  played?: string;
+  userRating?: number;
   coverArt?: string;
   songCount?: number;
   albumCount?: number;

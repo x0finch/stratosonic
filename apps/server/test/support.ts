@@ -306,7 +306,11 @@ export interface AnnotationSeed {
   readonly playDate?: Date | null;
 }
 
-/** Inserts one user's state for one item. Starring defaults to now-ish. */
+/**
+ * Inserts one user's state for one item. Starring defaults to now-ish, and an
+ * explicit `starredAt: null` is kept - a migrated row can be starred without
+ * an instant, which is a case the writes have to handle.
+ */
 export async function seedAnnotation(seed: AnnotationSeed): Promise<Annotation> {
   const starred = seed.starred ?? true;
   const row: Annotation = {
@@ -314,7 +318,7 @@ export async function seedAnnotation(seed: AnnotationSeed): Promise<Annotation> 
     itemId: seed.itemId,
     itemType: seed.itemType,
     starred,
-    starredAt: seed.starredAt ?? (starred ? SEED_TIME : null),
+    starredAt: seed.starredAt === undefined ? (starred ? SEED_TIME : null) : seed.starredAt,
     rating: seed.rating ?? 0,
     playCount: seed.playCount ?? 0,
     playDate: seed.playDate ?? null,
