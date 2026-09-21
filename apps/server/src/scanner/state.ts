@@ -153,10 +153,30 @@ export async function writeLastScanSummary(db: Database, summary: ScanSummary): 
 }
 
 /**
- * When the library last finished changing, as `getIndexes`' `lastModified`
- * reports it: the end of the last completed pass, or null before the first
- * one. A pass in flight does not count - half a library is not a state a
- * client should be told to cache against.
+ * When the most recent scan began, whether or not it has finished, or null
+ * before the first one.
+ *
+ * This is what `getIndexes` dates the library with: Navidrome reads its own
+ * `LastScanStartTime` property there (`getArtist` in
+ * server/subsonic/browsing.go) rather than the finish, because a client that
+ * sends the instant back in `ifModifiedSince` must not be told the library is
+ * older than anything a scan in flight is still writing.
+ */
+export async function lastScanStartedAt(db: Database): Promise<Date | null> {
+  const inFlight = await readScanProgress(db);
+  if (inFlight !== null) {
+    return new Date(inFlight.startedAt);
+  }
+
+  const summary = await readLastScanSummary(db);
+
+  return summary === null ? null : new Date(summary.startedAt);
+}
+
+/**
+ * When the library last finished changing: the end of the last completed
+ * pass, or null before there has been one. A pass in flight does not count -
+ * half a library is not a state anything should report as settled.
  */
 export async function lastScanFinishedAt(db: Database): Promise<Date | null> {
   const summary = await readLastScanSummary(db);

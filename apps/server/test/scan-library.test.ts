@@ -160,6 +160,12 @@ describe("a first scan of the fixture bucket", () => {
     expect(summary?.counts.indexed).toBe(fixtures.tracks.length);
     expect(summary?.counts.removed).toBe(0);
   });
+
+  it("dates the library for `getIndexes` with when the pass started", async () => {
+    const body = await browse("getIndexes");
+
+    expect(body.indexes?.lastModified).toBe(SCAN_TIME.getTime());
+  });
 });
 
 describe("a second scan of an unchanged bucket", () => {
