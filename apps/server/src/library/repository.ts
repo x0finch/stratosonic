@@ -43,7 +43,7 @@ const ALBUMS_OF_ARTIST_ORDER = [asc(album.year), asc(album.name), asc(album.id)]
  * would bind to the album's own id instead of the artist's — a correlation
  * that silently matches nothing.
  */
-const artistColumns = {
+export const artistColumns = {
   id: artist.id,
   name: artist.name,
   albumCount: sql<number>`(select count(*) from album where album.artist_id = artist.id)`,
