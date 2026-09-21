@@ -17,6 +17,7 @@ import { parseIdOfType, parsePrefixedId } from "@stratosonic/db";
 import {
   type AnnotatedItem,
   findMissingItems,
+  findTrackAlbums,
   type Play,
   recordPlays,
   setRating as saveRating,
@@ -57,7 +58,19 @@ export const scrobble: SubsonicHandler = async (request) => {
   const at = (index: number): Date => scrobbleTime(times[index]);
 
   if (isSubmission(params)) {
-    const plays: Play[] = ids.map((id, index) => ({ trackId: id, playDate: at(index) }));
+    // A play counts for the track and for its album, so `frequent`/`recent`
+    // album lists reflect what was played; the album is looked up once.
+    const albumOf = await findTrackAlbums(db, ids);
+    const plays: Play[] = [];
+    for (const [index, id] of ids.entries()) {
+      const playDate = at(index);
+      plays.push({ item: { type: "track", id }, playDate });
+
+      const albumId = albumOf.get(id);
+      if (albumId !== undefined) {
+        plays.push({ item: { type: "album", id: albumId }, playDate });
+      }
+    }
     await recordPlays(db, request.user.id, plays);
   } else {
     const playerName = params.get("c") ?? "";

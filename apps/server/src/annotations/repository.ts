@@ -119,18 +119,19 @@ export async function setRating(
     });
 }
 
-/** One track's play, at the instant it was played. */
+/** One item's play, at the instant it was played. */
 export interface Play {
-  readonly trackId: string;
+  readonly item: AnnotatedItem;
   readonly playDate: Date;
 }
 
 /**
- * Records the caller's plays: each increments the track's play count and moves
+ * Records the caller's plays: each increments the item's play count and moves
  * its last-played instant, leaving its star and rating alone. A play the
  * caller has never annotated starts the count at 1. Written in one D1 batch;
- * the same track named twice in one call counts twice, as each `scrobble`
- * submission is a play.
+ * the same item named twice in one call counts twice, as each `scrobble`
+ * submission is a play — and a played track's album is one such item, so
+ * `frequent` and `recent` album lists reflect the tracks played from it.
  */
 export async function recordPlays(
   db: Database,
@@ -142,8 +143,8 @@ export async function recordPlays(
       .insert(annotation)
       .values({
         userId,
-        itemId: play.trackId,
-        itemType: "track",
+        itemId: play.item.id,
+        itemType: play.item.type,
         playCount: 1,
         playDate: play.playDate,
       })
@@ -159,6 +160,23 @@ export async function recordPlays(
   }
 
   await db.batch([first, ...rest]);
+}
+
+/** The album each of these tracks belongs to, by track id. */
+export async function findTrackAlbums(
+  db: Database,
+  trackIds: readonly string[],
+): Promise<Map<string, string>> {
+  if (trackIds.length === 0) {
+    return new Map();
+  }
+
+  const rows = await db
+    .select({ id: track.id, albumId: track.albumId })
+    .from(track)
+    .where(inArray(track.id, trackIds));
+
+  return new Map(rows.map((row) => [row.id, row.albumId]));
 }
 
 function starStatement(
