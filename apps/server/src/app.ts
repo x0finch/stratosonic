@@ -1,9 +1,17 @@
 import { Hono } from "hono";
+import { scrobble, setRating, star, unstar } from "./endpoints/annotations";
 import { getAlbum, getArtist, getArtists, getGenres, getSong } from "./endpoints/browsing";
 import { getIndexes, getMusicDirectory, getMusicFolders } from "./endpoints/folders";
-import { getAlbumList2, getRandomSongs, getStarred2 } from "./endpoints/lists";
+import {
+  getAlbumList2,
+  getRandomSongs,
+  getSongsByGenre,
+  getStarred2,
+  getTopSongs,
+} from "./endpoints/lists";
 import { download, getCoverArt, stream } from "./endpoints/media";
 import { notImplemented } from "./endpoints/not-implemented";
+import { getNowPlaying } from "./endpoints/playback";
 import { createPlaylist, deletePlaylist, getPlaylist, getPlaylists } from "./endpoints/playlists";
 import { search2, search3 } from "./endpoints/search";
 import { getLicense, getOpenSubsonicExtensions, ping } from "./endpoints/system";
@@ -49,6 +57,11 @@ export function createApp(): SubsonicApp {
   registerEndpoint(app, "getSong", getSong);
   registerEndpoint(app, "getGenres", getGenres);
 
+  // Navidrome mounts `getTopSongs` here, with the browsing endpoints, because
+  // it answers one artist's page rather than a home screen; the handler lives
+  // in the Lists module with the other song lists.
+  registerEndpoint(app, "getTopSongs", getTopSongs);
+
   // Browsing (folders): the same library as one music folder of directories.
   registerEndpoint(app, "getMusicFolders", getMusicFolders);
   registerEndpoint(app, "getIndexes", getIndexes);
@@ -57,7 +70,9 @@ export function createApp(): SubsonicApp {
   // Lists: the home screens, and the lists a client's first sync reads.
   registerEndpoint(app, "getAlbumList2", getAlbumList2);
   registerEndpoint(app, "getRandomSongs", getRandomSongs);
+  registerEndpoint(app, "getSongsByGenre", getSongsByGenre);
   registerEndpoint(app, "getStarred2", getStarred2);
+  registerEndpoint(app, "getNowPlaying", getNowPlaying);
 
   // Searching: the search box, over the library the client already has.
   // Navidrome mounts these between the lists and the playlists.
@@ -73,6 +88,13 @@ export function createApp(): SubsonicApp {
   registerEndpoint(app, "getPlaylist", getPlaylist);
   registerEndpoint(app, "createPlaylist", createPlaylist);
   registerEndpoint(app, "deletePlaylist", deletePlaylist);
+
+  // Annotations: what a client saves about an item. Each answers an empty ok
+  // envelope and writes only the caller's rows.
+  registerEndpoint(app, "star", star);
+  registerEndpoint(app, "unstar", unstar);
+  registerEndpoint(app, "setRating", setRating);
+  registerEndpoint(app, "scrobble", scrobble);
 
   registerEndpoint(app, "getUser", getUser);
   registerEndpoint(app, "getUsers", getUsers, { adminOnly: true });

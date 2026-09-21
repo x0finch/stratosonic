@@ -18,9 +18,11 @@ import { userNamesMatch } from "../users/repository";
  *
  * The roles Navidrome derives from its configuration are pinned to what this
  * server actually does: streaming and downloads are what it is for; scrobbling
- * is accepted; cover art follows Navidrome's `EnableArtworkUpload || IsAdmin`
- * with artwork upload off; sharing, the jukebox, podcasts, video conversion,
- * uploads, comments, playlists and settings are not implemented, so claiming
+ * is accepted; playlists can now be written, so `playlistRole` is true, which
+ * is what decides whether a client offers the listener a "new playlist"
+ * button at all; cover art follows Navidrome's `EnableArtworkUpload ||
+ * IsAdmin` with artwork upload off; sharing, the jukebox, podcasts, video
+ * conversion, uploads, comments and settings are not implemented, so claiming
  * them would only make a client offer the user something that then fails.
  * `maxBitRate` is omitted rather than sent as 0, as Navidrome's `omitempty`
  * does, because nothing is transcoded (ADR-0001).
@@ -34,7 +36,7 @@ function buildUserResponse(user: AuthenticatedUser): SubsonicNode {
     settingsRole: false,
     downloadRole: true,
     uploadRole: false,
-    playlistRole: false,
+    playlistRole: true,
     coverArtRole: user.isAdmin,
     commentRole: false,
     podcastRole: false,

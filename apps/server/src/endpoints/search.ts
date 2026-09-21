@@ -16,12 +16,17 @@
  *
  * The children come in Navidrome's order — artist, album, song — and each kind
  * pages independently by its own `*Count`/`*Offset` parameters, defaulting to
- * 20 as Navidrome defaults them. A result container is always present, even
- * when everything in it is empty, so an empty library answers with an empty
- * `<searchResult3/>` rather than an error (#9).
+ * 20 as Navidrome defaults them and capped at 500. The cap is this server's,
+ * not Navidrome's, which caps no search count: a Worker builds the whole
+ * response in memory out of rows D1 returns in one read, so an unbounded
+ * `songCount` would let one request ask for the entire library at once, the
+ * same reason the album lists cap their `size`. A result container is always
+ * present, even when everything in it is empty, so an empty library answers
+ * with an empty `<searchResult3/>` rather than an error (#9).
  */
 
 import { database } from "../db";
+import { checkMusicFolderIds } from "../library/music-folder";
 import { type SearchQuery, type SearchWindow, searchLibrary } from "../library/search";
 import {
   albumChildElement,
@@ -37,6 +42,9 @@ import type { AuthenticatedSubsonicRequest, SubsonicHandler } from "../subsonic/
 
 /** Each kind's default page size, matching Navidrome's `Search*` defaults. */
 const DEFAULT_COUNT = 20;
+
+/** The most one kind can carry, however large a `*Count` the client sends. */
+const MAX_COUNT = 500;
 
 /** `search3` — matches rendered as ID3 elements. */
 export const search3: SubsonicHandler = async (request) => {
@@ -72,12 +80,24 @@ export const search2: SubsonicHandler = async (request) => {
   };
 };
 
-/** The words to match and each kind's window, read in Navidrome's order. */
+/**
+ * The words to match and each kind's window, read in Navidrome's order: the
+ * query, then the folder the client says it is searching, then the windows.
+ *
+ * `musicFolderId` is checked although this server has only ever one folder, as
+ * every other endpoint that accepts it checks it: a client asking to search a
+ * folder that is not here has asked for something that does not exist, and
+ * searching the whole library instead would answer with music it did not ask
+ * for. An unknown id is error 70, the same one those endpoints give.
+ */
 function requestedSearch(request: AuthenticatedSubsonicRequest): SearchQuery {
   const { params } = request;
+  const words = searchWords(params);
+
+  checkMusicFolderIds(params);
 
   return {
-    words: searchWords(params),
+    words,
     artists: window(params, "artistCount", "artistOffset"),
     albums: window(params, "albumCount", "albumOffset"),
     songs: window(params, "songCount", "songOffset"),
@@ -91,20 +111,35 @@ function requestedSearch(request: AuthenticatedSubsonicRequest): SearchQuery {
  * request in its own right: it matches the whole library, which some clients
  * use to enumerate it. So the parameter has to be present, and only then may
  * it be empty; `requiredParameter` would reject the empty string as missing,
- * which is why the presence is checked directly here.
+ * which is why the presence is checked directly here. That is this server's
+ * choice, per the Phase 2 spec (#37): Navidrome's own `requiredParamString`
+ * treats an empty `query` as a missing one and answers error 10.
+ *
+ * One trailing `*` is dropped first, as Navidrome drops it
+ * (`strings.TrimSuffix(q, "*")` in server/subsonic/searching.go): several
+ * clients send `query=beat*` to mean a prefix search, and since every match is
+ * already a substring the `*` carries no meaning — kept, it would be matched
+ * literally and find nothing.
  */
 function searchWords(params: URLSearchParams): string[] {
   if (!params.has("query")) {
     throw new SubsonicError(SubsonicErrorCode.MissingParameter, "missing parameter: 'query'");
   }
 
-  return (params.get("query") ?? "").split(/\s+/).filter((word) => word.length > 0);
+  const query = (params.get("query") ?? "").replace(/\*$/, "");
+
+  return query.split(/\s+/).filter((word) => word.length > 0);
 }
 
-/** One kind's window: its count (default 20) and offset, neither negative. */
+/**
+ * One kind's window: its count (default 20, at most 500) and offset, neither
+ * negative.
+ */
 function window(params: URLSearchParams, countName: string, offsetName: string): SearchWindow {
+  const count = Math.max(integerParameterOr(params, countName, DEFAULT_COUNT), 0);
+
   return {
-    count: Math.max(integerParameterOr(params, countName, DEFAULT_COUNT), 0),
+    count: Math.min(count, MAX_COUNT),
     offset: Math.max(integerParameterOr(params, offsetName, 0), 0),
   };
 }

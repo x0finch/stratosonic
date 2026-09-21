@@ -1,7 +1,7 @@
 import { prefixedId, trackId } from "@stratosonic/db";
 import { afterEach, describe, expect, it } from "vitest";
+import { D1_MAX_BOUND_PARAMETERS } from "../src/d1-limits";
 import { database } from "../src/db";
-import { D1_MAX_BOUND_PARAMETERS } from "../src/scanner/repository";
 import { readBrokenObjects } from "../src/scanner/state";
 import { bootstrapAdmin, browse } from "./browsing-support";
 import { fixtureBytes } from "./fixtures/files";
