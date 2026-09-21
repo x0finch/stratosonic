@@ -44,3 +44,51 @@ export function parseGoInt64(value: string): bigint | null {
 
   return parsed < INT64_MIN || parsed > INT64_MAX ? null : parsed;
 }
+
+/**
+ * Reads an integer parameter, falling back when it is absent *or* not an
+ * integer.
+ *
+ * Both cases share one answer because Navidrome's `req.Params.IntOr` swallows
+ * either error and returns the default (utils/req/req.go). That is what makes
+ * `size=lots` a list of ten albums rather than a failed sync, and a client that
+ * sends a stray parameter is not worth breaking over.
+ *
+ * The result is a `number`, as Go narrows this one to `int`: a size, an offset
+ * or a year that has passed `parseGoInt64` is far inside what a JavaScript
+ * number holds exactly.
+ */
+export function integerParameterOr(
+  params: URLSearchParams,
+  name: string,
+  fallback: number,
+): number {
+  const value = params.get(name);
+  const parsed = value === null ? null : parseGoInt64(value);
+
+  return parsed === null ? fallback : Number(parsed);
+}
+
+/**
+ * Reads an integer parameter an endpoint cannot work without.
+ *
+ * Absent and unparseable are different failures here, as they are in
+ * Navidrome: `req.Params.Int` returns `ErrMissingParam` for the first and
+ * `ErrInvalidParam` for the second, and `mapToSubsonicError`
+ * (server/subsonic/api.go) turns those into error 10 and error 0 respectively,
+ * each carrying the wording built here. A value Go would call out of range is
+ * unparseable too, and `Int64` wraps every `ParseInt` failure in that one
+ * message, so it reads the same as a value that was never a number.
+ */
+export function requiredIntegerParameter(params: URLSearchParams, name: string): number {
+  const value = requiredParameter(params, name);
+  const parsed = parseGoInt64(value);
+  if (parsed === null) {
+    throw new SubsonicError(
+      SubsonicErrorCode.Generic,
+      `invalid parameter '${name}': expected integer, got '${value}'`,
+    );
+  }
+
+  return Number(parsed);
+}
