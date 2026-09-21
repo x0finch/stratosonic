@@ -215,6 +215,60 @@ export function albumChildElement(album: Album): SubsonicNode {
 }
 
 /**
+ * `<playlist>`, Navidrome's `Playlist` (server/subsonic/responses/
+ * responses.go), filled by its `buildPlaylist`: id, name, comment, songCount,
+ * duration, public, owner, created, changed, coverArt — in that order, which
+ * is the order its XML carries.
+ *
+ * `comment` and `owner` are `omitempty` there and are dropped when empty
+ * here; `public` is not, so it is always written, even as `false`. The
+ * duration is truncated to whole seconds, as Navidrome's `int32(p.Duration)`
+ * truncates it.
+ *
+ * The OpenSubsonic `readonly`/`validUntil` pair Navidrome adds is left out:
+ * both describe whether a client may edit the playlist through the write
+ * endpoints, which Phase 1 does not serve at all.
+ *
+ * `coverArt` is the id of the album that lends the playlist its artwork, so
+ * it resolves through the same `getCoverArt` an album's does. Navidrome sends
+ * a `pl-` id there and paints a mosaic of the playlist's albums behind it;
+ * with no image pipeline, borrowing one album's cover is the closest thing
+ * that is not a dangling id, and a playlist whose entries have no artwork
+ * says nothing at all.
+ */
+export function playlistElement(playlist: PlaylistView): SubsonicNode {
+  return {
+    id: prefixedId("playlist", playlist.id),
+    name: playlist.name,
+    comment: playlist.comment || undefined,
+    songCount: playlist.songCount,
+    duration: Math.trunc(playlist.duration),
+    public: playlist.public,
+    owner: playlist.ownerName || undefined,
+    created: subsonicTimestamp(playlist.createdAt),
+    changed: subsonicTimestamp(playlist.changedAt),
+    coverArt:
+      playlist.coverAlbumId === null ? undefined : prefixedId("album", playlist.coverAlbumId),
+  };
+}
+
+/** What a `<playlist>` needs; the playlist reads answer with exactly this. */
+export interface PlaylistView {
+  readonly id: string;
+  readonly name: string;
+  readonly comment: string;
+  readonly public: boolean;
+  readonly songCount: number;
+  readonly duration: number;
+  readonly createdAt: Date;
+  readonly changedAt: Date;
+  /** The name of the user who owns it. */
+  readonly ownerName: string;
+  /** The album whose cover stands for it, or null when it has none. */
+  readonly coverAlbumId: string | null;
+}
+
+/**
  * `<genre>`, Navidrome's `Genre`: the name is the element's text rather than
  * an attribute (`xml:",chardata"`), and JSON carries it as `value`, which is
  * what the text key renders as.
