@@ -265,6 +265,14 @@ describe("prefixed ids", () => {
     expect(Object.values(ENTITY_ID_PREFIXES)).toEqual(["ar-", "al-", "tr-", "pl-"]);
   });
 
+  it("accepts the largest id there is", () => {
+    // 16 bytes of 0xff, the value just inside the limit.
+    const largest = "7N42dgm5tFLK9N8MT7fHC7";
+
+    expect(parsePrefixedId(`tr-${largest}`)).toEqual({ type: "track", id: largest });
+    expect(parsePrefixedId("tr-7N42dgm5tFLK9N8MT7fHC8")).toBeNull();
+  });
+
   it("does not read an id of one kind as another", () => {
     expect(parseIdOfType("album", prefixedId("artist", id))).toBeNull();
   });
@@ -280,6 +288,9 @@ describe("prefixed ids", () => {
     ["a path traversal", "al-../../etc/passwd"],
     ["an SQL fragment", "tr-' OR 1=1 --"],
     ["a double prefix", `al-ar-${id}`],
+    // 22 base62 digits, but a number larger than 16 bytes can hold, so no id
+    // was ever minted for it - Navidrome's id.Decode refuses it too.
+    ["a base62 number too large to be an id", "al-zzzzzzzzzzzzzzzzzzzzzz"],
   ])("rejects %s", (_label, value) => {
     expect(parsePrefixedId(value)).toBeNull();
     expect(parseIdOfType("album", value)).toBeNull();

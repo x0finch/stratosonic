@@ -169,6 +169,28 @@ export interface EntityId {
 
 const BASE62_ID = /^[0-9a-zA-Z]{22}$/;
 
+/** Every id renders 16 bytes, so this is one more than the largest of them. */
+const ID_LIMIT = 1n << 128n;
+
+/**
+ * Whether the text is an id this server could have minted: 22 base62 digits
+ * that fit in 16 bytes. The length alone is not enough - "zzzz..." is 22 base62
+ * digits and a number no 16-byte value reaches - and Navidrome's `id.Decode`
+ * rejects it for the same reason.
+ */
+function isCanonicalId(id: string): boolean {
+  if (!BASE62_ID.test(id)) {
+    return false;
+  }
+
+  let value = 0n;
+  for (const digit of id) {
+    value = value * 62n + BigInt(BASE62_DIGITS.indexOf(digit));
+  }
+
+  return value < ID_LIMIT;
+}
+
 /** A stored id as a client sees it, e.g. `al-3Zo4...`. */
 export function prefixedId(type: EntityType, id: string): string {
   return ENTITY_ID_PREFIXES[type] + id;
@@ -188,7 +210,7 @@ export function parsePrefixedId(value: string): EntityId | null {
     }
 
     const id = value.slice(prefix.length);
-    return BASE62_ID.test(id) ? { type, id } : null;
+    return isCanonicalId(id) ? { type, id } : null;
   }
 
   return null;
