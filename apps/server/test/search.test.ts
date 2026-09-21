@@ -18,9 +18,10 @@ import { seedAlbum, seedArtist, seedTrack } from "./support";
  * `search2` returns the same items under the folder view's elements.
  *
  * The seeded library is chosen so a single query reaches every kind: "beat" is
- * a substring of three artists, two album names and — through the album name
- * and the track's artist — three songs, with one artist, album and song that
- * contains it nowhere as a control.
+ * a substring of three artists, three albums — two by name and Help! through
+ * its album artist — and, through the album name and the track's artist, three
+ * songs, with one artist, album and song that contains it nowhere as a
+ * control.
  */
 
 const ARTISTS = ["The Beatles", "Beatnik", "Heartbeat Trio", "Quietus"];
@@ -80,7 +81,8 @@ describe("search3 matching", () => {
     const result = (await search("search3", { query: "BEAT" })).searchResult3;
 
     expect(artistNames(result).sort()).toEqual(["Beatnik", "Heartbeat Trio", "The Beatles"]);
-    expect(albumNames(result).sort()).toEqual(["Beat Parade", "Offbeat"]);
+    // "Help!" comes back through its album artist, The Beatles.
+    expect(albumNames(result).sort()).toEqual(["Beat Parade", "Help!", "Offbeat"]);
     // "Help" through its artist, "Ticket to Ride" through its album, "Groove"
     // through both — "Hush" through nothing.
     expect(songTitles(result).sort()).toEqual(["Groove", "Help", "Ticket to Ride"]);
@@ -96,11 +98,22 @@ describe("search3 matching", () => {
   it("requires every word of a multi-word query", async () => {
     const result = (await search("search3", { query: "beatles help" })).searchResult3;
 
-    // The one track that is both a Beatles track and titled Help; the artist
-    // "The Beatles" matches "beatles" but not "help", so no artist comes back.
+    // The one track that is both a Beatles track and titled Help, and the
+    // album Help! — "beatles" matches its album artist and "help" its name,
+    // the way Navidrome's full_text carries both. The artist "The Beatles"
+    // matches "beatles" but not "help", so no artist comes back.
     expect(songTitles(result)).toEqual(["Help"]);
+    expect(albumNames(result)).toEqual(["Help!"]);
     expect(artistNames(result)).toEqual([]);
-    expect(albumNames(result)).toEqual([]);
+  });
+
+  it("drops a trailing * a client appends to the query", async () => {
+    // Substreamer and others send "beat*" for a prefix search; the star is not
+    // a wildcard here, and matched literally it would find nothing.
+    const result = (await search("search3", { query: "beat*" })).searchResult3;
+
+    expect(artistNames(result).sort()).toEqual(["Beatnik", "Heartbeat Trio", "The Beatles"]);
+    expect(songTitles(result).sort()).toEqual(["Groove", "Help", "Ticket to Ride"]);
   });
 
   it("matches nothing a word is absent from", async () => {
@@ -109,11 +122,30 @@ describe("search3 matching", () => {
     expect(result).toEqual({});
   });
 
-  it("treats a wildcard character as a literal, not a pattern", async () => {
-    // "%" would match every row if it leaked into LIKE unescaped.
-    const result = (await search("search3", { query: "%" })).searchResult3;
+  it("serves a query with more words than one statement may bind", async () => {
+    // D1 allows a hundred bound parameters per query and every word binds one
+    // per column, so a long query drops its surplus words instead of failing
+    // the read. None of these words is in the library, so nothing comes back.
+    const query = Array.from({ length: 40 }, (_, at) => `nowhere${at}`).join(" ");
+    const body = await search("search3", { query });
+
+    expect(body.error).toBeUndefined();
+    expect(body.searchResult3).toEqual({});
+  });
+
+  it.each(["%", "_"])("treats the wildcard %s as a literal, not a pattern", async (wildcard) => {
+    // Unescaped these leak into LIKE, where "%" matches every row and "_"
+    // every row of one character; escaped, neither is in the library.
+    const result = (await search("search3", { query: wildcard })).searchResult3;
 
     expect(result).toEqual({});
+  });
+
+  it("ignores leading, trailing and repeated spaces around the words", async () => {
+    const result = (await search("search3", { query: "  beat   parade  " })).searchResult3;
+
+    expect(albumNames(result)).toEqual(["Beat Parade"]);
+    expect(songTitles(result)).toEqual(["Ticket to Ride"]);
   });
 });
 
@@ -147,6 +179,16 @@ describe("search3 enumeration and paging", () => {
     expect(songTitles(result)).toHaveLength(2);
   });
 
+  it("caps a count at 500 however large a one the client sends", async () => {
+    // The library is far smaller than the cap, so what this pins is that a
+    // count no server should honour is served, bounded, rather than passed
+    // through to D1 as a limit of a hundred thousand rows.
+    const result = (await search("search3", { query: "", songCount: "100000" })).searchResult3;
+
+    expect(songTitles(result).length).toBeLessThanOrEqual(500);
+    expect(songTitles(result)).toHaveLength(TRACKS.length);
+  });
+
   it("defaults each kind's count to 20", async () => {
     const result = (await search("search3", { query: "" })).searchResult3;
 
@@ -167,6 +209,7 @@ describe("search2 rendering", () => {
     ]);
     expect((result?.album ?? []).map((album) => album.name).sort()).toEqual([
       "Beat Parade",
+      "Help!",
       "Offbeat",
     ]);
     expect(songTitles(result).sort()).toEqual(["Groove", "Help", "Ticket to Ride"]);
@@ -196,6 +239,12 @@ describe("search request handling", () => {
     const body = await search("search3", {});
 
     expect(body.error).toEqual({ code: 10, message: "missing parameter: 'query'" });
+  });
+
+  it("is error 70 for a music folder this server does not have", async () => {
+    const body = await search("search3", { query: "beat", musicFolderId: "2" });
+
+    expect(body.error).toEqual({ code: 70, message: "Library 2 not found or not accessible" });
   });
 
   it.each(["/rest/search3", "/rest/search3.view"])(
