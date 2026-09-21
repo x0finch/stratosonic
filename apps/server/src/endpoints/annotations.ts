@@ -26,8 +26,14 @@
  */
 
 import { parsePrefixedId } from "@stratosonic/db";
-import { type AnnotatedItem, findMissingItems, setStarred } from "../annotations/repository";
+import {
+  type AnnotatedItem,
+  findMissingItems,
+  setRating as saveRating,
+  setStarred,
+} from "../annotations/repository";
 import { database } from "../db";
+import { requiredIntegerParameter, requiredParameter } from "../subsonic/params";
 import { SubsonicError, SubsonicErrorCode } from "../subsonic/response";
 import type { AuthenticatedSubsonicRequest, SubsonicHandler } from "../subsonic/router";
 
@@ -39,6 +45,56 @@ export const star: SubsonicHandler = (request) => setStars(request, true);
 
 /** `unstar` — the reverse, on the same items. */
 export const unstar: SubsonicHandler = (request) => setStars(request, false);
+
+/** The highest rating the protocol allows; 0 clears a rating. */
+const MAX_RATING = 5;
+
+/**
+ * `setRating` — the caller rates one song, album or artist from 1 to 5, or
+ * clears it with 0.
+ *
+ * The item and the rating are both required (error 10 when absent). A rating
+ * that is not a whole number is error 0, as Navidrome's `req.Params.Int`
+ * refuses one, and an id that names nothing is error 70.
+ *
+ * The 0–5 range, on the other hand, is ours: Navidrome reads `rating` with
+ * `p.Int` and stores whatever comes back unchecked (`annUpsert` in
+ * `persistence/sql_annotations.go`), so it accepts and keeps a 6. We refuse it
+ * with error 0 because the protocol defines 0–5 and a stored 6 would have the
+ * serializers emit an out-of-spec `userRating="6"` on every read of that item.
+ */
+export const setRating: SubsonicHandler = async (request) => {
+  // Both parameters are read before the id is resolved, as Navidrome reads
+  // them (p.String("id"), then p.Int("rating"), and only then the entity
+  // lookup): a malformed id sent without a rating is answered for the missing
+  // rating -- error 10 -- rather than for the id it never got to look up.
+  const id = requiredParameter(request.params, "id");
+  const rating = requestedRating(request.params);
+  const item = annotatedItem(id);
+  const db = database(request.env);
+
+  const missing = await findMissingItems(db, [item]);
+  if (missing.length > 0) {
+    throw new SubsonicError(SubsonicErrorCode.NotFound);
+  }
+
+  await saveRating(db, request.user.id, item, rating);
+
+  return {};
+};
+
+/** The rating, required and within 0–5. */
+function requestedRating(params: URLSearchParams): number {
+  const rating = requiredIntegerParameter(params, "rating");
+  if (rating < 0 || rating > MAX_RATING) {
+    throw new SubsonicError(
+      SubsonicErrorCode.Generic,
+      `rating must be between 0 and ${MAX_RATING}, got ${rating}`,
+    );
+  }
+
+  return rating;
+}
 
 async function setStars(request: AuthenticatedSubsonicRequest, starred: boolean) {
   const items = requestedItems(request.params);
@@ -68,8 +124,8 @@ async function setStars(request: AuthenticatedSubsonicRequest, starred: boolean)
  * whenever one wants it.
  *
  * A request with no ids at all is error 10; more than `MAX_ITEMS_PER_REQUEST`
- * of them is error 0, counted before anything is parsed; an id that does not
- * parse is error 70.
+ * of them is error 0, counted before anything is parsed; what each id may be
+ * is `annotatedItem`'s to say.
  */
 function requestedItems(params: URLSearchParams): AnnotatedItem[] {
   const raw = [...params.getAll("id"), ...params.getAll("albumId"), ...params.getAll("artistId")];
@@ -84,12 +140,25 @@ function requestedItems(params: URLSearchParams): AnnotatedItem[] {
     );
   }
 
-  return raw.map((value) => {
-    const parsed = parsePrefixedId(value);
-    if (parsed === null) {
-      throw new SubsonicError(SubsonicErrorCode.NotFound);
-    }
+  return raw.map((value) => annotatedItem(value));
+}
 
-    return { type: parsed.type, id: parsed.id };
-  });
+/**
+ * The item one id names, for whichever endpoint carried it: the kind is the
+ * id's prefix, and an id that does not parse at all is error 70 — "not
+ * found", the same answer browsing gives for a deleted item.
+ *
+ * Every kind the `annotation` table holds is allowed through, playlists
+ * included, because both endpoints that reach this write the same table and
+ * Navidrome resolves an id to its entity without asking which endpoint
+ * carried it. Whether the row the id names exists is `findMissingItems`'
+ * question, not this one's.
+ */
+function annotatedItem(value: string): AnnotatedItem {
+  const parsed = parsePrefixedId(value);
+  if (parsed === null) {
+    throw new SubsonicError(SubsonicErrorCode.NotFound);
+  }
+
+  return { type: parsed.type, id: parsed.id };
 }
