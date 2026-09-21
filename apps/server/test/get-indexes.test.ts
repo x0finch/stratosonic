@@ -62,13 +62,16 @@ describe("getIndexes", () => {
     expect(indexes?.lastModified).toBeLessThanOrEqual(Date.now());
   });
 
-  it("buckets artists exactly as getArtists does", async () => {
+  it("buckets the same artists, under the same ids, as getArtists does", async () => {
     const fromIndexes = (await browse("getIndexes")).indexes?.index ?? [];
     const fromArtists = (await browse("getArtists")).artists?.index ?? [];
 
-    expect(fromIndexes.map((index) => [index.name, index.artist.map((a) => a.name)])).toEqual(
-      fromArtists.map((index) => [index.name, index.artist.map((a) => a.name)]),
-    );
+    const shape = (index: { name: string; artist: { id: string; name: string }[] }) => [
+      index.name,
+      index.artist.map((artist) => [artist.id, artist.name]),
+    ];
+
+    expect(fromIndexes.map(shape)).toEqual(fromArtists.map(shape));
     expect(fromIndexes.map((index) => index.name)).toEqual(["#", "E", "M", "S", "X-Z"]);
   });
 
@@ -119,6 +122,22 @@ describe("getIndexes", () => {
     expect(body.indexes?.ignoredArticles).toBe("The El La Los Las Le Les Os As O A");
     expect(body.indexes?.lastModified).toBeGreaterThan(0);
     expect(body.indexes).not.toHaveProperty("index");
+  });
+
+  it("keeps an ifModifiedSince past 2^53 in the future, as Go's int64 does", async () => {
+    // Larger than Number.MAX_SAFE_INTEGER and still an int64, so reading it as
+    // a JavaScript number would round it - away from the far future in which
+    // the client says it already has this library.
+    const body = await browse("getIndexes", { ifModifiedSince: "9007199254740993" });
+
+    expect(body.status).toBe("ok");
+    expect(body.indexes).not.toHaveProperty("index");
+  });
+
+  it("sends the artists when ifModifiedSince is too large to be an int64", async () => {
+    const body = await browse("getIndexes", { ifModifiedSince: "9223372036854775808" });
+
+    expect(body.indexes?.index).toHaveLength(5);
   });
 
   it("still renders a well-formed element when it leaves them out", async () => {

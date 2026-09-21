@@ -9,6 +9,7 @@
  * `getUser`'s `folder` list, and `getMusicFolders`.
  */
 
+import { parseGoInt64 } from "../subsonic/params";
 import { SubsonicError, SubsonicErrorCode } from "../subsonic/response";
 
 /** The id of the only music folder, matching Navidrome's default library. */
@@ -27,13 +28,6 @@ export const MUSIC_FOLDER_NAME = "Music Library";
 export function musicFolderElement(): { readonly id: number; readonly name: string } {
   return { id: MUSIC_FOLDER_ID, name: MUSIC_FOLDER_NAME };
 }
-
-/** Whole numbers, as Go's `strconv.ParseInt` with base 10 reads them. */
-const INTEGER = /^[+-]?\d+$/;
-
-/** The range of a Go `int64`; `ParseInt` fails outside it. */
-const INT64_MIN = -(2n ** 63n);
-const INT64_MAX = 2n ** 63n - 1n;
 
 /**
  * Rejects a `musicFolderId` that does not name this library, the way
@@ -56,16 +50,9 @@ const INT64_MAX = 2n ** 63n - 1n;
  */
 export function checkMusicFolderIds(params: URLSearchParams): void {
   for (const value of params.getAll("musicFolderId")) {
-    if (!INTEGER.test(value)) {
-      continue;
-    }
+    const id = parseGoInt64(value);
 
-    const id = BigInt(value);
-    if (id < INT64_MIN || id > INT64_MAX) {
-      continue;
-    }
-
-    if (id !== BigInt(MUSIC_FOLDER_ID)) {
+    if (id !== null && id !== BigInt(MUSIC_FOLDER_ID)) {
       throw new SubsonicError(
         SubsonicErrorCode.NotFound,
         `Library ${id} not found or not accessible`,

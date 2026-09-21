@@ -89,6 +89,27 @@ export function artistElement(artist: ArtistView): SubsonicNode {
 }
 
 /**
+ * `<artist>` as the *folder* side of the protocol spells it, Navidrome's
+ * `responses.Artist` filled by `toArtist` (server/subsonic/helpers.go): id,
+ * name and the cover the artist borrows from its albums — and **no
+ * `albumCount`**, which only `ArtistID3` carries. `getIndexes` answers with
+ * these, and so does anything else that lists artists outside the ID3
+ * endpoints.
+ *
+ * `artistImageUrl` is left out: Navidrome fills it with an absolute URL to an
+ * image endpoint Stratosonic does not serve. A client falls back to
+ * `coverArt`, which is the trap #9 names — artist images only via
+ * `<artist coverArt>`.
+ */
+export function indexArtistElement(artist: ArtistView): SubsonicNode {
+  return {
+    id: prefixedId("artist", artist.id),
+    name: artist.name,
+    coverArt: artist.coverAlbumId === null ? undefined : prefixedId("album", artist.coverAlbumId),
+  };
+}
+
+/**
  * `<album>`, Navidrome's `AlbumID3`. `songCount`, `duration` and `created` are
  * always emitted there; `artist`, `year` and `genre` only when they have a
  * value — and a year of 0 is no year, which is how Go's `omitempty` reads the
@@ -167,7 +188,10 @@ export function songElement(song: SongView): SubsonicNode {
  * configured; Stratosonic stores no such suffix, so it is the name.
  *
  * `duration` and `songCount` are dropped when zero, as Go's `omitempty`
- * drops them, and `created` is always present. The annotation attributes
+ * drops them, and `created` is always present. `year` is the album's one
+ * year: Navidrome sends `cmp.Or(MaxOriginalYear, MaxYear)` because it tracks
+ * an original and a release year per album, and Stratosonic stores a single
+ * `year`, which is what both of those collapse to here. The annotation attributes
  * (`starred`, `playCount`, `userRating`) wait for Phase 2, as they do in
  * `songElement`.
  */

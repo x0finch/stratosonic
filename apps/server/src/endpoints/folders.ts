@@ -33,12 +33,12 @@ import {
   listTracksOfAlbum,
 } from "../library/repository";
 import {
-  type ArtistView,
   albumChildElement,
+  indexArtistElement,
   omitWhenEmpty,
   songElement,
 } from "../library/serializers";
-import { requiredParameter } from "../subsonic/params";
+import { parseGoInt64, requiredParameter } from "../subsonic/params";
 import {
   SubsonicError,
   SubsonicErrorCode,
@@ -78,23 +78,29 @@ function libraryLastModified(): number {
 }
 
 /** 1970-01-02, the earliest instant Navidrome accepts as a real timestamp. */
-const EARLIEST_MODIFIED_SINCE = 86_400_000;
+const EARLIEST_MODIFIED_SINCE = 86_400_000n;
 
 /**
  * `ifModifiedSince` as Navidrome reads it (`req.Values.TimeOr`): epoch
- * milliseconds, where an absent value, `-1`, anything that is not an integer,
- * and any instant before 1970-01-02 all mean "no condition" — the zero time,
- * which every library modification is after.
+ * milliseconds, where an absent value, `-1`, anything `strconv.ParseInt`
+ * cannot read, and any instant before 1970-01-02 all mean "no condition" —
+ * the zero time, which every library modification is after.
+ *
+ * The answer is a `bigint` so that an instant past 2^53 milliseconds stays
+ * exactly where the client put it, in the far future, rather than rounding
+ * to something the library might appear to be newer than. JavaScript compares
+ * a number against a bigint exactly, so the caller can hold a plain
+ * `lastModified`.
  */
-function ifModifiedSince(params: URLSearchParams): number {
+function ifModifiedSince(params: URLSearchParams): bigint {
   const value = params.get("ifModifiedSince");
-  if (value === null || value === "" || value === "-1" || !/^[+-]?\d+$/.test(value)) {
-    return 0;
+  if (value === null || value === "" || value === "-1") {
+    return 0n;
   }
 
-  const since = Number(value);
+  const since = parseGoInt64(value);
 
-  return Number.isSafeInteger(since) && since >= EARLIEST_MODIFIED_SINCE ? since : 0;
+  return since !== null && since >= EARLIEST_MODIFIED_SINCE ? since : 0n;
 }
 
 /**
@@ -128,22 +134,6 @@ export const getIndexes: SubsonicHandler = async (request) => {
     },
   };
 };
-
-/**
- * `<artist>` inside an `<index>`, Navidrome's `responses.Artist` as `toArtist`
- * fills it: id, name and the cover it borrows from its albums — and no
- * `albumCount`, which that element does not have. `artistImageUrl` is left
- * out because it is an absolute URL to an endpoint Stratosonic does not serve;
- * a client falls back to `coverArt`, which is the trap #9 names (artist images
- * only via `coverArt`).
- */
-function indexArtistElement(artist: ArtistView): SubsonicNode {
-  return {
-    id: prefixedId("artist", artist.id),
-    name: artist.name,
-    coverArt: artist.coverAlbumId === null ? undefined : prefixedId("album", artist.coverAlbumId),
-  };
-}
 
 /**
  * `getMusicDirectory` — one directory and its children: an artist's albums, or

@@ -5,6 +5,7 @@ import {
   albumElement,
   artistElement,
   genreElement,
+  indexArtistElement,
   omitWhenEmpty,
   type SongView,
   songElement,
@@ -111,6 +112,27 @@ describe("artistElement", () => {
     const element = await render("artist", artistElement({ ...artist, albumCount: 0 }));
 
     expect(element).toContain('albumCount="0"');
+  });
+});
+
+describe("indexArtistElement", () => {
+  const artist = {
+    id: artistId(ALBUM_ARTIST),
+    name: ALBUM_ARTIST,
+    albumCount: 3,
+    coverAlbumId: albumId(ALBUM_ARTIST, ALBUM_NAME, 2019),
+  };
+
+  it("carries id, name and cover, and no count: Artist is not ArtistID3", async () => {
+    expect(await render("artist", indexArtistElement(artist))).toBe(
+      `<artist id="ar-${artist.id}" name="${ALBUM_ARTIST}" coverArt="al-${artist.coverAlbumId}"/>`,
+    );
+  });
+
+  it("omits coverArt when no album of the artist has one", async () => {
+    const element = await render("artist", indexArtistElement({ ...artist, coverAlbumId: null }));
+
+    expect(element).toBe(`<artist id="ar-${artist.id}" name="${ALBUM_ARTIST}"/>`);
   });
 });
 

@@ -111,6 +111,20 @@ describe("getArtists", () => {
     expect(artists?.find((artist) => artist.name === ACCENTED)).not.toHaveProperty("coverArt");
   });
 
+  it("serves the whole library for the one folder it has", async () => {
+    const body = await browse("getArtists", { musicFolderId: "1" });
+
+    expect(body.status).toBe("ok");
+    expect(body.artists?.index).toHaveLength(5);
+  });
+
+  it("says error 70 for a folder it does not have", async () => {
+    const body = await browse("getArtists", { musicFolderId: "2" });
+
+    expect(body.status).toBe("failed");
+    expect(body.error).toEqual({ code: 70, message: "Library 2 not found or not accessible" });
+  });
+
   it("escapes a name that would otherwise break the XML", async () => {
     const xml = await browseXml("/rest/getArtists");
 
