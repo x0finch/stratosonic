@@ -27,6 +27,14 @@ export function createApp(): SubsonicApp {
 
   registerErrorHandler(app);
 
+  // The API lives entirely under `/rest/`, but a client checks the bare server
+  // URL is reachable before it authenticates: Amperfy's `checkServerReachablity`
+  // does a plain GET of the root and treats any status >= 400 (except 401) as
+  // "server unreachable", which a 404 here would trip, blocking login before
+  // the first `ping`. Answer the root with 200 so that probe succeeds; real
+  // servers (Navidrome) serve a page here too. Hono routes HEAD to this GET.
+  app.get("/", (c) => c.text("Stratosonic — OpenSubsonic API. Endpoints are under /rest/.\n"));
+
   // Public: no authentication, as the OpenSubsonic spec requires.
   registerEndpoint(app, "getOpenSubsonicExtensions", getOpenSubsonicExtensions, { public: true });
 
