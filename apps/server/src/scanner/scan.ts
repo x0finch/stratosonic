@@ -3,10 +3,18 @@
  *
  * Music arrives in the bucket out of band, with rclone, as
  * `artist/album/title.ext` (ADR-0004). Nothing tells the server when. So the
- * cron entry walks the bucket, reads the header of each audio object it has
- * not seen before, and writes the Artists, Albums and Tracks it finds; tracks
+ * scan walks the bucket, reads the header of each audio object it has not
+ * seen before, and writes the Artists, Albums and Tracks it finds; tracks
  * whose object has gone are removed, and albums and artists left with nothing
  * are pruned.
+ *
+ * One call of `runScan` is one step. The steps are driven by the scan driver
+ * (`scanner/driver.ts`), a Durable Object whose alarm runs a step and
+ * schedules the next about a second later until the pass completes; the cron
+ * trigger only pokes it (#31). Nothing below changes because of that - an
+ * alarm invocation is a Worker invocation, with the same subrequest budget -
+ * except that the steps now run back to back rather than a quarter of an hour
+ * apart.
  *
  * ## The budget a run has
  *
@@ -15,9 +23,11 @@
  * Cloudflare services like R2, KV, or D1**"
  * (developers.cloudflare.com/workers/platform/limits, "Subrequests"). The
  * separate allowance of 1,000 "subrequests to internal services" is a second
- * ceiling, not a way round the first. A cron run also has **10 ms of CPU**
- * ("CPU time per Cron Trigger"), though waiting on R2 and D1 does not count
- * towards it.
+ * ceiling, not a way round the first. A step runs in a Durable Object alarm
+ * (`scanner/driver.ts`), where the Durable Objects limits table allows **30
+ * seconds of CPU per request** with no plan split; the 10 ms of CPU the free
+ * plan gives a *cron* invocation now only has to cover the poke. #30
+ * confirms both against a real deployment.
  *
  * Fifty calls is what the limits below are derived from. Worst case for one
  * run, with the defaults:
@@ -43,17 +53,36 @@
  * middle of. That is the whole reason the budget can be an estimate rather
  * than a proof.
  *
+ * ## What the driver adds to that
+ *
+ * Nothing, on this side of it. The driver's own bookkeeping - one storage
+ * read, one storage write, and the `setAlarm` that follows a step - is local
+ * to the Durable Object, and Durable Object storage is not a subrequest. What
+ * it costs is counted in the other free-plan ceilings, per step:
+ *
+ * | what a step costs the driver | |
+ * | --- | --- |
+ * | subrequests | 0 of the 50 above |
+ * | Durable Object requests, the alarm itself | 1 of 100,000 a day |
+ * | rows read | 1 of 5,000,000 a day |
+ * | rows written, the state row and `setAlarm` | 2 of 100,000 a day |
+ *
+ * The cron invocation, which used to run a step itself, now spends one
+ * subrequest on the poke and returns.
+ *
  * ## What that costs in wall-clock time
  *
- * Six tracks a run every quarter hour is 576 tracks a day, so a library of
- * 5,000 is about nine days from empty to fully indexed. A rescan of an
- * unchanged 5,000 is far quicker - 270 objects a run, about nineteen runs,
- * under five hours - because an unchanged object costs no read of its own.
- * The remedy for the first figure is ADR-0004's - Workers Paid raises the
- * subrequest limit to 10,000 and the cron's CPU to 30 seconds, which turns a
- * run into thousands of tracks - and not a bigger batch on the free plan,
- * which would simply fail. Tightening the cron interval while a library is
- * first indexed is the stopgap; it is one line of `wrangler.jsonc`.
+ * Six tracks a step, a step a second, is 5,000 tracks in about 840 steps and
+ * **a quarter of an hour** - a first full index that used to take nine days
+ * at one step per cron tick (#31). A rescan of an unchanged 5,000 walks 270
+ * objects a step, about nineteen steps, and is over in half a minute,
+ * because an unchanged object costs no read of its own.
+ *
+ * Those 840 alarms are 840 of the free plan's 100,000 Durable Object
+ * requests a day, and a step's 128 MB-second or so is nothing against 13,000
+ * GB-s. What is left of ADR-0004's remedy is the subrequest limit itself:
+ * Workers Paid raises it to 10,000, which turns a step into thousands of
+ * tracks. A bigger batch on the free plan would simply fail.
  */
 
 import { type Database, database } from "../db";
@@ -154,8 +183,8 @@ type Plan =
 /**
  * Runs one bounded step of the scan and reports what it did.
  *
- * `now` is the instant the run is stamped with - the cron's scheduled time in
- * production, a fixed value in a test. It is what every row's `updatedAt`
+ * `now` is the instant the run is stamped with - the time the pass was poked
+ * at in production, a fixed value in a test. It is what every row's `updatedAt`
  * becomes and what a completed pass records as its finish, so a run is a
  * function of its inputs rather than of the clock.
  *
