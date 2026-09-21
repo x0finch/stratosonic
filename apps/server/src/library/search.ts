@@ -34,12 +34,13 @@
  * lists get from ending every ordering on the id.
  */
 
-import { type Album, album, artist, track } from "@stratosonic/db";
+import { album, annotation, artist, track } from "@stratosonic/db";
 import { and, asc, eq, or, type SQL, type SQLWrapper, sql } from "drizzle-orm";
 import { D1_MAX_BOUND_PARAMETERS } from "../d1-limits";
 import type { Database } from "../db";
-import { artistColumns } from "./repository";
-import type { ArtistView, SongView } from "./serializers";
+import { annotationColumns, annotationJoin } from "./annotations";
+import { selectAlbums, selectArtists, toAlbumView, toArtistView, toSongView } from "./repository";
+import type { AlbumView, ArtistView, SongView } from "./serializers";
 
 /** One kind's slice of a search: how many rows, and where to start. */
 export interface SearchWindow {
@@ -59,7 +60,7 @@ export interface SearchQuery {
 /** What a search found, in the three kinds the result containers carry. */
 export interface SearchResults {
   readonly artists: readonly ArtistView[];
-  readonly albums: readonly Album[];
+  readonly albums: readonly AlbumView[];
   readonly tracks: readonly SongView[];
 }
 
@@ -67,12 +68,20 @@ export interface SearchResults {
  * Runs the three kinds of a search together, as Navidrome runs them in
  * parallel, and skips the query for a kind the client asked none of (`count`
  * of 0), so a client that wants only songs pays for only that read.
+ *
+ * Each hit carries the caller's annotation, joined in the same statement
+ * (library/annotations.ts), so a starred or rated result shows it as it does
+ * everywhere else.
  */
-export async function searchLibrary(db: Database, query: SearchQuery): Promise<SearchResults> {
+export async function searchLibrary(
+  db: Database,
+  query: SearchQuery,
+  userId: string,
+): Promise<SearchResults> {
   const [artists, albums, tracks] = await Promise.all([
-    searchArtists(db, query.words, query.artists),
-    searchAlbums(db, query.words, query.albums),
-    searchTracks(db, query.words, query.songs),
+    searchArtists(db, query.words, query.artists, userId),
+    searchAlbums(db, query.words, query.albums, userId),
+    searchTracks(db, query.words, query.songs, userId),
   ]);
 
   return { artists, albums, tracks };
@@ -83,18 +92,19 @@ async function searchArtists(
   db: Database,
   words: readonly string[],
   window: SearchWindow,
+  userId: string,
 ): Promise<ArtistView[]> {
   if (window.count <= 0) {
     return [];
   }
 
-  return db
-    .select(artistColumns)
-    .from(artist)
+  const rows = await selectArtists(db, userId)
     .where(matchesEveryWord([artist.name], words))
     .orderBy(byName(artist.name), asc(artist.id))
     .limit(window.count)
     .offset(window.offset);
+
+  return rows.map(toArtistView);
 }
 
 /**
@@ -107,18 +117,19 @@ async function searchAlbums(
   db: Database,
   words: readonly string[],
   window: SearchWindow,
-): Promise<Album[]> {
+  userId: string,
+): Promise<AlbumView[]> {
   if (window.count <= 0) {
     return [];
   }
 
-  return db
-    .select()
-    .from(album)
+  const rows = await selectAlbums(db, userId)
     .where(matchesEveryWord([album.name, album.albumArtist], words))
     .orderBy(byName(album.name), byName(album.albumArtist), asc(album.id))
     .limit(window.count)
     .offset(window.offset);
+
+  return rows.map(toAlbumView);
 }
 
 /**
@@ -133,25 +144,23 @@ async function searchTracks(
   db: Database,
   words: readonly string[],
   window: SearchWindow,
+  userId: string,
 ): Promise<SongView[]> {
   if (window.count <= 0) {
     return [];
   }
 
   const rows = await db
-    .select({ track, albumName: album.name, albumCoverKey: album.coverKey })
+    .select({ track, albumName: album.name, albumCoverKey: album.coverKey, ...annotationColumns })
     .from(track)
     .leftJoin(album, eq(album.id, track.albumId))
+    .leftJoin(annotation, annotationJoin(userId, "track", track.id))
     .where(matchesEveryWord([track.title, album.name, track.artist, track.albumArtist], words))
     .orderBy(byName(track.title), asc(track.id))
     .limit(window.count)
     .offset(window.offset);
 
-  return rows.map((row) => ({
-    ...row.track,
-    albumName: row.albumName,
-    albumCoverKey: row.albumCoverKey,
-  }));
+  return rows.map(toSongView);
 }
 
 /**
@@ -179,22 +188,28 @@ function matchesEveryWord(
  * As many leading words as the statement may bind, which for a long query is
  * fewer than were typed.
  *
- * Every word binds one parameter per column, and the window binds two more, so
- * the track query — four columns — could otherwise exceed D1's hundred at
- * twenty-five words and fail the whole read, on a statement Miniflare's SQLite
- * runs happily. Dropping the surplus words only widens what matches, which is
- * a better answer to a client that pasted a paragraph into its search box than
- * an error is. Navidrome, with one bound `full_text` pattern per term, has no
- * such ceiling.
+ * Every word binds one parameter per column, and the rest of the statement
+ * binds `FIXED_BOUND_PARAMETERS` more, so the track query — four columns —
+ * could otherwise exceed D1's hundred at twenty-five words and fail the whole
+ * read, on a statement Miniflare's SQLite runs happily. Dropping the surplus
+ * words only widens what matches, which is a better answer to a client that
+ * pasted a paragraph into its search box than an error is. Navidrome, with one
+ * bound `full_text` pattern per term, has no such ceiling.
  */
 function wordsThatFit(columns: readonly SQLWrapper[], words: readonly string[]): readonly string[] {
-  const budget = D1_MAX_BOUND_PARAMETERS - WINDOW_BOUND_PARAMETERS;
+  const budget = D1_MAX_BOUND_PARAMETERS - FIXED_BOUND_PARAMETERS;
 
   return words.slice(0, Math.floor(budget / columns.length));
 }
 
-/** The two parameters every search statement binds besides its words. */
-const WINDOW_BOUND_PARAMETERS = 2;
+/**
+ * What every search statement binds besides its words: the window's `limit`
+ * and `offset`, and the two the caller's annotation join fixes — the user id
+ * and the item type (`annotationJoin`; the item id is a column, not a
+ * parameter). Every kind of search joins that annotation in, so the four are
+ * charged to all of them.
+ */
+const FIXED_BOUND_PARAMETERS = 4;
 
 /**
  * One word against a kind's columns: it may match any of them.

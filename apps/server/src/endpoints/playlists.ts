@@ -73,7 +73,7 @@ export const getPlaylist: SubsonicHandler = async (request) => {
     throw new SubsonicError(SubsonicErrorCode.NotFound, NOT_FOUND);
   }
 
-  const entries = await listPlaylistEntries(db, playlist.id);
+  const entries = await listPlaylistEntries(db, playlist.id, request.user.id);
 
   return {
     playlist: { ...playlistElement(playlist), entry: omitWhenEmpty(entries.map(songElement)) },

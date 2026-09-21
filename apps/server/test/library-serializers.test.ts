@@ -322,3 +322,60 @@ describe("omitWhenEmpty", () => {
     expect(omitWhenEmpty([])).toBeUndefined();
   });
 });
+
+describe("annotation decoration", () => {
+  const STARRED = new Date("2024-01-02T03:04:05.006Z");
+  const PLAYED = new Date("2024-02-03T04:05:06.007Z");
+  const annotation = {
+    starred: true,
+    starredAt: STARRED,
+    rating: 4,
+    playCount: 9,
+    playDate: PLAYED,
+  };
+
+  it("adds a song's annotation in Child's attribute order", async () => {
+    const xml = await render("song", songElement(songRow({ annotation })));
+
+    // starred sits after suffix; playCount/played after path; userRating last.
+    expect(xml).toContain(`suffix="m4a" starred="${STARRED.toISOString()}" duration="215"`);
+    expect(xml).toContain(
+      `path="${songRow().r2Key}" playCount="9" played="${PLAYED.toISOString()}" discNumber="1"`,
+    );
+    expect(xml).toContain(`type="music" userRating="4"`);
+  });
+
+  it("adds an album's annotation in AlbumID3's attribute order", async () => {
+    const xml = await render("album", albumElement({ ...albumRow(), annotation }));
+
+    expect(xml).toContain(
+      `duration="431" playCount="9" created="2023-11-14T22:13:20.123Z" starred="${STARRED.toISOString()}" year="2019"`,
+    );
+    expect(xml).toContain(`genre="Ambient" played="${PLAYED.toISOString()}" userRating="4"`);
+  });
+
+  it("adds an artist's starred and rating, but no play data", async () => {
+    const artist = {
+      id: artistId(ALBUM_ARTIST),
+      name: ALBUM_ARTIST,
+      albumCount: 3,
+      coverAlbumId: null,
+      annotation,
+    };
+    const xml = await render("artist", artistElement(artist));
+
+    expect(xml).toContain(`albumCount="3" starred="${STARRED.toISOString()}" userRating="4"`);
+    expect(xml).not.toContain("playCount");
+    expect(xml).not.toContain("played");
+  });
+
+  it("renders a rating of zero and no star as no annotation attributes", async () => {
+    const none = { starred: false, starredAt: null, rating: 0, playCount: 0, playDate: null };
+    const xml = await render("song", songElement(songRow({ annotation: none })));
+
+    expect(xml).not.toContain("starred");
+    expect(xml).not.toContain("userRating");
+    expect(xml).not.toContain("playCount");
+    expect(xml).not.toContain("played");
+  });
+});

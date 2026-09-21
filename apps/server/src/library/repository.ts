@@ -13,10 +13,16 @@
  * prefix off a client's id belongs to the endpoint.
  */
 
-import { type Album, album, artist, track } from "@stratosonic/db";
+import { type Album, album, annotation, artist, type Track, track } from "@stratosonic/db";
 import { asc, desc, eq, isNotNull, sql } from "drizzle-orm";
 import type { Database } from "../db";
-import type { ArtistView, GenreView, SongView } from "./serializers";
+import {
+  type AnnotationRow,
+  annotationColumns,
+  annotationJoin,
+  toCallerAnnotation,
+} from "./annotations";
+import type { AlbumView, ArtistView, GenreView, SongView } from "./serializers";
 
 /**
  * The albums of an artist in the order `getArtist` lists them: Navidrome
@@ -52,32 +58,111 @@ export const artistColumns = {
     order by album.year, album.name, album.id limit 1)`,
 };
 
-/** Every artist, for `getArtists` to bucket into indexes. */
-export async function listArtists(db: Database): Promise<ArtistView[]> {
-  return db.select(artistColumns).from(artist).orderBy(asc(artist.name));
+/**
+ * An artist select with the caller's annotation left-joined, for the reads
+ * that list or find artists. Sharing it keeps the join — and so the `starred`
+ * and `userRating` an `<artist>` carries — identical wherever an artist is
+ * read (browsing, the folder index, starred, search).
+ */
+export function selectArtists(db: Database, userId: string) {
+  return db
+    .select({ ...artistColumns, ...annotationColumns })
+    .from(artist)
+    .leftJoin(annotation, annotationJoin(userId, "artist", artist.id));
 }
 
-/** One artist, or null when no artist has this id. */
-export async function findArtist(db: Database, id: string): Promise<ArtistView | null> {
-  const rows = await db.select(artistColumns).from(artist).where(eq(artist.id, id)).limit(1);
+/** An artist row from `selectArtists`, as the `<artist>` element needs it. */
+export function toArtistView(row: ArtistColumns & AnnotationRow): ArtistView {
+  return {
+    id: row.id,
+    name: row.name,
+    albumCount: row.albumCount,
+    coverAlbumId: row.coverAlbumId,
+    annotation: toCallerAnnotation(row),
+  };
+}
 
-  return rows[0] ?? null;
+type ArtistColumns = {
+  readonly id: string;
+  readonly name: string;
+  readonly albumCount: number;
+  readonly coverAlbumId: string | null;
+};
+
+/**
+ * An album select with the caller's annotation left-joined. `getAlbumList2`
+ * builds its own decorated select (it needs the annotation for its ordering
+ * too), but every place that reads a plain album goes through this one.
+ */
+export function selectAlbums(db: Database, userId: string) {
+  return db
+    .select({ album, ...annotationColumns })
+    .from(album)
+    .leftJoin(annotation, annotationJoin(userId, "album", album.id));
+}
+
+/** An album row from `selectAlbums`, as the `<album>` elements need it. */
+export function toAlbumView(row: { album: Album } & AnnotationRow): AlbumView {
+  return { ...row.album, annotation: toCallerAnnotation(row) };
+}
+
+/** A track row with its album's name and cover, as `<song>` needs it. */
+export function toSongView(
+  row: { track: Track; albumName: string | null; albumCoverKey: string | null } & AnnotationRow,
+): SongView {
+  return {
+    ...row.track,
+    albumName: row.albumName,
+    albumCoverKey: row.albumCoverKey,
+    annotation: toCallerAnnotation(row),
+  };
+}
+
+/** Every artist, for `getArtists` to bucket into indexes. */
+export async function listArtists(db: Database, userId: string): Promise<ArtistView[]> {
+  const rows = await selectArtists(db, userId).orderBy(asc(artist.name));
+
+  return rows.map(toArtistView);
+}
+
+/**
+ * One artist, or null when no artist has this id. The user is required: a read
+ * that serves a caller decorates the artist with that caller's annotation, and
+ * an internal read that only needs the row (cover resolution) says so by
+ * passing `NO_USER`.
+ */
+export async function findArtist(
+  db: Database,
+  id: string,
+  userId: string,
+): Promise<ArtistView | null> {
+  const rows = await selectArtists(db, userId).where(eq(artist.id, id)).limit(1);
+
+  return rows[0] ? toArtistView(rows[0]) : null;
 }
 
 /** An artist's albums, in the order `getArtist` lists them. */
-export async function listAlbumsOfArtist(db: Database, artistId: string): Promise<Album[]> {
-  return db
-    .select()
-    .from(album)
+export async function listAlbumsOfArtist(
+  db: Database,
+  artistId: string,
+  userId: string,
+): Promise<AlbumView[]> {
+  const rows = await selectAlbums(db, userId)
     .where(eq(album.artistId, artistId))
     .orderBy(...ALBUMS_OF_ARTIST_ORDER);
+
+  return rows.map(toAlbumView);
 }
 
-/** One album, or null when no album has this id. */
-export async function findAlbum(db: Database, id: string): Promise<Album | null> {
-  const rows = await db.select().from(album).where(eq(album.id, id)).limit(1);
+/** One album, or null when no album has this id; `NO_USER` reads it plain. */
+export async function findAlbum(
+  db: Database,
+  id: string,
+  userId: string,
+): Promise<AlbumView | null> {
+  const rows = await selectAlbums(db, userId).where(eq(album.id, id)).limit(1);
 
-  return rows[0] ?? null;
+  return rows[0] ? toAlbumView(rows[0]) : null;
 }
 
 /**
@@ -91,10 +176,15 @@ export async function findAlbum(db: Database, id: string): Promise<Album | null>
  * The album is passed rather than looked up: the endpoint has already read it,
  * and its name and cover are what each `<song>` needs from it.
  */
-export async function listTracksOfAlbum(db: Database, of: Album): Promise<SongView[]> {
+export async function listTracksOfAlbum(
+  db: Database,
+  of: Album,
+  userId: string,
+): Promise<SongView[]> {
   const rows = await db
-    .select()
+    .select({ track, ...annotationColumns })
     .from(track)
+    .leftJoin(annotation, annotationJoin(userId, "track", track.id))
     .where(eq(track.albumId, of.id))
     .orderBy(
       asc(track.discNumber),
@@ -104,7 +194,7 @@ export async function listTracksOfAlbum(db: Database, of: Album): Promise<SongVi
       asc(track.id),
     );
 
-  return rows.map((row) => ({ ...row, albumName: of.name, albumCoverKey: of.coverKey }));
+  return rows.map((row) => toSongView({ ...row, albumName: of.name, albumCoverKey: of.coverKey }));
 }
 
 /**
@@ -113,17 +203,20 @@ export async function listTracksOfAlbum(db: Database, of: Album): Promise<SongVi
  * query; the join is left, so a track whose album row is missing — a state a
  * half-finished scan can leave behind — is still served, without a cover.
  */
-export async function findTrack(db: Database, id: string): Promise<SongView | null> {
+export async function findTrack(
+  db: Database,
+  id: string,
+  userId: string,
+): Promise<SongView | null> {
   const rows = await db
-    .select({ track, albumName: album.name, albumCoverKey: album.coverKey })
+    .select({ track, albumName: album.name, albumCoverKey: album.coverKey, ...annotationColumns })
     .from(track)
     .leftJoin(album, eq(album.id, track.albumId))
+    .leftJoin(annotation, annotationJoin(userId, "track", track.id))
     .where(eq(track.id, id))
     .limit(1);
 
-  const row = rows[0];
-
-  return row ? { ...row.track, albumName: row.albumName, albumCoverKey: row.albumCoverKey } : null;
+  return rows[0] ? toSongView(rows[0]) : null;
 }
 
 /**

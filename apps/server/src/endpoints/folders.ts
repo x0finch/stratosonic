@@ -34,6 +34,7 @@ import {
 } from "../library/repository";
 import {
   albumChildElement,
+  directoryAnnotationAttributes,
   indexArtistElement,
   omitWhenEmpty,
   songElement,
@@ -122,7 +123,7 @@ export const getIndexes: SubsonicHandler = async (request) => {
   const db = database(request.env);
   const lastModified = await libraryLastModified(db);
   const unchanged = lastModified <= ifModifiedSince(request.params);
-  const artists = unchanged ? [] : await listArtists(db);
+  const artists = unchanged ? [] : await listArtists(db, request.user.id);
 
   const index = groupArtistsByIndex(artists, (artist) => artist.name).map((group) => ({
     name: group.name,
@@ -153,18 +154,19 @@ export const getMusicDirectory: SubsonicHandler = async (request) => {
   const asked = parsePrefixedId(requiredParameter(request.params, "id"));
 
   if (asked?.type === "artist") {
-    const artist = await findArtist(db, asked.id);
+    const artist = await findArtist(db, asked.id, request.user.id);
     if (artist === null) {
       throw new SubsonicError(SubsonicErrorCode.NotFound, DIRECTORY_NOT_FOUND);
     }
 
-    const albums = await listAlbumsOfArtist(db, asked.id);
+    const albums = await listAlbumsOfArtist(db, asked.id, request.user.id);
 
     return {
       directory: directoryElement(
         {
           id: prefixedId("artist", artist.id),
           name: artist.name,
+          ...directoryAnnotationAttributes(artist),
           albumCount: artist.albumCount || undefined,
         },
         albums.map(albumChildElement),
@@ -173,12 +175,12 @@ export const getMusicDirectory: SubsonicHandler = async (request) => {
   }
 
   if (asked?.type === "album") {
-    const album = await findAlbum(db, asked.id);
+    const album = await findAlbum(db, asked.id, request.user.id);
     if (album === null) {
       throw new SubsonicError(SubsonicErrorCode.NotFound, DIRECTORY_NOT_FOUND);
     }
 
-    const tracks = await listTracksOfAlbum(db, album);
+    const tracks = await listTracksOfAlbum(db, album, request.user.id);
 
     return {
       directory: directoryElement(
@@ -186,6 +188,7 @@ export const getMusicDirectory: SubsonicHandler = async (request) => {
           id: prefixedId("album", album.id),
           name: album.name,
           parent: prefixedId("artist", album.artistId),
+          ...directoryAnnotationAttributes(album),
           coverArt: album.coverKey === null ? undefined : prefixedId("album", album.id),
           songCount: album.songCount || undefined,
         },
@@ -200,8 +203,14 @@ export const getMusicDirectory: SubsonicHandler = async (request) => {
 /**
  * `<directory>`, Navidrome's `responses.Directory`: its attributes, then its
  * children. Callers pass the attributes already in the order that struct
- * declares them — id, name, parent, …, coverArt, songCount, albumCount — and
- * an `albumCount` or `songCount` of zero is dropped, as `omitempty` drops it.
+ * declares them — id, name, parent, the caller's annotation (starred,
+ * playCount, played, userRating), coverArt, songCount, albumCount — and an
+ * `albumCount` or `songCount` of zero is dropped, as `omitempty` drops it.
+ *
+ * The directory itself is annotated, not only its children: Navidrome's
+ * directory builders fill those four from the artist's or the album's own
+ * annotation, so a client browsing folders sees a starred album as starred
+ * whether it is looking at it or at its parent.
  */
 function directoryElement(
   attributes: SubsonicNode,

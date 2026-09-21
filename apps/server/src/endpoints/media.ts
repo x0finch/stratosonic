@@ -1,5 +1,6 @@
 import { parseIdOfType, parsePrefixedId } from "@stratosonic/db";
 import { database } from "../db";
+import { NO_USER } from "../library/annotations";
 import { audioContentType } from "../library/audio-formats";
 import { findTrack } from "../library/repository";
 import type { SongView } from "../library/serializers";
@@ -102,11 +103,14 @@ export const getCoverArt: SubsonicHandler = async (request) => {
  * An id that is not a track's — an album's, or one this server could never
  * have minted — is "not found" rather than a bad request, as it is in
  * Navidrome, where every id that resolves to nothing ends at `ErrNotFound`.
+ *
+ * The track is read as `NO_USER`: the answer is the bytes of a file, and no
+ * element is rendered from it, so there is no annotation to decorate it with.
  */
 async function requireTrack(request: AuthenticatedSubsonicRequest): Promise<SongView> {
   const id = parseIdOfType("track", requiredParameter(request.params, "id"));
 
-  const found = id === null ? null : await findTrack(database(request.env), id);
+  const found = id === null ? null : await findTrack(database(request.env), id, NO_USER);
   if (found === null) {
     throw new SubsonicError(SubsonicErrorCode.NotFound);
   }

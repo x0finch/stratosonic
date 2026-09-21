@@ -20,6 +20,8 @@ export interface SubsonicArtistElement {
   name: string;
   coverArt?: string;
   albumCount: number;
+  starred?: string;
+  userRating?: number;
   album?: SubsonicAlbumElement[];
 }
 
@@ -31,9 +33,13 @@ export interface SubsonicAlbumElement {
   coverArt?: string;
   songCount: number;
   duration: number;
+  playCount?: number;
   created: string;
+  starred?: string;
   year?: number;
   genre?: string;
+  played?: string;
+  userRating?: number;
   song?: SubsonicSongElement[];
 }
 
@@ -51,14 +57,18 @@ export interface SubsonicSongElement {
   size?: number;
   contentType?: string;
   suffix?: string;
+  starred?: string;
   duration?: number;
   bitRate?: number;
   path?: string;
+  playCount?: number;
+  played?: string;
   discNumber?: number;
   created: string;
   albumId?: string;
   artistId?: string;
   type?: string;
+  userRating?: number;
 }
 
 /**
@@ -75,6 +85,8 @@ export interface SubsonicIndexArtistElement {
   id: string;
   name: string;
   coverArt?: string;
+  starred?: string;
+  userRating?: number;
 }
 
 /** `<directory>`: its attributes, and the children folder browsing lists. */
@@ -82,6 +94,10 @@ export interface SubsonicDirectoryElement {
   id: string;
   name: string;
   parent?: string;
+  starred?: string;
+  playCount?: number;
+  played?: string;
+  userRating?: number;
   coverArt?: string;
   songCount?: number;
   albumCount?: number;
