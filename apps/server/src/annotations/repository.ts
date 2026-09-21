@@ -98,6 +98,27 @@ export async function setStarred(
   await db.batch([first, ...rest]);
 }
 
+/**
+ * Sets the caller's rating for one item, leaving its star and play data
+ * untouched. A rating of 0 is stored as 0, which the serializers omit — the
+ * way a client clears a rating. The row is created if the caller has never
+ * annotated the item before.
+ */
+export async function setRating(
+  db: Database,
+  userId: string,
+  item: AnnotatedItem,
+  rating: number,
+): Promise<void> {
+  await db
+    .insert(annotation)
+    .values({ userId, itemId: item.id, itemType: item.type, rating })
+    .onConflictDoUpdate({
+      target: [annotation.userId, annotation.itemId, annotation.itemType],
+      set: { rating },
+    });
+}
+
 function starStatement(
   db: Database,
   userId: string,
