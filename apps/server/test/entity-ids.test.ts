@@ -145,6 +145,44 @@ describe("normalizeIdPart", () => {
     expect(normalizeIdPart("k\u2010os")).toBe("k-os");
   });
 
+  it("folds only the five dashes Navidrome names, not a range between them", () => {
+    // U+2013 to U+2212 spans most of General Punctuation, Arrows and Maths:
+    // written as a range, every one of these would become a hyphen and two
+    // different albums would share an id.
+    expect(normalizeIdPart("a\u2026b")).not.toBe("a-b");
+    expect(normalizeIdPart("a\u2022b")).not.toBe("a-b");
+    expect(normalizeIdPart("a\u2192b")).not.toBe("a-b");
+    expect(normalizeIdPart("a\u2020b")).not.toBe("a-b");
+    expect(normalizeIdPart("a\u2026")).not.toBe(normalizeIdPart("a-"));
+    expect(normalizeIdPart("a\u2026b")).toBe("a\u2026b");
+  });
+
+  it.each([
+    ["\u2010", "hyphen"],
+    ["\u2013", "en dash"],
+    ["\u2014", "em dash"],
+    ["\u2212", "minus sign"],
+    ["\u2015", "horizontal bar"],
+  ])("folds the %s (%s) to an ASCII hyphen", (dash) => {
+    expect(normalizeIdPart(`k${dash}os`)).toBe("k-os");
+  });
+
+  it.each([
+    ["\u2018", "\u2019"],
+    ["\u201b", "\u2032"],
+  ])("folds the single quotes %s and %s, and nothing between them", (open, close) => {
+    expect(normalizeIdPart(`a${open}b${close}c`)).toBe("a'b'c");
+    // U+201A and U+2020 sit inside the span these characters would cover.
+    expect(normalizeIdPart("a\u201ab")).not.toBe("a'b");
+  });
+
+  it("removes a bidi control rather than folding it", () => {
+    expect(normalizeIdPart("a\u200fb")).toBe("ab");
+    expect(normalizeIdPart("a\u202eb")).toBe("ab");
+    expect(normalizeIdPart("a\u2066b")).toBe("ab");
+    expect(normalizeIdPart("a\u200fb")).not.toBe("a-b");
+  });
+
   it("strips invisible characters", () => {
     expect(normalizeIdPart("Sig\u200bur R\u00f3s\ufeff")).toBe("sigur r\u00f3s");
     expect(normalizeIdPart("Sig\u00adur")).toBe("sigur");

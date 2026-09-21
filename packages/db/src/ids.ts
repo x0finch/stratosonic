@@ -71,22 +71,29 @@ export function newHashId(...parts: readonly string[]): string {
 
 /**
  * Characters that occupy no space and therefore cannot distinguish two names a
- * person would read as the same: zero-width spaces and joiners, the byte-order
- * mark, and the soft hyphen. The zero-width space is also `newHashId`'s
- * separator, so leaving it in a value would let a tag reach across parts.
+ * person would read as the same: zero-width spaces and joiners, the bidi marks,
+ * embeddings and isolates, the byte-order mark, and the soft hyphen. The
+ * zero-width space is also `newHashId`'s separator, so leaving it in a value
+ * would let a tag reach across parts.
  */
-const INVISIBLE_CHARACTERS = /[\u00ad\u200b-\u200f\u2028\u2029\u2060\ufeff]/g;
+const INVISIBLE_CHARACTERS =
+  /[\u00ad\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g;
 
 /**
  * Typographic punctuation that means the same as an ASCII character. The map is
  * Navidrome's `str.Clear` (`utils/str/str.go`), which folds these *to* ASCII
  * rather than dropping them: "Weird Al" keeps its quotes, and only the shape of
  * them stops mattering.
+ *
+ * Each class is an explicit list, never a range: Navidrome names exactly these
+ * characters, and a range here would quietly fold hundreds of unrelated ones -
+ * an ellipsis or an arrow becoming a hyphen is a collision between two albums
+ * that are not the same album.
  */
 const TYPOGRAPHIC_CHARACTERS: readonly (readonly [RegExp, string])[] = [
   [/[\u2018\u2019\u201b\u2032]/g, "'"],
   [/[\uff02\u3003\u02ee\u05f2\u1cd3\u2033\u2036\u02f6\u02ba\u201c\u201d\u02dd\u201f]/g, '"'],
-  [/[\u2010\u2013-\u2212\u2015]/g, "-"],
+  [/[\u2010\u2013\u2014\u2212\u2015]/g, "-"],
 ];
 
 /**

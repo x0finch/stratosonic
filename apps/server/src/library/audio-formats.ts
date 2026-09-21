@@ -39,9 +39,15 @@ export function suffixOf(r2Key: string): string {
   return dot <= 0 ? "" : name.slice(dot + 1).toLowerCase();
 }
 
-/** Whether the scan should index an object with this suffix. */
+/**
+ * Whether the scan should index an object with this suffix.
+ *
+ * The lookup asks for an own property: `in` would also find what every object
+ * inherits, making `constructor` and `toString` audio formats whose content
+ * type is a function.
+ */
 export function isAudioSuffix(suffix: string): suffix is AudioSuffix {
-  return suffix in AUDIO_CONTENT_TYPES;
+  return Object.hasOwn(AUDIO_CONTENT_TYPES, suffix);
 }
 
 /** Whether this R2 key names a track. */

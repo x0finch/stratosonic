@@ -26,13 +26,25 @@ describe("the audio format map", () => {
     }
   });
 
-  it.each(["m3u", "m3u8", "jpg", "png", "txt", "ogg", "wav", "", "mp4"])(
-    "does not index %j",
-    (suffix) => {
-      expect(isAudioSuffix(suffix)).toBe(false);
-      expect(audioContentType(suffix)).toBeNull();
-    },
-  );
+  it.each([
+    "m3u",
+    "m3u8",
+    "jpg",
+    "png",
+    "txt",
+    "ogg",
+    "wav",
+    "",
+    "mp4",
+    // Every object inherits these, and an `in` check would call them audio.
+    "constructor",
+    "toString",
+    "hasOwnProperty",
+    "__proto__",
+  ])("does not index %j", (suffix) => {
+    expect(isAudioSuffix(suffix)).toBe(false);
+    expect(audioContentType(suffix)).toBeNull();
+  });
 
   it("matches a suffix whatever case it is written in", () => {
     expect(isAudioKey("Artist/Album/Track.FLAC")).toBe(true);
@@ -50,6 +62,13 @@ describe("the audio format map", () => {
     ["", ""],
   ])("reads the suffix of %j as %j", (key, suffix) => {
     expect(suffixOf(key)).toBe(suffix);
+  });
+
+  it("does not take an inherited property for a format", () => {
+    expect(isAudioKey("Artist/Album/track.constructor")).toBe(false);
+    expect(isAudioKey("Artist/Album/track.toString")).toBe(false);
+    expect(audioContentType("toString")).toBeNull();
+    expect(typeof audioContentType("constructor")).not.toBe("function");
   });
 
   it("keeps the scan off everything that is not a track", () => {
