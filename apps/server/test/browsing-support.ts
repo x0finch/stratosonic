@@ -61,6 +61,33 @@ export interface SubsonicSongElement {
   type?: string;
 }
 
+/**
+ * A `<child>` of a `<directory>`: a track, or an album shown as a
+ * sub-directory, which carries the two attributes a track never does.
+ */
+export interface SubsonicChildElement extends SubsonicSongElement {
+  name?: string;
+  songCount?: number;
+}
+
+/** `<artist>` inside `<indexes>`: Navidrome's `Artist`, which has no count. */
+export interface SubsonicIndexArtistElement {
+  id: string;
+  name: string;
+  coverArt?: string;
+}
+
+/** `<directory>`: its attributes, and the children folder browsing lists. */
+export interface SubsonicDirectoryElement {
+  id: string;
+  name: string;
+  parent?: string;
+  coverArt?: string;
+  songCount?: number;
+  albumCount?: number;
+  child?: SubsonicChildElement[];
+}
+
 /** The name is the element's text, which JSON carries as `value`. */
 export interface SubsonicGenreElement {
   value: string;
@@ -80,6 +107,13 @@ export interface BrowsingResponse {
   album?: SubsonicAlbumElement;
   song?: SubsonicSongElement;
   genres?: { genre?: SubsonicGenreElement[] };
+  musicFolders?: { musicFolder?: { id: number; name: string }[] };
+  indexes?: {
+    lastModified: number;
+    ignoredArticles: string;
+    index?: { name: string; artist: SubsonicIndexArtistElement[] }[];
+  };
+  directory?: SubsonicDirectoryElement;
 }
 
 /** Credentials plus whatever the call needs, as a query string. */

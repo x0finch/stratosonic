@@ -24,6 +24,7 @@
 import { type EntityType, parseIdOfType } from "@stratosonic/db";
 import { database } from "../db";
 import { groupArtistsByIndex, IGNORED_ARTICLES } from "../library/artist-index";
+import { checkMusicFolderIds } from "../library/music-folder";
 import {
   findAlbum,
   findArtist,
@@ -67,8 +68,15 @@ function requestedId(
 /**
  * `getArtists` — every artist, bucketed into `<index>` groups by the letter
  * they sort under, with the articles that were ignored to get there.
+ *
+ * A `musicFolderId` is checked even though this server has only one folder,
+ * as Navidrome's `GetArtists` checks it through `selectedMusicFolderIds`
+ * (server/subsonic/browsing.go): a client that asks for a folder we do not
+ * have asked for something that is not there.
  */
 export const getArtists: SubsonicHandler = async (request) => {
+  checkMusicFolderIds(request.params);
+
   const artists = await listArtists(database(request.env));
 
   const index = groupArtistsByIndex(artists, (artist) => artist.name).map((group) => ({

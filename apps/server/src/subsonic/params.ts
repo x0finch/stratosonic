@@ -16,30 +16,33 @@ export function requiredParameter(params: URLSearchParams, name: string): string
   return value;
 }
 
-/** The shape Go's `strconv.ParseInt(s, 10, 64)` accepts: a sign and digits. */
+/** Whole numbers in base 10, as Go's `strconv.ParseInt` spells them. */
 const INTEGER = /^[+-]?\d+$/;
 
-/** And the range it accepts, beyond which it reports the value out of range. */
+/** The range of a Go `int64`; `ParseInt` fails outside it. */
 const INT64_MIN = -(2n ** 63n);
 const INT64_MAX = 2n ** 63n - 1n;
 
 /**
- * The number this text denotes, or `null` when Go would not have parsed it.
+ * A value as Go's `strconv.ParseInt(value, 10, 64)` reads it, or `null` where
+ * that call would fail — anything that is not a whole decimal number, and
+ * anything outside the range of an `int64`.
  *
- * The bound matters as much as the shape: a twenty-digit `toYear` is a value
- * `strconv.ParseInt` rejects, and without the check it would arrive here as a
- * rounded 1e20 and quietly become a year range nothing falls in. What is left
- * after the check fits comfortably in a JavaScript number for every parameter
- * the protocol has, so the value is returned as one, as Go narrows it to `int`.
+ * Navidrome's parameter helpers all bottom out in that call, and *which*
+ * values it rejects is load-bearing: a `musicFolderId` it cannot read is
+ * silently dropped rather than refused, and an `ifModifiedSince` it cannot
+ * read means "no condition". A `bigint` comes back rather than a `number`
+ * because an `int64` runs past what a JavaScript number holds exactly, and a
+ * far-future instant must stay in the future rather than rounding.
  */
-function parseInteger(value: string): number | null {
+export function parseGoInt64(value: string): bigint | null {
   if (!INTEGER.test(value)) {
     return null;
   }
 
   const parsed = BigInt(value);
 
-  return parsed < INT64_MIN || parsed > INT64_MAX ? null : Number(parsed);
+  return parsed < INT64_MIN || parsed > INT64_MAX ? null : parsed;
 }
 
 /**
@@ -50,6 +53,10 @@ function parseInteger(value: string): number | null {
  * either error and returns the default (utils/req/req.go). That is what makes
  * `size=lots` a list of ten albums rather than a failed sync, and a client that
  * sends a stray parameter is not worth breaking over.
+ *
+ * The result is a `number`, as Go narrows this one to `int`: a size, an offset
+ * or a year that has passed `parseGoInt64` is far inside what a JavaScript
+ * number holds exactly.
  */
 export function integerParameterOr(
   params: URLSearchParams,
@@ -57,9 +64,9 @@ export function integerParameterOr(
   fallback: number,
 ): number {
   const value = params.get(name);
-  const parsed = value === null ? null : parseInteger(value);
+  const parsed = value === null ? null : parseGoInt64(value);
 
-  return parsed ?? fallback;
+  return parsed === null ? fallback : Number(parsed);
 }
 
 /**
@@ -75,7 +82,7 @@ export function integerParameterOr(
  */
 export function requiredIntegerParameter(params: URLSearchParams, name: string): number {
   const value = requiredParameter(params, name);
-  const parsed = parseInteger(value);
+  const parsed = parseGoInt64(value);
   if (parsed === null) {
     throw new SubsonicError(
       SubsonicErrorCode.Generic,
@@ -83,5 +90,5 @@ export function requiredIntegerParameter(params: URLSearchParams, name: string):
     );
   }
 
-  return parsed;
+  return Number(parsed);
 }

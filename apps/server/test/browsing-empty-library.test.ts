@@ -40,11 +40,29 @@ describe("browsing an empty library", () => {
     expect(await browseXml("/rest/getGenres")).toContain("<genres/>");
   });
 
+  it("answers getIndexes with a dated but childless indexes element", async () => {
+    const body = await browse("getIndexes");
+
+    expect(body.status).toBe("ok");
+    expect(body.indexes?.ignoredArticles).toBe("The El La Los Las Le Les Os As O A");
+    expect(body.indexes?.lastModified).toBeGreaterThan(0);
+    expect(body.indexes).not.toHaveProperty("index");
+    expect(await browseXml("/rest/getIndexes")).toMatch(/<indexes lastModified="\d+"[^>]*\/>/);
+  });
+
+  it("still offers the music folder there is nothing in yet", async () => {
+    const body = await browse("getMusicFolders");
+
+    expect(body.status).toBe("ok");
+    expect(body.musicFolders?.musicFolder).toEqual([{ id: 1, name: "Music Library" }]);
+  });
+
   it("says an artist, an album and a song are not found rather than failing oddly", async () => {
     const asked = [
       ["getArtist", prefixedId("artist", artistId("Nobody"))],
       ["getAlbum", prefixedId("album", albumId("Nobody", "Nothing", 2000))],
       ["getSong", prefixedId("track", trackId("Nobody/Nothing/1.mp3"))],
+      ["getMusicDirectory", prefixedId("artist", artistId("Nobody"))],
     ] as const;
 
     for (const [endpoint, id] of asked) {
