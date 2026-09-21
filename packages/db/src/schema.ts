@@ -340,3 +340,39 @@ export const playQueue = sqliteTable("play_queue", {
 
 export type PlayQueue = typeof playQueue.$inferSelect;
 export type NewPlayQueue = typeof playQueue.$inferInsert;
+
+/**
+ * Where a listener stopped in one track, so any client can offer to resume
+ * there — Navidrome's `bookmark` table (`model/bookmark.go`), keyed by the
+ * user and the item.
+ *
+ * `position` is milliseconds into the track, the unit Subsonic's `position`
+ * parameter carries, and `comment` is whatever note the client attached.
+ * `createdAt` is when the bookmark was first made and `changedAt` when it was
+ * last moved: `createBookmark` on a track that is already bookmarked updates
+ * the position and the comment and keeps the original instant, which is what
+ * the `created`/`changed` pair `getBookmarks` answers with means.
+ *
+ * Navidrome's key carries an `item_type` alongside the id, because it also
+ * bookmarks podcast episodes; a Stratosonic library holds nothing but tracks,
+ * so the key is (user, track) and the track id needs no qualifier. The rows
+ * belong to their user and go when the user does.
+ */
+export const bookmark = sqliteTable(
+  "bookmark",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    trackId: text("track_id").notNull(),
+    /** Milliseconds into the track. */
+    position: integer("position").notNull().default(0),
+    comment: text("comment").notNull().default(""),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    changedAt: integer("changed_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.trackId] })],
+);
+
+export type Bookmark = typeof bookmark.$inferSelect;
+export type NewBookmark = typeof bookmark.$inferInsert;

@@ -282,6 +282,8 @@ describe("bad requests", () => {
   });
 
   it("refuses a queue longer than the cap, rather than saving one it cannot read back", async () => {
+    await call("savePlayQueue", { id: id(SONGS.alpha) });
+
     const tooMany = Array.from({ length: 1001 }, (_, index) =>
       prefixedId("track", trackId(`${ARTIST}/${ALBUM}/never-${index}.mp3`)),
     );
@@ -290,5 +292,9 @@ describe("bad requests", () => {
 
     expect(body.error?.code).toBe(0);
     expect(body.error?.message).toContain("too many ids");
+
+    // The refusal is made before anything is written, so the queue the
+    // listener already had is still there to resume from.
+    expect(titles(await savedQueue())).toEqual([SONGS.alpha.title]);
   });
 });

@@ -220,25 +220,17 @@ export async function findTrackAlbums(
   db: Database,
   trackIds: readonly string[],
 ): Promise<Map<string, string>> {
-  const found = new Map<string, string>();
-
   // One parameter is bound per id, so the ids are taken
   // `KEYS_PER_STATEMENT` at a time, as the existence check above takes them:
   // a `scrobble` flushing an offline backlog of more than a hundred tracks
   // would otherwise throw `too many SQL variables` against D1 while passing
-  // every test, because Miniflare is SQLite and allows 999.
-  for (const chunk of chunked(trackIds)) {
-    const rows = await db
-      .select({ id: track.id, albumId: track.albumId })
-      .from(track)
-      .where(inArray(track.id, chunk));
+  // every test, because Miniflare is SQLite and allows 999. The chunks are
+  // asked together, as that check asks its statements together.
+  const lookups = [...chunked(trackIds)].map((chunk) =>
+    db.select({ id: track.id, albumId: track.albumId }).from(track).where(inArray(track.id, chunk)),
+  );
 
-    for (const row of rows) {
-      found.set(row.id, row.albumId);
-    }
-  }
-
-  return found;
+  return new Map((await Promise.all(lookups)).flat().map((row) => [row.id, row.albumId] as const));
 }
 
 function starStatement(
