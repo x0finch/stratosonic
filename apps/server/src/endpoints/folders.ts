@@ -34,6 +34,7 @@ import {
 } from "../library/repository";
 import {
   albumChildElement,
+  directoryAnnotationAttributes,
   indexArtistElement,
   omitWhenEmpty,
   songElement,
@@ -165,6 +166,7 @@ export const getMusicDirectory: SubsonicHandler = async (request) => {
         {
           id: prefixedId("artist", artist.id),
           name: artist.name,
+          ...directoryAnnotationAttributes(artist),
           albumCount: artist.albumCount || undefined,
         },
         albums.map(albumChildElement),
@@ -186,6 +188,7 @@ export const getMusicDirectory: SubsonicHandler = async (request) => {
           id: prefixedId("album", album.id),
           name: album.name,
           parent: prefixedId("artist", album.artistId),
+          ...directoryAnnotationAttributes(album),
           coverArt: album.coverKey === null ? undefined : prefixedId("album", album.id),
           songCount: album.songCount || undefined,
         },
@@ -200,8 +203,14 @@ export const getMusicDirectory: SubsonicHandler = async (request) => {
 /**
  * `<directory>`, Navidrome's `responses.Directory`: its attributes, then its
  * children. Callers pass the attributes already in the order that struct
- * declares them — id, name, parent, …, coverArt, songCount, albumCount — and
- * an `albumCount` or `songCount` of zero is dropped, as `omitempty` drops it.
+ * declares them — id, name, parent, the caller's annotation (starred,
+ * playCount, played, userRating), coverArt, songCount, albumCount — and an
+ * `albumCount` or `songCount` of zero is dropped, as `omitempty` drops it.
+ *
+ * The directory itself is annotated, not only its children: Navidrome's
+ * directory builders fill those four from the artist's or the album's own
+ * annotation, so a client browsing folders sees a starred album as starred
+ * whether it is looking at it or at its parent.
  */
 function directoryElement(
   attributes: SubsonicNode,
