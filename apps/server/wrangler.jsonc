@@ -8,6 +8,14 @@
   "observability": {
     "enabled": true
   },
+  // The Scan runs from the `scheduled` entry (ADR-0004). One run is a bounded
+  // step that resumes from a cursor it left in the `property` table, so the
+  // schedule is what carries a large library to a complete pass; every
+  // quarter hour keeps a freshly uploaded album a few runs away at most,
+  // while an unchanged bucket costs a listing and nothing else.
+  "triggers": {
+    "crons": ["*/15 * * * *"]
+  },
   // `INITIAL_PASSWORD` and `PASSWORD_ENCRYPTION_KEY` are Worker secrets and are
   // deliberately absent here; only the non-secret username is a plain var.
   // Set them once per environment with `wrangler secret put INITIAL_PASSWORD`
@@ -38,6 +46,9 @@
   "env": {
     "preview": {
       "name": "stratosonic-preview",
+      "triggers": {
+        "crons": ["*/15 * * * *"]
+      },
       "vars": {
         "INITIAL_USER": "admin"
       },
