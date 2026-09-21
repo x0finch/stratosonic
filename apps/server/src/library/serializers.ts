@@ -153,6 +153,44 @@ export function songElement(song: SongView): SubsonicNode {
 }
 
 /**
+ * An album as a `<child>` of a directory, Navidrome's `childFromAlbum`
+ * (server/subsonic/helpers.go). Folder browsing shows an album as a
+ * sub-directory of its artist, so this is the same `Child` element a track
+ * renders as — with `isDir` true — and the attributes come in the order the
+ * `Child` struct declares them, which is the order Navidrome's XML carries.
+ *
+ * What it says that `albumElement` does not: `isDir`, a `parent` pointing at
+ * the album artist, and the album's name three times over — as `title`, as
+ * `name` and as `album` — because a client browsing folders reads whichever
+ * of the three it was written against. Navidrome puts `FullName()` in all
+ * three, which is the album's name unless an album-version suffix is
+ * configured; Stratosonic stores no such suffix, so it is the name.
+ *
+ * `duration` and `songCount` are dropped when zero, as Go's `omitempty`
+ * drops them, and `created` is always present. The annotation attributes
+ * (`starred`, `playCount`, `userRating`) wait for Phase 2, as they do in
+ * `songElement`.
+ */
+export function albumChildElement(album: Album): SubsonicNode {
+  return {
+    id: prefixedId("album", album.id),
+    parent: prefixedId("artist", album.artistId),
+    isDir: true,
+    title: album.name,
+    name: album.name,
+    album: album.name,
+    artist: album.albumArtist || undefined,
+    year: album.year || undefined,
+    genre: album.genre || undefined,
+    coverArt: album.coverKey === null ? undefined : prefixedId("album", album.id),
+    duration: Math.trunc(album.duration) || undefined,
+    created: subsonicTimestamp(album.createdAt),
+    artistId: prefixedId("artist", album.artistId),
+    songCount: album.songCount || undefined,
+  };
+}
+
+/**
  * `<genre>`, Navidrome's `Genre`: the name is the element's text rather than
  * an attribute (`xml:",chardata"`), and JSON carries it as `value`, which is
  * what the text key renders as.
