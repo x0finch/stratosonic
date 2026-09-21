@@ -21,7 +21,21 @@
  */
 
 import { album, annotation, artist, track } from "@stratosonic/db";
-import { and, asc, desc, eq, gte, isNull, like, lte, or, type SQL, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  gte,
+  isNotNull,
+  isNull,
+  like,
+  lte,
+  or,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import type { Database } from "../db";
 import { annotationColumns, annotationJoin } from "./annotations";
 import { artistColumns, toAlbumView, toArtistView, toSongView } from "./repository";
@@ -30,8 +44,8 @@ import type { AlbumView, ArtistView, SongView } from "./serializers";
 /**
  * Which albums `getAlbumList2` was asked for, and what that type needs to
  * know. Each member is one of Navidrome's `filter.Albums*` options
- * (server/filter/filters.go); the types it supports that need play counts or
- * ratings are absent, because this server keeps neither.
+ * (server/filter/filters.go), including the three that read the caller's own
+ * data — `recent` (last play), `frequent` (play count) and `highest` (rating).
  */
 export type AlbumListQuery =
   | { readonly type: "newest" }
@@ -40,7 +54,10 @@ export type AlbumListQuery =
   | { readonly type: "byYear"; readonly fromYear: number; readonly toYear: number }
   | { readonly type: "byGenre"; readonly genre: string }
   | { readonly type: "random" }
-  | { readonly type: "starred" };
+  | { readonly type: "starred" }
+  | { readonly type: "recent" }
+  | { readonly type: "frequent" }
+  | { readonly type: "highest" };
 
 /** The window a client asked for. */
 export interface Page {
@@ -108,6 +125,14 @@ function albumFilter(query: AlbumListQuery): SQL | undefined {
       // exists and its flag is set. This is what made the join effectively an
       // inner one before decoration moved it to a left join.
       return eq(annotation.starred, true);
+    case "recent":
+      // Only albums the caller has actually played, as Navidrome's `recently
+      // played` filter excludes the unplayed.
+      return isNotNull(annotation.playDate);
+    case "frequent":
+      return gt(annotation.playCount, 0);
+    case "highest":
+      return gt(annotation.rating, 0);
     default:
       return undefined;
   }
@@ -140,6 +165,15 @@ function albumOrder(query: AlbumListQuery): SQL[] {
       // Navidrome's `starred_at` mapping is `starred, starred_at` descending;
       // the flag is constant under the filter, so only the instant is left.
       return [desc(annotation.starredAt), desc(album.id)];
+    case "recent":
+      // Navidrome's `recently_played`: `play_date` descending, per user.
+      return [desc(annotation.playDate), desc(album.id)];
+    case "frequent":
+      // Navidrome's `frequently_played`: `play_count` descending.
+      return [desc(annotation.playCount), desc(album.id)];
+    case "highest":
+      // Navidrome's `rating` mapping: `rating` descending, per user.
+      return [desc(annotation.rating), desc(album.id)];
   }
 }
 
