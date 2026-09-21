@@ -2,7 +2,13 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { D1_MAX_BOUND_PARAMETERS } from "../src/d1-limits";
 import { bootstrapAdmin } from "./browsing-support";
 import { fixtureBytes, fixtures } from "./fixtures/files";
-import { importCountingWrites, playlists, putPlaylistObject } from "./playlists-support";
+import {
+  type CountedImport,
+  importCountingWrites,
+  importUntilComplete,
+  playlists,
+  putPlaylistObject,
+} from "./playlists-support";
 import { scanUntilComplete, seedFixtureFiles } from "./scan-support";
 import { testEnv } from "./support";
 
@@ -109,15 +115,16 @@ describe("a second pass over a bucket that has not changed", () => {
     // The entries of every playlist on the page are read by one statement -
     // at most one per playlist, and here a good deal less - and a pass that
     // writes nothing runs no other statement against the table at all.
-    expect(counted.statementsAgainst("playlist_track")).toBe(1);
+    expect(counted.statementsAgainst("playlist_track")).toHaveLength(1);
     expect(counted.run.counts.imported).toBe(2);
   });
 
   it("binds no statement past what D1 allows", async () => {
     const counted = await importCountingWrites(minutesLater(5));
+    const bound = counted.writes.map((write) => write.bound);
 
-    expect(counted.boundCounts.length).toBeGreaterThan(0);
-    expect(Math.max(...counted.boundCounts)).toBeLessThanOrEqual(D1_MAX_BOUND_PARAMETERS);
+    expect(bound.length).toBeGreaterThan(0);
+    expect(Math.max(...bound)).toBeLessThanOrEqual(D1_MAX_BOUND_PARAMETERS);
   });
 });
 
@@ -219,12 +226,12 @@ describe("a playlist long enough to need several statements", () => {
     const first = await importCountingWrites(minutesLater(40));
     expect(first.run.counts.entries).toBeGreaterThanOrEqual(LINES);
     expect(first.playlistRowsWritten).toBeGreaterThan(0);
-    expect(Math.max(...first.boundCounts)).toBeLessThanOrEqual(D1_MAX_BOUND_PARAMETERS);
+    expect(boundAtMost(first)).toBeLessThanOrEqual(D1_MAX_BOUND_PARAMETERS);
 
     const second = await importCountingWrites(minutesLater(41));
     expect(second.run.counts.unchanged).toBe(3);
     expect(second.playlistRowsWritten).toBe(0);
-    expect(Math.max(...second.boundCounts)).toBeLessThanOrEqual(D1_MAX_BOUND_PARAMETERS);
+    expect(boundAtMost(second)).toBeLessThanOrEqual(D1_MAX_BOUND_PARAMETERS);
   });
 
   it("renders every one of its entries to a client", async () => {
@@ -233,3 +240,37 @@ describe("a playlist long enough to need several statements", () => {
     );
   });
 });
+
+describe("a run that will not reach every playlist on the page", () => {
+  it("reads the stored rows and entries only for the ones it imports", async () => {
+    await putPlaylistObject("playlists/spare.m3u", `#EXTM3U\n/${SILENT}\n`);
+    await putPlaylistObject("playlists/tail.m3u", `#EXTM3U\n/${TAIL}\n`);
+
+    const counted = await importCountingWrites(minutesLater(50), { importsPerRun: 2 });
+
+    // Five playlists are on the page and this run imports two of them, so
+    // the lookups bind two keys and two ids, not five of each: the entries
+    // of a playlist the run will not reach are rows read for nothing (#61).
+    expect(counted.run.counts.imported).toBe(2);
+    expect(counted.run.completed).toBe(false);
+    expect(counted.boundAgainst("playlist")).toEqual([2]);
+    expect(counted.boundAgainst("playlist_track")).toEqual([2]);
+  });
+
+  it("imports the rest over the runs that follow, and then goes quiet", async () => {
+    const runs = await importUntilComplete({ importsPerRun: 2 }, minutesLater(51));
+
+    expect(runs.at(-1)?.completed).toBe(true);
+    expect(runs.at(-1)?.totals.imported).toBe(5);
+    expect(await entryPaths("playlists/spare.m3u")).toEqual([SILENT]);
+
+    const quiet = await importCountingWrites(minutesLater(60));
+    expect(quiet.run.counts.unchanged).toBe(5);
+    expect(quiet.playlistRowsWritten).toBe(0);
+  });
+});
+
+/** The most parameters any one statement of a run bound. */
+function boundAtMost(counted: CountedImport): number {
+  return Math.max(...counted.writes.map((write) => write.bound));
+}

@@ -167,8 +167,22 @@ export async function importPlaylists(
       ...(cursor === "" ? {} : { cursor }),
     });
     const objects = listing.objects;
+    // Every playlist the page offered, which is what the sweep is allowed to
+    // measure the library against - and, separately, the ones this run will
+    // actually get to. The stored rows and entries are read only for those:
+    // a page holds up to five hundred objects and a run imports twenty, so
+    // reading the page's worth would be twenty-five runs each reading every
+    // playlist's entries, which on a big library is millions of rows read a
+    // day against D1's five million (#61).
     const pageKeys = objects.filter(isPlaylistObject).map((object) => object.key);
-    const stored = await findPlaylistsByKeys(db, pageKeys);
+    const stored = await findPlaylistsByKeys(
+      db,
+      objects
+        .slice(skip)
+        .filter(isPlaylistObject)
+        .slice(0, limits.importsPerRun - imports)
+        .map((object) => object.key),
+    );
 
     let position = skip;
     let interrupted = false;

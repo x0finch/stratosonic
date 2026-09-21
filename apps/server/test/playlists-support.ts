@@ -59,6 +59,8 @@ export interface RecordedWrite {
   readonly sql: string;
   /** D1's own `meta.rows_written`, index rows included, as the bill counts it. */
   readonly rowsWritten: number;
+  /** How many parameters it bound, which D1 allows a hundred of. */
+  readonly bound: number;
 }
 
 /** One run of the import, with what it cost D1. */
@@ -68,10 +70,10 @@ export interface CountedImport {
   readonly writes: readonly RecordedWrite[];
   /** Rows written to `playlist` and `playlist_track`: what #61 is about. */
   readonly playlistRowsWritten: number;
-  /** The parameter count of every statement, as the scan's helper records it. */
-  readonly boundCounts: readonly number[];
-  /** How many statements the run ran against this table, read or write. */
-  statementsAgainst(table: string): number;
+  /** The statements the run ran against this table, read or write. */
+  statementsAgainst(table: string): RecordedWrite[];
+  /** What each of those bound, which D1 allows a hundred of. */
+  boundAgainst(table: string): number[];
 }
 
 /**
@@ -94,28 +96,27 @@ export async function importCountingWrites(
   limits: Partial<PlaylistImportLimits> = {},
 ): Promise<CountedImport> {
   const writes: RecordedWrite[] = [];
-  const boundCounts: number[] = [];
-  const queries = new WeakMap<D1PreparedStatement, string>();
+  const statements = new WeakMap<D1PreparedStatement, { sql: string; bound: number }>();
 
-  const record = (sql: string, rowsWritten: number) => {
-    writes.push({ sql, rowsWritten });
+  const record = (sql: string, bound: number, rowsWritten: number) => {
+    writes.push({ sql, bound, rowsWritten });
   };
 
-  const counted = (statement: D1PreparedStatement, sql: string): D1PreparedStatement => {
+  const counted = (
+    statement: D1PreparedStatement,
+    sql: string,
+    bound: number,
+  ): D1PreparedStatement => {
     const proxy = new Proxy(statement, {
       get(target, property) {
         if (property === "bind") {
-          return (...values: unknown[]) => {
-            boundCounts.push(values.length);
-
-            return counted(target.bind(...values), sql);
-          };
+          return (...values: unknown[]) => counted(target.bind(...values), sql, values.length);
         }
 
         if (property === "run" || property === "all") {
           return async () => {
             const result = property === "run" ? await target.run() : await target.all();
-            record(sql, result.meta.rows_written);
+            record(sql, bound, result.meta.rows_written);
 
             return result;
           };
@@ -128,7 +129,7 @@ export async function importCountingWrites(
         if (property === "raw") {
           return async () => {
             const rows = await target.raw();
-            record(sql, 0);
+            record(sql, bound, 0);
 
             return rows;
           };
@@ -139,7 +140,7 @@ export async function importCountingWrites(
         return typeof value === "function" ? value.bind(target) : value;
       },
     });
-    queries.set(proxy, sql);
+    statements.set(proxy, { sql, bound });
 
     return proxy;
   };
@@ -147,18 +148,16 @@ export async function importCountingWrites(
   const db = new Proxy(testEnv.DB, {
     get(target, property) {
       if (property === "prepare") {
-        return (sql: string) => counted(target.prepare(sql), sql);
+        return (sql: string) => counted(target.prepare(sql), sql, 0);
       }
 
       if (property === "batch") {
-        return async (statements: D1PreparedStatement[]) => {
-          const results = await target.batch(statements);
+        return async (batched: D1PreparedStatement[]) => {
+          const results = await target.batch(batched);
           for (const [index, result] of results.entries()) {
-            const statement = statements[index];
-            record(
-              statement === undefined ? "" : (queries.get(statement) ?? ""),
-              result.meta.rows_written,
-            );
+            const statement = batched[index];
+            const known = statement === undefined ? undefined : statements.get(statement);
+            record(known?.sql ?? "", known?.bound ?? 0, result.meta.rows_written);
           }
 
           return results;
@@ -177,10 +176,15 @@ export async function importCountingWrites(
   return {
     run,
     writes,
-    boundCounts,
     playlistRowsWritten: rowsWrittenToPlaylists(writes),
-    statementsAgainst: (table) => writes.filter((write) => write.sql.includes(`"${table}"`)).length,
+    statementsAgainst: (table) => against(writes, table),
+    boundAgainst: (table) => against(writes, table).map((write) => write.bound),
   };
+}
+
+/** The statements one run ran against a table, read or write. */
+function against(writes: readonly RecordedWrite[], table: string): RecordedWrite[] {
+  return writes.filter((write) => write.sql.includes(`"${table}"`));
 }
 
 /** How many rows a run wrote to the two playlist tables and nowhere else. */

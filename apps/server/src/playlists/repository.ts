@@ -95,9 +95,13 @@ export async function findTracksByKeys(
  * The entries come with the rows because the import compares them: a pass
  * that finds the stored playlist already equal to what the file says writes
  * nothing, and it cannot know that without them. They cost one statement per
- * hundred playlists rather than one per playlist, since the whole page's ids
- * are looked up at once - and a page of playlists was already one statement
- * per hundred keys here.
+ * hundred playlists rather than one per playlist, since every id is looked up
+ * at once - and the rows themselves were already one statement per hundred
+ * keys here.
+ *
+ * The caller passes the playlists it is about to import, not every playlist
+ * its listing page offered: the entries of a playlist this run will not reach
+ * are rows read for nothing, and a run reads at most `importsPerRun` of them.
  */
 export async function findPlaylistsByKeys(
   db: Database,
@@ -285,11 +289,11 @@ export interface ImportedPlaylist {
  * rewrote every row and every entry it had just written: D1 bills per row
  * written, and fourteen playlists of nine hundred entries came to some
  * 176,000 rows a day at a quarter-hourly schedule, against a free tier of
- * 100,000 (#61). Reading the rows first costs one statement per page and
- * makes the pass free.
+ * 100,000 (#61). Reading the rows first costs one statement for all the
+ * playlists a run imports, and makes the pass free.
  *
  * Only the columns the upsert would actually change are compared: the name,
- * the counts, the key, `changed`, and the entries in order. The rest of the
+ * the counts, `changed`, and the entries in order. The rest of the
  * row - the owner, the comment, the visibility and `created` - is taken
  * *from* the stored row a line above, so it cannot differ; and comparing a
  * column the upsert leaves alone would be worse than useless, since a row
@@ -304,12 +308,12 @@ export function matchesStoredPlaylist(
     return false;
   }
 
+  // The key and the id are not compared: the row was looked up by that key,
+  // and the id is the hash of it.
   return (
-    held.id === imported.id &&
     held.name === imported.name &&
     held.songCount === imported.songCount &&
     held.duration === imported.duration &&
-    held.r2Key === imported.r2Key &&
     held.changedAt.getTime() === imported.changedAt.getTime() &&
     held.trackIds.length === imported.trackIds.length &&
     held.trackIds.every((trackId, position) => trackId === imported.trackIds[position])
