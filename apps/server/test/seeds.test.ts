@@ -13,6 +13,7 @@ import {
   seedFixtureObjects,
   seedPlaylist,
   seedTrack,
+  seedUser,
 } from "./support";
 
 /**
@@ -107,8 +108,10 @@ describe("seeding library rows", () => {
   });
 
   it("stars an item for a user by default", async () => {
+    // An annotation belongs to a real user row, so the seed needs one.
+    const listenerId = await seedUser("listener", "sesame");
     const seeded = await seedAnnotation({
-      userId: "listener",
+      userId: listenerId,
       itemId: artistId("Portishead"),
       itemType: "artist",
     });

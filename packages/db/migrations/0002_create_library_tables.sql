@@ -23,7 +23,9 @@ CREATE TABLE `annotation` (
 	`rating` integer DEFAULT 0 NOT NULL,
 	`play_count` integer DEFAULT 0 NOT NULL,
 	`play_date` integer,
-	PRIMARY KEY(`user_id`, `item_id`, `item_type`)
+	PRIMARY KEY(`user_id`, `item_id`, `item_type`),
+	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade,
+	CONSTRAINT "annotation_item_type_check" CHECK("annotation"."item_type" in ('track', 'album', 'artist', 'playlist'))
 );
 --> statement-breakpoint
 CREATE INDEX `annotation_user_id_item_type_idx` ON `annotation` (`user_id`,`item_type`);--> statement-breakpoint
@@ -48,12 +50,14 @@ CREATE TABLE `playlist` (
 	`changed_at` integer NOT NULL
 );
 --> statement-breakpoint
+CREATE UNIQUE INDEX `playlist_r2_key_unique` ON `playlist` (`r2_key`);--> statement-breakpoint
 CREATE INDEX `playlist_owner_id_idx` ON `playlist` (`owner_id`);--> statement-breakpoint
 CREATE TABLE `playlist_track` (
 	`playlist_id` text NOT NULL,
 	`track_id` text NOT NULL,
 	`position` integer NOT NULL,
-	PRIMARY KEY(`playlist_id`, `position`)
+	PRIMARY KEY(`playlist_id`, `position`),
+	FOREIGN KEY (`playlist_id`) REFERENCES `playlist`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
 CREATE INDEX `playlist_track_track_id_idx` ON `playlist_track` (`track_id`);--> statement-breakpoint

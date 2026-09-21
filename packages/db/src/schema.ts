@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  check,
   index,
   integer,
   primaryKey,
@@ -74,10 +75,13 @@ export type NewUser = typeof user.$inferInsert;
  * - Timestamps are epoch milliseconds, like the `user` table.
  * - Durations are seconds, kept as reals: a track's duration is fractional and
  *   an album's is the sum of its tracks', which integer seconds would drift.
- * - There are no foreign-key constraints. D1 enforces them, and the scanner
- *   writes a track before the album row it belongs to is complete and deletes
- *   in the opposite order; Navidrome likewise keeps this integrity in the
- *   application rather than in the schema.
+ * - Artists, albums and tracks carry no foreign keys. D1 enforces them, and
+ *   the scanner writes a track before the album row it belongs to is complete
+ *   and deletes in the opposite order; Navidrome likewise keeps that integrity
+ *   in the application. The two rows that belong to something rather than
+ *   merely refer to it - a playlist's entries and a user's annotations - do
+ *   have one, cascading: an orphan there is not a passing state during a scan
+ *   but a row nothing can reach and `getStarred2` would still count.
  * - A column is nullable exactly when "absent" is a value the protocol has to
  *   render differently from zero (a missing year is omitted, not `0`).
  */
@@ -193,7 +197,10 @@ export const playlist = sqliteTable(
     public: integer("public", { mode: "boolean" }).notNull().default(true),
     songCount: integer("song_count").notNull().default(0),
     duration: real("duration").notNull().default(0),
-    r2Key: text("r2_key").notNull(),
+    // Unique for the same reason a track's key is: the playlist's id is
+    // derived from it, so two rows with the same key would be one playlist
+    // twice.
+    r2Key: text("r2_key").notNull().unique(),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     changedAt: integer("changed_at", { mode: "timestamp_ms" }).notNull(),
   },
@@ -210,11 +217,17 @@ export type NewPlaylist = typeof playlist.$inferInsert;
  * playlist may list the same track twice, but not two tracks at the same
  * position. That key is also the index a playlist's tracks are read by, so no
  * separate index on `playlist_id` is needed.
+ *
+ * An entry exists only as part of its playlist, so deleting the playlist takes
+ * its entries with it. The track it points at is a reference, not a parent:
+ * the scanner deletes tracks in its sweep and tidies the entries itself.
  */
 export const playlistTrack = sqliteTable(
   "playlist_track",
   {
-    playlistId: text("playlist_id").notNull(),
+    playlistId: text("playlist_id")
+      .notNull()
+      .references(() => playlist.id, { onDelete: "cascade" }),
     trackId: text("track_id").notNull(),
     position: integer("position").notNull(),
   },
@@ -238,13 +251,16 @@ export type AnnotationItemType = (typeof ANNOTATION_ITEM_TYPES)[number];
  *
  * Keyed by (user, item, item type) exactly as Navidrome's `annotation` table
  * is, because an album and a track can share neither a row nor, in principle,
- * an id. The table starts empty — no history is migrated — and Phase 1 only
+ * an id. The rows belong to their user and go when the user does. The table
+ * starts empty — no history is migrated — and Phase 1 only
  * reads it, so `getStarred2` has something to answer from.
  */
 export const annotation = sqliteTable(
   "annotation",
   {
-    userId: text("user_id").notNull(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
     itemId: text("item_id").notNull(),
     itemType: text("item_type", { enum: ANNOTATION_ITEM_TYPES }).notNull(),
     starred: integer("starred", { mode: "boolean" }).notNull().default(false),
@@ -257,6 +273,12 @@ export const annotation = sqliteTable(
     primaryKey({ columns: [table.userId, table.itemId, table.itemType] }),
     // `getStarred2` reads one user's starred items of one type.
     index("annotation_user_id_item_type_idx").on(table.userId, table.itemType),
+    // The item type is closed: a row of an unknown type would be unreachable
+    // through every endpoint and still counted by the ones that aggregate.
+    check(
+      "annotation_item_type_check",
+      sql`${table.itemType} in ('track', 'album', 'artist', 'playlist')`,
+    ),
   ],
 );
 

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "28e04ec7-b46d-408c-8256-6393e8086254",
+  "id": "26998c38-3417-4074-bf82-cc6a6a71cb6e",
   "prevId": "fd31fde9-922a-4c4a-973b-bb7d8b3227b5",
   "tables": {
     "album": {
@@ -182,7 +182,21 @@
           "isUnique": false
         }
       },
-      "foreignKeys": {},
+      "foreignKeys": {
+        "annotation_user_id_user_id_fk": {
+          "name": "annotation_user_id_user_id_fk",
+          "tableFrom": "annotation",
+          "tableTo": "user",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {
         "annotation_user_id_item_id_item_type_pk": {
           "columns": [
@@ -194,7 +208,12 @@
         }
       },
       "uniqueConstraints": {},
-      "checkConstraints": {}
+      "checkConstraints": {
+        "annotation_item_type_check": {
+          "name": "annotation_item_type_check",
+          "value": "\"annotation\".\"item_type\" in ('track', 'album', 'artist', 'playlist')"
+        }
+      }
     },
     "artist": {
       "name": "artist",
@@ -321,6 +340,13 @@
         }
       },
       "indexes": {
+        "playlist_r2_key_unique": {
+          "name": "playlist_r2_key_unique",
+          "columns": [
+            "r2_key"
+          ],
+          "isUnique": true
+        },
         "playlist_owner_id_idx": {
           "name": "playlist_owner_id_idx",
           "columns": [
@@ -368,7 +394,21 @@
           "isUnique": false
         }
       },
-      "foreignKeys": {},
+      "foreignKeys": {
+        "playlist_track_playlist_id_playlist_id_fk": {
+          "name": "playlist_track_playlist_id_playlist_id_fk",
+          "tableFrom": "playlist_track",
+          "tableTo": "playlist",
+          "columnsFrom": [
+            "playlist_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {
         "playlist_track_playlist_id_position_pk": {
           "columns": [
