@@ -36,6 +36,13 @@
       "when": 1789987256526,
       "tag": "0004_create_play_queue_table",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1789987731732,
+      "tag": "0005_create_bookmark_table",
+      "breakpoints": true
     }
   ]
 }
