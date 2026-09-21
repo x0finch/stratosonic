@@ -25,17 +25,124 @@
  *   requests.
  */
 
-import { parsePrefixedId } from "@stratosonic/db";
+import { parseIdOfType, parsePrefixedId } from "@stratosonic/db";
 import {
   type AnnotatedItem,
   findMissingItems,
+  type Play,
+  recordPlays,
   setRating as saveRating,
   setStarred,
 } from "../annotations/repository";
 import { database } from "../db";
-import { requiredIntegerParameter, requiredParameter } from "../subsonic/params";
+import { registerNowPlaying } from "../nowplaying/repository";
+import {
+  integerParameterValue,
+  requiredIntegerParameter,
+  requiredParameter,
+} from "../subsonic/params";
 import { SubsonicError, SubsonicErrorCode } from "../subsonic/response";
 import type { AuthenticatedSubsonicRequest, SubsonicHandler } from "../subsonic/router";
+
+/**
+ * `scrobble` — a client tells the server the caller played a track.
+ *
+ * `submission=false` (a track starting) only registers the caller's
+ * now-playing entry; `submission=true` (the default, a track finished) only
+ * counts the play and moves its last-played instant. The two are exclusive, as
+ * in Navidrome: a play does not touch now-playing, which expires by TTL, and a
+ * now-playing does not count a play. `id` and `time` are repeatable and paired
+ * by position; `time` is read only by a submission, and omitting it means now.
+ *
+ * `id` is required (error 10) and must name a track that exists (error 70). A
+ * `time` that cannot be read, or a count of them that does not match the ids,
+ * is error 0 — a request whose pairing is ambiguous is refused, not guessed at.
+ */
+export const scrobble: SubsonicHandler = async (request) => {
+  const { params } = request;
+  const ids = requestedTrackIds(params);
+  const times = requestedTimes(params, ids.length);
+  const db = database(request.env);
+
+  const missing = await findMissingItems(
+    db,
+    ids.map((id) => ({ type: "track", id })),
+  );
+  if (missing.length > 0) {
+    throw new SubsonicError(SubsonicErrorCode.NotFound);
+  }
+
+  if (isSubmission(params)) {
+    const now = new Date();
+    const plays: Play[] = ids.map((id, index) => ({ trackId: id, playDate: times[index] ?? now }));
+    await recordPlays(db, request.user.id, plays);
+  } else {
+    // `now_playing` holds one row per user, so registering every id in turn
+    // would leave only the last of them anyway — each write overwrites the row
+    // the one before it made. A client that names several tracks is playing
+    // the last: that is the only one written, in one statement.
+    //
+    // Its instant is the server's now, never the client's `time`. Navidrome
+    // reads `time` for submissions alone, and a now-playing entry is measured
+    // against this server's clock as it expires.
+    const current = ids.at(-1);
+    if (current !== undefined) {
+      await registerNowPlaying(db, request.user.id, current, params.get("c") ?? "", new Date());
+    }
+  }
+
+  return {};
+};
+
+/** The track ids of a `scrobble`: required, and each a real track id. */
+function requestedTrackIds(params: URLSearchParams): string[] {
+  const raw = params.getAll("id");
+  if (raw.length === 0) {
+    throw new SubsonicError(SubsonicErrorCode.MissingParameter, "missing parameter: 'id'");
+  }
+
+  return raw.map((value) => {
+    const id = parseIdOfType("track", value);
+    if (id === null) {
+      throw new SubsonicError(SubsonicErrorCode.NotFound);
+    }
+
+    return id;
+  });
+}
+
+/** Whether this is a play submission (the default) rather than a now-playing. */
+function isSubmission(params: URLSearchParams): boolean {
+  const value = (params.get("submission") ?? "").toLowerCase();
+
+  return value !== "false" && value !== "0";
+}
+
+/**
+ * The instants a `scrobble` names, one per id — or none, which is the
+ * ordinary case and means every play happened now.
+ *
+ * `time` is repeatable and paired with `id` by position, so a request that
+ * sends a different number of each cannot be acted on: Navidrome answers
+ * "Wrong number of timestamps" rather than guessing which play an instant
+ * belongs to. An epoch-ms value that is not a whole number is an invalid
+ * parameter, as it is everywhere else, not a silent "now".
+ */
+function requestedTimes(params: URLSearchParams, idCount: number): Date[] {
+  const raw = params.getAll("time");
+  if (raw.length === 0) {
+    return [];
+  }
+
+  if (raw.length !== idCount) {
+    throw new SubsonicError(
+      SubsonicErrorCode.Generic,
+      `Wrong number of timestamps: ${raw.length}, should be ${idCount}`,
+    );
+  }
+
+  return raw.map((value) => new Date(integerParameterValue("time", value)));
+}
 
 /** How many items one `star` or `unstar` may name, ids of all kinds together. */
 const MAX_ITEMS_PER_REQUEST = 1000;
