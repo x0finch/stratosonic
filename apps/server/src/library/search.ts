@@ -2,9 +2,10 @@
  * The read behind the Search module: matching artists, albums and tracks by
  * name for `search2` and `search3`.
  *
- * Navidrome answers these from a maintained `full_text` column and an FTS
- * index; Stratosonic matches with SQL `LIKE '%word%'` over the name/title
- * columns instead, because the library is personal-scale (~1000 tracks) and a
+ * Navidrome answers these from a maintained `full_text` column, which it also
+ * matches with `LIKE '%term%'` — the column is a precomputed haystack, not an
+ * FTS index. Stratosonic runs the same `LIKE` over the name/title columns
+ * directly, because the library is personal-scale (~1000 tracks) and a
  * `full_text` column would be new state the scanner has to compute and keep
  * current for no user-visible gain at this size (ADR/issue #37). The behaviour
  * a client notices is preserved:
@@ -17,7 +18,16 @@
  *   "beatles help" finds the one track and not every Beatles song. A word may
  *   match any of the columns a kind carries (OR within the word).
  * - **An empty query matches everything**, paged — some clients enumerate the
- *   whole library that way, which Navidrome also allows.
+ *   whole library that way, per the Phase 2 spec (#37); Navidrome treats an
+ *   empty query as missing.
+ *
+ * One deviation is known and accepted: **folding stops at ASCII.** Navidrome
+ * builds `full_text` through its own sanitiser, which lowercases by Unicode
+ * rules and strips accents, so "bjork" finds Björk and "ÉCOUTE" finds écoute
+ * there. SQLite's `LIKE` folds the ASCII letters only and folds no accent, so
+ * here a query has to carry the accents and the case of a non-ASCII letter as
+ * the tag spells them. Closing that gap means storing a folded column — the
+ * state #37 decided against — so it waits for a library that needs it.
  *
  * Each kind is ordered by its name and then its id, so paging one kind with
  * `offset` never repeats a row or skips one — the same stability the album

@@ -103,7 +103,9 @@ function requestedSearch(request: AuthenticatedSubsonicRequest): SearchQuery {
  * request in its own right: it matches the whole library, which some clients
  * use to enumerate it. So the parameter has to be present, and only then may
  * it be empty; `requiredParameter` would reject the empty string as missing,
- * which is why the presence is checked directly here.
+ * which is why the presence is checked directly here. That is this server's
+ * choice, per the Phase 2 spec (#37): Navidrome's own `requiredParamString`
+ * treats an empty `query` as a missing one and answers error 10.
  *
  * One trailing `*` is dropped first, as Navidrome drops it
  * (`strings.TrimSuffix(q, "*")` in server/subsonic/searching.go): several
