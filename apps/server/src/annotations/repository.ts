@@ -123,6 +123,12 @@ export async function setRating(
 export interface Play {
   readonly item: AnnotatedItem;
   readonly playDate: Date;
+  /**
+   * How many plays this row stands for; one unless the caller collapsed
+   * several into it, as a submission of an album's tracks collapses into a
+   * single play row for the album. `playDate` is then the latest of them.
+   */
+  readonly count?: number;
 }
 
 /**
@@ -145,27 +151,29 @@ export async function recordPlays(
   userId: string,
   plays: readonly Play[],
 ): Promise<void> {
-  const statements = plays.map((play) =>
-    db
+  const statements = plays.map((play) => {
+    const count = play.count ?? 1;
+
+    return db
       .insert(annotation)
       .values({
         userId,
         itemId: play.item.id,
         itemType: play.item.type,
-        playCount: 1,
+        playCount: count,
         playDate: play.playDate,
       })
       .onConflictDoUpdate({
         target: [annotation.userId, annotation.itemId, annotation.itemType],
         set: {
-          playCount: sql`${annotation.playCount} + 1`,
+          playCount: sql`${annotation.playCount} + ${count}`,
           // `play_date` is stored as epoch milliseconds, so the incoming
           // instant is bound as a number and the two compare on one scale;
           // a row that has never been played counts as 0, the earliest.
           playDate: sql`max(ifnull(${annotation.playDate}, 0), ${play.playDate.getTime()})`,
         },
-      }),
-  );
+      });
+  });
 
   const [first, ...rest] = statements;
   if (first === undefined) {
