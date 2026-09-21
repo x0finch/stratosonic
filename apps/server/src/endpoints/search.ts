@@ -84,13 +84,21 @@ function requestedSearch(request: AuthenticatedSubsonicRequest): SearchQuery {
  * use to enumerate it. So the parameter has to be present, and only then may
  * it be empty; `requiredParameter` would reject the empty string as missing,
  * which is why the presence is checked directly here.
+ *
+ * One trailing `*` is dropped first, as Navidrome drops it
+ * (`strings.TrimSuffix(q, "*")` in server/subsonic/searching.go): several
+ * clients send `query=beat*` to mean a prefix search, and since every match is
+ * already a substring the `*` carries no meaning — kept, it would be matched
+ * literally and find nothing.
  */
 function searchWords(params: URLSearchParams): string[] {
   if (!params.has("query")) {
     throw new SubsonicError(SubsonicErrorCode.MissingParameter, "missing parameter: 'query'");
   }
 
-  return (params.get("query") ?? "").split(/\s+/).filter((word) => word.length > 0);
+  const query = (params.get("query") ?? "").replace(/\*$/, "");
+
+  return query.split(/\s+/).filter((word) => word.length > 0);
 }
 
 /** One kind's window: its count (default 20) and offset, neither negative. */

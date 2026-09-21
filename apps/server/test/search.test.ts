@@ -107,6 +107,15 @@ describe("search3 matching", () => {
     expect(artistNames(result)).toEqual([]);
   });
 
+  it("drops a trailing * a client appends to the query", async () => {
+    // Substreamer and others send "beat*" for a prefix search; the star is not
+    // a wildcard here, and matched literally it would find nothing.
+    const result = (await search("search3", { query: "beat*" })).searchResult3;
+
+    expect(artistNames(result).sort()).toEqual(["Beatnik", "Heartbeat Trio", "The Beatles"]);
+    expect(songTitles(result).sort()).toEqual(["Groove", "Help", "Ticket to Ride"]);
+  });
+
   it("matches nothing a word is absent from", async () => {
     const result = (await search("search3", { query: "nowherefound" })).searchResult3;
 
