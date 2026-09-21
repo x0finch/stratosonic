@@ -9,7 +9,9 @@ import type { BrowsingResponse } from "./browsing-support";
 import { bootstrapAdmin, browse, browseXml, fixtureAlbum, query } from "./browsing-support";
 import type { FixtureAlbum, FixtureTrack } from "./fixtures/files";
 import { fixtureBytes, fixtureCoverBytes, fixtures, fixtureTrack } from "./fixtures/files";
+import type { ListsResponse } from "./lists-support";
 import { albumNames, list } from "./lists-support";
+import type { PlaylistsResponse } from "./playlists-support";
 import { playlists } from "./playlists-support";
 import { seedFixtureFiles } from "./scan-support";
 import { BASE, type JsonEnvelope, testEnv } from "./support";
@@ -43,11 +45,20 @@ const FIRST_RUN = new Date(1_750_000_000_000);
 /** The MP3 fixture, whose 3598 bytes make the ranges below meaningful. */
 const MP3 = "silent-track.mp3";
 
-/** The FLAC fixture: the second track of a two-track album. */
+/** How many minutes apart the passes in this file are. */
+const QUARTER_HOUR = 15 * 60_000;
+
+/** The FLAC fixture: the second track of a two-track album, deleted below. */
 const FLAC = "hushed-interlude.flac";
 
-/** The album with two tracks, and the artist with two albums. */
+/** The M4A fixture whose album holds nothing else, deleted below. */
+const LONE_M4A = "tail-loaded.m4a";
+
+/** The album that survives losing a track, and the one that does not. */
 const SHARED_ALBUM = "Quiet Album";
+const LONE_ALBUM = "Trailing Sessions";
+
+/** The artist whose two albums become one. */
 const TWO_ALBUM_ARTIST = "Mute Ensemble";
 
 /** How many cron invocations the first pass over the fixtures took. */
@@ -162,6 +173,62 @@ function albumArtistNames(): string[] {
 /** The artists of `getArtists`, flattened out of their index buckets. */
 function artistsOf(body: BrowsingResponse): { name: string; albumCount: number; id: string }[] {
   return (body.artists?.index ?? []).flatMap((index) => index.artist);
+}
+
+/* ------------------------------------------------------------ snapshots -- */
+
+/**
+ * Everything a client can see of the library, in one object, so that "a
+ * second run changes nothing" can be one comparison rather than twenty.
+ *
+ * Two endpoints are deliberately absent. `getRandomSongs` answers in a
+ * different order every time, by design. `getIndexes` carries
+ * `lastModified`, which is when the library was last *scanned* and therefore
+ * must move when a pass runs; its artists are compared separately below.
+ */
+interface LibrarySnapshot {
+  readonly artists: BrowsingResponse;
+  readonly albums: readonly BrowsingResponse[];
+  readonly songs: readonly BrowsingResponse[];
+  readonly genres: BrowsingResponse;
+  readonly directories: readonly BrowsingResponse[];
+  readonly newest: ListsResponse;
+  readonly alphabetical: ListsResponse;
+  readonly starred: ListsResponse;
+  readonly playlists: PlaylistsResponse;
+  readonly playlist: PlaylistsResponse;
+}
+
+async function librarySnapshot(): Promise<LibrarySnapshot> {
+  const albums: BrowsingResponse[] = [];
+  for (const album of fixtures.albums) {
+    albums.push(await browse("getAlbum", { id: albumUrlId(album) }));
+  }
+
+  const songs: BrowsingResponse[] = [];
+  for (const fixture of fixtures.tracks) {
+    songs.push(await browse("getSong", { id: prefixedId("track", trackId(fixture.r2Key)) }));
+  }
+
+  const directories: BrowsingResponse[] = [];
+  for (const name of albumArtistNames()) {
+    directories.push(await browse("getMusicDirectory", { id: artistUrlId(name) }));
+  }
+
+  return {
+    artists: await browse("getArtists"),
+    albums,
+    songs,
+    genres: await browse("getGenres"),
+    directories,
+    newest: await list("getAlbumList2", { type: "newest", size: "50" }),
+    alphabetical: await list("getAlbumList2", { type: "alphabeticalByName", size: "50" }),
+    starred: await list("getStarred2"),
+    playlists: await playlists("getPlaylists"),
+    playlist: await playlists("getPlaylist", {
+      id: prefixedId("playlist", playlistId(fixtures.playlist.r2Key)),
+    }),
+  };
 }
 
 beforeAll(async () => {
@@ -517,5 +584,145 @@ describe("the calls a client makes before anything else", () => {
     expect(body["subsonic-response"].openSubsonicExtensions).toEqual([
       { name: "formPost", versions: [1] },
     ]);
+  });
+});
+
+/* =================================================== a second pass == */
+
+describe("a second cron run over the unchanged bucket", () => {
+  const secondRun = new Date(FIRST_RUN.getTime() + QUARTER_HOUR);
+
+  it("leaves every response a client can ask for exactly as it was", async () => {
+    const before = await librarySnapshot();
+    const indexedBefore = await browse("getIndexes");
+
+    expect(await scheduledUntilComplete(secondRun)).toBe(1);
+
+    expect(await librarySnapshot()).toEqual(before);
+    // `getIndexes` carries when the library was last scanned, which has to
+    // move; its artists are the part that must not.
+    expect((await browse("getIndexes")).indexes?.index).toEqual(indexedBefore.indexes?.index);
+  });
+
+  it("reports a pass that read nothing and removed nothing", async () => {
+    const summary = await summaryOf(secondRun);
+
+    expect(summary.counts.indexed).toBe(0);
+    expect(summary.counts.added).toBe(0);
+    expect(summary.counts.updated).toBe(0);
+    expect(summary.counts.unchanged).toBe(fixtures.tracks.length);
+    expect(summary.counts.coversWritten).toBe(0);
+    expect(summary.counts.removed).toBe(0);
+    expect(summary.counts.albumsRemoved).toBe(0);
+  });
+});
+
+/* ============================== a track and a playlist leave the bucket == */
+
+describe("deleting one track and the .m3u, then rescanning", () => {
+  const thirdRun = new Date(FIRST_RUN.getTime() + 2 * QUARTER_HOUR);
+  const album = fixtureAlbum(SHARED_ALBUM);
+  /** The track that stays behind in that album. */
+  const remaining = album.trackFiles
+    .filter((file) => file !== FLAC)
+    .map((file) => fixtureTrack(file));
+
+  beforeAll(async () => {
+    await testEnv.MUSIC.delete(fixtureTrack(FLAC).r2Key);
+    await testEnv.MUSIC.delete(fixtures.playlist.r2Key);
+    await scheduledUntilComplete(thirdRun);
+  });
+
+  it("reports the pass that removed it", async () => {
+    const summary = await summaryOf(thirdRun);
+
+    expect(summary.counts.removed).toBe(1);
+    expect(summary.counts.albumsRemoved).toBe(0);
+    expect(summary.counts.artistsRemoved).toBe(0);
+  });
+
+  it("drops the track from its album and adds the album up again", async () => {
+    const body = await browse("getAlbum", { id: albumUrlId(album) });
+
+    expect(body.album?.songCount).toBe(remaining.length);
+    expect(body.album?.duration).toBe(durationOf(remaining));
+    expect((body.album?.song ?? []).map((song) => song.title).sort()).toEqual(titlesOf(remaining));
+  });
+
+  it("answers getSong and stream for the deleted track with error 70", async () => {
+    const body = await browse("getSong", { id: trackUrlId(FLAC) });
+    expect(body.error?.code).toBe(70);
+
+    const response = await fetchBytes("stream", { id: trackUrlId(FLAC) });
+    await expect(errorOf(response)).resolves.toMatchObject({ code: 70 });
+  });
+
+  it("keeps the album, its cover and its artist's album count", async () => {
+    const cover = await fetchBytes("getCoverArt", { id: albumUrlId(album) });
+    expect(cover.status).toBe(200);
+    expect(await bytesOf(cover)).toEqual(fixtureCoverBytes());
+
+    const artists = artistsOf(await browse("getArtists"));
+    expect(artists.find((entry) => entry.name === album.albumArtist)?.albumCount).toBe(1);
+  });
+
+  it("drops the track from the folder view and from the random songs", async () => {
+    const directory = await browse("getMusicDirectory", { id: albumUrlId(album) });
+    expect((directory.directory?.child ?? []).map((child) => child.title).sort()).toEqual(
+      titlesOf(remaining),
+    );
+
+    const songs = (await list("getRandomSongs", { size: "50" })).randomSongs?.song ?? [];
+    expect(songs.map((song) => song.id)).not.toContain(trackUrlId(FLAC));
+  });
+
+  it("removes the playlist whose file is gone", async () => {
+    const playlistUrlId = prefixedId("playlist", playlistId(fixtures.playlist.r2Key));
+
+    expect((await playlists("getPlaylists")).playlists?.playlist).toBeUndefined();
+    expect((await playlists("getPlaylist", { id: playlistUrlId })).error?.code).toBe(70);
+  });
+});
+
+/* ============================= an album loses its only track == */
+
+describe("deleting the only track of an album, then rescanning", () => {
+  const fourthRun = new Date(FIRST_RUN.getTime() + 3 * QUARTER_HOUR);
+  const album = fixtureAlbum(LONE_ALBUM);
+
+  beforeAll(async () => {
+    await testEnv.MUSIC.delete(fixtureTrack(LONE_M4A).r2Key);
+    await scheduledUntilComplete(fourthRun);
+  });
+
+  it("reports the pass that pruned the emptied album", async () => {
+    const summary = await summaryOf(fourthRun);
+
+    expect(summary.counts.removed).toBe(1);
+    expect(summary.counts.albumsRemoved).toBe(1);
+    expect(summary.counts.artistsRemoved).toBe(0);
+  });
+
+  it("answers getAlbum and getCoverArt for it with error 70", async () => {
+    expect((await browse("getAlbum", { id: albumUrlId(album) })).error?.code).toBe(70);
+
+    const cover = await fetchBytes("getCoverArt", { id: albumUrlId(album) });
+    await expect(errorOf(cover)).resolves.toMatchObject({ code: 70 });
+  });
+
+  it("takes it out of the album lists and off its artist", async () => {
+    const listed = await list("getAlbumList2", { type: "alphabeticalByName", size: "50" });
+    expect(albumNames(listed)).not.toContain(album.name);
+
+    const artists = artistsOf(await browse("getArtists"));
+    expect(artists.find((entry) => entry.name === TWO_ALBUM_ARTIST)?.albumCount).toBe(1);
+  });
+
+  it("keeps the artist, with only the album it still has, in the folder view", async () => {
+    const body = await browse("getMusicDirectory", { id: artistUrlId(TWO_ALBUM_ARTIST) });
+    const children = body.directory?.child ?? [];
+
+    expect(children.map((child) => child.name)).toEqual(["Faststart Sessions"]);
+    expect(body.directory?.albumCount).toBe(1);
   });
 });
