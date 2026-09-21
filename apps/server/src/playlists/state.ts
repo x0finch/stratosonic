@@ -18,8 +18,15 @@ import { property } from "@stratosonic/db";
 import { eq } from "drizzle-orm";
 import type { Database } from "../db";
 
-/** The row a pass in flight writes. */
-const IMPORT_PROGRESS_KEY = "PlaylistImportProgress";
+/**
+ * The row a pass in flight writes.
+ *
+ * It is exported because it is the other half of the answer to "is a scan
+ * running": the driver runs the import after the scan's own pass has finished
+ * and cleared `ScanProgress` (#31), so `scanner/state.ts` reads this key
+ * alongside its own and `getScanStatus` still costs one query.
+ */
+export const PLAYLIST_IMPORT_PROGRESS_KEY = "PlaylistImportProgress";
 
 /** What a pass has done so far. */
 export interface PlaylistImportCounts {
@@ -78,7 +85,7 @@ export async function readPlaylistImportProgress(
   const rows = await db
     .select()
     .from(property)
-    .where(eq(property.id, IMPORT_PROGRESS_KEY))
+    .where(eq(property.id, PLAYLIST_IMPORT_PROGRESS_KEY))
     .limit(1);
 
   const value = rows[0]?.value;
@@ -120,12 +127,12 @@ export async function writePlaylistImportProgress(
 
   await db
     .insert(property)
-    .values({ id: IMPORT_PROGRESS_KEY, value })
+    .values({ id: PLAYLIST_IMPORT_PROGRESS_KEY, value })
     .onConflictDoUpdate({ target: property.id, set: { value } });
 }
 
 export async function clearPlaylistImportProgress(db: Database): Promise<void> {
-  await db.delete(property).where(eq(property.id, IMPORT_PROGRESS_KEY));
+  await db.delete(property).where(eq(property.id, PLAYLIST_IMPORT_PROGRESS_KEY));
 }
 
 /**

@@ -1,8 +1,10 @@
 import { SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { database } from "../src/db";
+import { readPlaylistImportProgress } from "../src/playlists/state";
 import { readLastScanSummary, readScanProgress, type ScanProgress } from "../src/scanner/state";
 import { driverIsIdle, driveUntilIdle, poke, runNextAlarm, slowTuning } from "./driver-support";
+import { fixtures } from "./fixtures/files";
 import { resetLibrary, seedFixtureFiles } from "./scan-support";
 import { BASE, seedUser, testEnv } from "./support";
 
@@ -22,8 +24,16 @@ const ADMIN = "admin";
 const LISTENER = "listener";
 const PASSWORD = "sesame";
 
-/** The instant the in-flight pass at the end of this file is stamped with. */
+/** The instant the in-flight pass in this file is stamped with. */
 const IN_FLIGHT_POKE = new Date(1_750_000_000_000);
+
+/** And the one whose playlist import is caught half done. */
+const IMPORT_POKE = new Date(IN_FLIGHT_POKE.getTime() + 15 * 60_000);
+
+/** What `count` reports: the tracks a pass accounted for, read or skipped. */
+function tracksOf(counts: { indexed: number; unchanged: number }): number {
+  return counts.indexed + counts.unchanged;
+}
 
 /** `<scanStatus>`, as the JSON rendering carries it. */
 interface ScanStatusElement {
@@ -169,15 +179,18 @@ describe("startScan on a server with no pass in flight", () => {
     expect(await readLastScanSummary(database(testEnv))).not.toBeNull();
   });
 
-  it("reports the completed pass's count once it is over", async () => {
+  it("reports the completed pass's track count once it is over", async () => {
     const summary = await readLastScanSummary(database(testEnv));
 
-    expect(summary?.counts.examined).toBeGreaterThan(0);
+    // The tracks the pass accounted for, not every object it looked at: the
+    // bucket also holds the `.m3u` and the covers the pass itself wrote.
+    expect(summary?.counts.indexed).toBe(fixtures.tracks.length);
     expect(afterwards.scanStatus).toEqual({
       scanning: false,
-      count: summary?.counts.examined,
+      count: tracksOf(summary?.counts ?? { indexed: 0, unchanged: 0 }),
       lastScan: new Date(summary?.finishedAt ?? 0).toISOString(),
     });
+    expect(afterwards.scanStatus?.count).toBe(fixtures.tracks.length);
   });
 
   it("carries the last scan's instant in XML too", async () => {
@@ -186,6 +199,24 @@ describe("startScan on a server with no pass in flight", () => {
 
     expect(document).toContain('scanning="false"');
     expect(document).toContain(`lastScan="${new Date(summary?.finishedAt ?? 0).toISOString()}"`);
+  });
+});
+
+/* ================================= startScan's other URL form and method == */
+
+describe("startScan's second URL form and its form-encoded POST", () => {
+  it.each([
+    { what: "the .view form", path: "/rest/startScan.view", method: "GET" as const },
+    { what: "a form-encoded POST", path: "/rest/startScan", method: "POST" as const },
+  ])("starts a pass through $what", async ({ path, method }) => {
+    const body = await call("startScan", { path, method });
+
+    expect(body.status).toBe("ok");
+    expect(body.scanStatus?.scanning).toBe(true);
+
+    // Left idle for whatever runs next: each describe here starts from a
+    // driver that has stopped.
+    await driveUntilIdle();
   });
 });
 
@@ -213,12 +244,14 @@ describe("a pass in flight", () => {
     progressAfter = await readScanProgress(database(testEnv));
   });
 
-  it("is reported as scanning, with what it has examined so far", () => {
-    expect(progressBefore?.counts.examined).toBeGreaterThan(0);
+  it("is reported as scanning, with the tracks it has reached so far", () => {
+    expect(progressBefore?.counts.indexed).toBeGreaterThan(0);
     expect(duringPass.scanStatus).toMatchObject({
       scanning: true,
-      count: progressBefore?.counts.examined,
+      count: tracksOf(progressBefore?.counts ?? { indexed: 0, unchanged: 0 }),
     });
+    // Part of the library, not all of it: this is a pass still under way.
+    expect(duringPass.scanStatus?.count).toBeLessThan(fixtures.tracks.length);
   });
 
   it("answers a second startScan with the same scanning=true", () => {
@@ -232,7 +265,7 @@ describe("a pass in flight", () => {
     // have started over.
     expect(progressAfter?.startedAt).toBe(IN_FLIGHT_POKE.getTime());
     expect(progressAfter?.startedAt).toBe(progressBefore?.startedAt);
-    expect(progressAfter?.counts.examined).toBe(progressBefore?.counts.examined);
+    expect(progressAfter?.counts.indexed).toBe(progressBefore?.counts.indexed);
   });
 
   it("finishes under its own stamp, and is then reported as idle", async () => {
@@ -243,7 +276,66 @@ describe("a pass in flight", () => {
 
     expect((await call("getScanStatus")).scanStatus).toMatchObject({
       scanning: false,
-      count: summary?.counts.examined,
+      count: fixtures.tracks.length,
+    });
+    expect(tracksOf(summary?.counts ?? { indexed: 0, unchanged: 0 })).toBe(fixtures.tracks.length);
+  });
+});
+
+/* ============================================ the second half of a pass == */
+
+describe("a pass in its playlist-import phase", () => {
+  let duringImport: ScanStatusResponse;
+
+  beforeAll(async () => {
+    await resetLibrary();
+    await seedFixtureFiles();
+
+    // One object a step for the import, so the second half of the pass takes
+    // several alarms and can be caught in the middle of it.
+    await poke(IMPORT_POKE, { ...slowTuning, playlistLimits: { objectsPerRun: 1 } });
+
+    // Alarms until the scan's own pass is over - which is what writes the
+    // summary and clears `ScanProgress` - and then one more, the import's
+    // first step, which writes the row this phase is known by.
+    for (let step = 0; step < 20; step++) {
+      if ((await readLastScanSummary(database(testEnv))) !== null) {
+        break;
+      }
+
+      await runNextAlarm();
+    }
+    await runNextAlarm();
+
+    duringImport = await call("getScanStatus");
+  });
+
+  it("is caught with the scan's row gone and the import's row written", async () => {
+    expect(await readScanProgress(database(testEnv))).toBeNull();
+    expect(await readPlaylistImportProgress(database(testEnv))).not.toBeNull();
+    expect(await driverIsIdle()).toBe(false);
+  });
+
+  it("is still reported as scanning", () => {
+    // The gap this closes: the scan's pass has finished and written its
+    // summary, so reading `ScanProgress` alone would call a pass that has
+    // several alarms to go finished.
+    expect(duringImport.scanStatus?.scanning).toBe(true);
+  });
+
+  it("counts no tracks for a phase that indexes none", () => {
+    // The import's counts are playlists and entries, not tracks, so the
+    // running count is 0 rather than the previous pass's total - a number a
+    // client would otherwise watch fall when the next pass overtook it.
+    expect(duringImport.scanStatus?.count).toBe(0);
+  });
+
+  it("is reported as idle once the import is over too", async () => {
+    await driveUntilIdle();
+
+    expect((await call("getScanStatus")).scanStatus).toMatchObject({
+      scanning: false,
+      count: fixtures.tracks.length,
     });
   });
 });

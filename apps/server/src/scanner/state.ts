@@ -34,6 +34,7 @@
 import { property } from "@stratosonic/db";
 import { eq, inArray } from "drizzle-orm";
 import type { Database } from "../db";
+import { PLAYLIST_IMPORT_PROGRESS_KEY } from "../playlists/state";
 import type { ScanStatement } from "./repository";
 
 /** The row a pass in flight writes. */
@@ -167,23 +168,40 @@ export async function readLastScanSummary(db: Database): Promise<ScanSummary | n
 }
 
 /**
- * A pass in flight and the last one that completed, read together.
+ * What a pass has done, as something outside the scan sees it: the scan in
+ * flight, whether the import that follows it is in flight, and the last pass
+ * that completed.
  *
- * `getScanStatus` needs both — whether a pass is running, and what the last
- * one did when none is — and one query is one subrequest, which on the free
- * plan is the unit that matters.
+ * `getScanStatus` needs all three — whether anything is running, and what the
+ * last pass did when nothing is — and one query is one subrequest, which on
+ * the free plan is the unit that matters.
  */
 export interface ScanReport {
   readonly progress: ScanProgress | null;
+  /**
+   * Whether the playlist import is in flight. It is the second half of a
+   * pass (#31), and it runs *after* the scan's own pass has finished and
+   * cleared `ScanProgress`, so without this a pass in its import phase would
+   * look finished.
+   */
+  readonly importingPlaylists: boolean;
   readonly lastCompleted: ScanSummary | null;
 }
 
-/** Both of a scan's public rows in one query. */
+/** Everything a pass shows the outside world, in one query. */
 export async function readScanReport(db: Database): Promise<ScanReport> {
-  const stored = await readProperties(db, [SCAN_PROGRESS_KEY, LAST_SCAN_SUMMARY_KEY]);
+  const stored = await readProperties(db, [
+    SCAN_PROGRESS_KEY,
+    PLAYLIST_IMPORT_PROGRESS_KEY,
+    LAST_SCAN_SUMMARY_KEY,
+  ]);
 
   return {
     progress: readProgress(stored.get(SCAN_PROGRESS_KEY)),
+    // Only whether the row is there: what the import has done is its own
+    // module's business, and a row that will not parse is treated as absent
+    // here as everywhere else in this module.
+    importingPlaylists: stored.has(PLAYLIST_IMPORT_PROGRESS_KEY),
     lastCompleted: readSummary(stored.get(LAST_SCAN_SUMMARY_KEY)),
   };
 }
