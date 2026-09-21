@@ -37,11 +37,12 @@ const thePlaylistId = prefixedId("playlist", playlistId(PLAYLIST_KEY));
 
 const OTHER_USER = { user: "listener", password: "open-sesame" };
 
+let admin = "";
 let other = "";
 
 beforeAll(async () => {
   await bootstrapAdmin();
-  await adminUserId();
+  admin = await adminUserId();
   other = await seedUser(OTHER_USER.user, OTHER_USER.password);
 
   await seedArtist({ name: ARTIST });
@@ -160,6 +161,32 @@ describe("isolation between accounts", () => {
     expect(theirs).toEqual(["Two"]);
 
     await write("unstar", { id: songId });
+  });
+});
+
+describe("a row starred without an instant", () => {
+  // A migrated row can carry starred = 1 with starred_at null. Re-starring it
+  // has to stamp the instant, or getStarred2 - which orders by it - never
+  // shows the item.
+  it("gets its starred_at stamped by a star", async () => {
+    const key = `${ARTIST}/${ALBUM}/03 Three.mp3`;
+    const migratedId = prefixedId("track", trackId(key));
+    await seedTrack({ r2Key: key, title: "Three", album: ALBUM, albumArtist: ARTIST, year: YEAR });
+    await seedAnnotation({
+      userId: admin,
+      itemId: trackId(key),
+      itemType: "track",
+      starred: true,
+      starredAt: null,
+    });
+
+    expect((await browse("getSong", { id: migratedId })).song?.starred).toBeUndefined();
+
+    await write("star", { id: migratedId });
+
+    expect((await browse("getSong", { id: migratedId })).song?.starred).toBeTruthy();
+
+    await write("unstar", { id: migratedId });
   });
 });
 

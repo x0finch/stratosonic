@@ -141,12 +141,16 @@ function starStatement(
     .values({ userId, itemId: item.id, itemType: item.type, starred: true, starredAt: now })
     .onConflictDoUpdate({
       target: [annotation.userId, annotation.itemId, annotation.itemType],
-      // Keep the original instant when the row is already starred; otherwise
-      // stamp it now. `starred_at` is stored as epoch milliseconds, so the
-      // fallback is bound as a number, not a Date.
+      // Keep the original instant when the row is already starred and carries
+      // one; otherwise stamp it now. A row starred without an instant is
+      // reachable - a migrated row, or one this server left starred before -
+      // and testing the flag alone would keep its null forever, hiding the
+      // item from `getStarred2`, which orders by the instant. `starred_at` is
+      // stored as epoch milliseconds, so the fallback is bound as a number,
+      // not a Date.
       set: {
         starred: true,
-        starredAt: sql`case when ${annotation.starred} then ${annotation.starredAt} else ${now.getTime()} end`,
+        starredAt: sql`case when ${annotation.starred} and ${annotation.starredAt} is not null then ${annotation.starredAt} else ${now.getTime()} end`,
       },
     });
 }
