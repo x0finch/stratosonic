@@ -76,6 +76,19 @@ export interface SubsonicNode {
   readonly [key: string]: SubsonicValue | undefined;
 }
 
+/**
+ * The key whose scalar value is an element's *text* rather than an attribute:
+ * `{ [TEXT_KEY]: "Jazz", songCount: 3 }` renders as
+ * `<genre songCount="3">Jazz</genre>`.
+ *
+ * It is spelled `value` because that is the name the same field has in
+ * Navidrome's JSON: its `Genre.Name` is tagged `xml:",chardata"` with
+ * `json:"value"`, so one key gives both renderings without either side
+ * knowing about the other. No Subsonic element has an attribute called
+ * `value`, so nothing is shadowed by this.
+ */
+export const TEXT_KEY = "value";
+
 /** What a rendered response says: a successful body, or an error. */
 export type SubsonicPayload =
   | { readonly status: "ok"; readonly body?: SubsonicNode }
@@ -151,11 +164,14 @@ function renderXml(payload: SubsonicPayload): string {
 function renderElement(name: string, node: SubsonicNode): string {
   const attributes: string[] = [];
   const children: string[] = [];
+  let text = "";
 
   for (const [key, value] of Object.entries(node)) {
     if (value === undefined) continue;
 
-    if (Array.isArray(value)) {
+    if (key === TEXT_KEY && isScalar(value)) {
+      text = escapeXmlText(String(value));
+    } else if (Array.isArray(value)) {
       for (const item of value as readonly SubsonicValue[]) {
         children.push(renderChild(key, item));
       }
@@ -167,7 +183,9 @@ function renderElement(name: string, node: SubsonicNode): string {
   }
 
   const openTag = `${name}${attributes.join("")}`;
-  return children.length === 0 ? `<${openTag}/>` : `<${openTag}>${children.join("")}</${name}>`;
+  const content = text + children.join("");
+
+  return content === "" ? `<${openTag}/>` : `<${openTag}>${content}</${name}>`;
 }
 
 /** An array item is either a nested element or an element holding text. */

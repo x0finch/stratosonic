@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { getAlbum, getArtist, getArtists, getGenres, getSong } from "./endpoints/browsing";
 import { download, getCoverArt, stream } from "./endpoints/media";
 import { notImplemented } from "./endpoints/not-implemented";
 import { getLicense, getOpenSubsonicExtensions, ping } from "./endpoints/system";
@@ -28,6 +29,13 @@ export function createApp(): SubsonicApp {
 
   registerEndpoint(app, "ping", ping);
   registerEndpoint(app, "getLicense", getLicense);
+
+  // Browsing (ID3): the artist -> album -> track walk, and the genre list.
+  registerEndpoint(app, "getArtists", getArtists);
+  registerEndpoint(app, "getArtist", getArtist);
+  registerEndpoint(app, "getAlbum", getAlbum);
+  registerEndpoint(app, "getSong", getSong);
+  registerEndpoint(app, "getGenres", getGenres);
 
   registerEndpoint(app, "getUser", getUser);
   registerEndpoint(app, "getUsers", getUsers, { adminOnly: true });
