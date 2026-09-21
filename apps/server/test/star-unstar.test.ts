@@ -1,9 +1,16 @@
-import { albumId, artistId, prefixedId, trackId } from "@stratosonic/db";
+import { albumId, artistId, playlistId, prefixedId, trackId } from "@stratosonic/db";
 import { beforeAll, describe, expect, it } from "vitest";
 import { write, writeXml } from "./annotations-support";
 import { bootstrapAdmin, browse } from "./browsing-support";
 import { adminUserId, list, listAs } from "./lists-support";
-import { seedAlbum, seedAnnotation, seedArtist, seedTrack, seedUser } from "./support";
+import {
+  seedAlbum,
+  seedAnnotation,
+  seedArtist,
+  seedPlaylist,
+  seedTrack,
+  seedUser,
+} from "./support";
 
 /**
  * `star` and `unstar`: the caller taps a heart and it sticks.
@@ -25,6 +32,9 @@ const otherSongId = prefixedId("track", trackId(TWO_KEY));
 const theAlbumId = prefixedId("album", albumId(ARTIST, ALBUM, YEAR));
 const theArtistId = prefixedId("artist", artistId(ARTIST));
 
+const PLAYLIST_KEY = "playlists/favourites.m3u";
+const thePlaylistId = prefixedId("playlist", playlistId(PLAYLIST_KEY));
+
 const OTHER_USER = { user: "listener", password: "open-sesame" };
 
 let other = "";
@@ -38,6 +48,7 @@ beforeAll(async () => {
   await seedAlbum({ name: ALBUM, albumArtist: ARTIST, year: YEAR, songCount: 2 });
   await seedTrack({ r2Key: ONE_KEY, title: "One", album: ALBUM, albumArtist: ARTIST, year: YEAR });
   await seedTrack({ r2Key: TWO_KEY, title: "Two", album: ALBUM, albumArtist: ARTIST, year: YEAR });
+  await seedPlaylist({ r2Key: PLAYLIST_KEY, name: "Favourites" });
 });
 
 describe("starring a song", () => {
@@ -108,6 +119,27 @@ describe("idempotence and ordering", () => {
 
     await write("unstar", { id: songId });
     await write("unstar", { id: otherSongId });
+  });
+});
+
+describe("starring a playlist", () => {
+  // Navidrome's setStar stars playlists too. Nothing reads the star back:
+  // its <playlist> element carries no `starred` attribute, so the row is
+  // written and the ok envelope is all a client sees.
+  it("answers an empty ok", async () => {
+    const ok = await write("star", { id: thePlaylistId });
+
+    expect(ok.status).toBe("ok");
+    expect(ok.error).toBeUndefined();
+
+    await write("unstar", { id: thePlaylistId });
+  });
+
+  it("is error 70 for a playlist id that names nothing", async () => {
+    const unknown = prefixedId("playlist", playlistId("playlists/nowhere.m3u"));
+    const body = await write("star", { id: unknown });
+
+    expect(body.error).toEqual({ code: 70, message: "The requested data was not found" });
   });
 });
 

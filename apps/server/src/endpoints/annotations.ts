@@ -8,16 +8,17 @@
  *
  * - **No item at all is error 10.** A `star` naming none of `id`, `albumId`
  *   or `artistId` cannot be acted on.
- * - **An item that names nothing is error 70.** An id that is malformed, of a
- *   kind that cannot be starred, or that resolves to no row is "not found",
- *   the same answer browsing gives for a deleted item.
+ * - **An item that names nothing is error 70.** An id that is malformed, or
+ *   that resolves to no row of its kind, is "not found", the same answer
+ *   browsing gives for a deleted item.
  * - **More than `MAX_ITEMS_PER_REQUEST` ids is error 0.** The work a request
- *   costs grows with the ids it names, and the Workers free plan allows fifty
- *   subrequests per invocation (a D1 query is one). At the cap, the chunked
- *   existence check is at most one select per kind per `KEYS_PER_STATEMENT`
- *   ids — three kinds, so at most 3 * ceil(1000 / 90) = 36 — plus the single
- *   batch that writes, which leaves the budget room to spare. A client with
- *   more to star sends more requests.
+ *   costs grows with the ids it names, and a Worker invocation on the free
+ *   plan has fifty subrequests (a D1 query is one). The existence check takes
+ *   `KEYS_PER_STATEMENT` ids of a kind at a time, so a thousand ids spread
+ *   over the four kinds are at most ceil(1000 / 90) + 3 = 15 selects, and the
+ *   writes are one batch however many there are: sixteen subrequests at the
+ *   cap, well inside the budget. A client with more to star sends more
+ *   requests.
  */
 
 import { parsePrefixedId } from "@stratosonic/db";
@@ -29,7 +30,7 @@ import type { AuthenticatedSubsonicRequest, SubsonicHandler } from "../subsonic/
 /** How many items one `star` or `unstar` may name, ids of all kinds together. */
 const MAX_ITEMS_PER_REQUEST = 1000;
 
-/** `star` — starring the caller's songs, albums and artists. */
+/** `star` — starring the caller's songs, albums, artists and playlists. */
 export const star: SubsonicHandler = (request) => setStars(request, true);
 
 /** `unstar` — the reverse, on the same items. */
@@ -55,10 +56,16 @@ async function setStars(request: AuthenticatedSubsonicRequest, starred: boolean)
  *
  * The item's kind comes from the id's prefix, not from which parameter carried
  * it — Navidrome concatenates the three lists and resolves each id to its
- * entity, and our prefixed ids carry the kind with them. A request with no ids
- * at all is error 10; more than `MAX_ITEMS_PER_REQUEST` of them is error 0,
- * counted before anything is parsed; an id that does not parse, or names a
- * playlist (which these endpoints do not star), is error 70.
+ * entity, and our prefixed ids carry the kind with them. A playlist id is one
+ * of them: Navidrome's `setStar` stars a playlist like anything else, and the
+ * `annotation` table's `item_type` has always allowed it. Nothing renders that
+ * star back yet, and nothing has to — Navidrome's `<playlist>` element carries
+ * no `starred` attribute — so the row is written for the read side to pick up
+ * whenever one wants it.
+ *
+ * A request with no ids at all is error 10; more than `MAX_ITEMS_PER_REQUEST`
+ * of them is error 0, counted before anything is parsed; an id that does not
+ * parse is error 70.
  */
 function requestedItems(params: URLSearchParams): AnnotatedItem[] {
   const raw = [...params.getAll("id"), ...params.getAll("albumId"), ...params.getAll("artistId")];
@@ -75,7 +82,7 @@ function requestedItems(params: URLSearchParams): AnnotatedItem[] {
 
   return raw.map((value) => {
     const parsed = parsePrefixedId(value);
-    if (parsed === null || parsed.type === "playlist") {
+    if (parsed === null) {
       throw new SubsonicError(SubsonicErrorCode.NotFound);
     }
 

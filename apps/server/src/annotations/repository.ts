@@ -18,14 +18,18 @@
  * Miniflare is real SQLite, whose limit is 999.
  */
 
-import { album, annotation, artist, track } from "@stratosonic/db";
+import { album, annotation, artist, playlist, track } from "@stratosonic/db";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import type { Database } from "../db";
 import { chunked } from "../scanner/repository";
 
-/** The kinds of item a star or a rating can attach to. */
-export const ANNOTATED_TYPES = ["track", "album", "artist"] as const;
+/**
+ * The kinds of item a star or a rating can attach to — every kind the
+ * `annotation` table's `item_type` allows, playlists included, as Navidrome's
+ * `setStar` stars a playlist like anything else.
+ */
+export const ANNOTATED_TYPES = ["track", "album", "artist", "playlist"] as const;
 
 export type AnnotatedType = (typeof ANNOTATED_TYPES)[number];
 
@@ -36,12 +40,12 @@ export interface AnnotatedItem {
 }
 
 /** The table each kind of item lives in, for the existence check. */
-const ITEM_TABLES = { track, album, artist } as const;
+const ITEM_TABLES = { track, album, artist, playlist } as const;
 
 /**
  * Which of these items name nothing in the library.
  *
- * `star` on an id that resolves to no track, album or artist is error 70, so
+ * `star` on an id that resolves to no row of its kind is error 70, so
  * the items are checked before anything is written — one query per kind that
  * appears, and per `KEYS_PER_STATEMENT` ids of that kind, never one per id.
  * The kinds are asked together, as the reads ask their statements together.
