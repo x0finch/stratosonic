@@ -82,16 +82,22 @@ describe("a scan that stops before the bucket ends", () => {
   });
 });
 
-describe("a rescan that may only look at a few objects", () => {
-  it("stops at the objects it was allowed to look at, and resumes", async () => {
-    const run = await scan(SCAN_TIME, { objectsPerRun: 2, pageSize: 10 });
+describe("a rescan that may only walk a page or two", () => {
+  it("stops at the pages it was allowed to list, and resumes at the next one", async () => {
+    const walk = { pagesPerRun: 1, pageSize: 2, extractionsPerRun: 6 };
+    const run = await scan(SCAN_TIME, walk);
 
     expect(run.completed).toBe(false);
     expect(run.counts.examined).toBe(2);
     expect(run.counts.unchanged).toBe(2);
-    expect((await readScanProgress(database(testEnv)))?.skip).toBe(2);
 
-    const rest = await scanUntilComplete({ objectsPerRun: 2, pageSize: 10 });
+    // A page the run finished is a page it does not walk again: the cursor
+    // moved on and there is nothing left over inside it.
+    const progress = await readScanProgress(database(testEnv));
+    expect(progress?.skip).toBe(0);
+    expect(progress?.cursor).not.toBe("");
+
+    const rest = await scanUntilComplete(walk);
     expect(rest.at(-1)?.completed).toBe(true);
     expect((await storedTracks()).length).toBe(fixtures.tracks.length);
   });
