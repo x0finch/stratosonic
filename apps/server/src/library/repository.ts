@@ -14,8 +14,9 @@
  */
 
 import { type Album, album, annotation, artist, type Track, track } from "@stratosonic/db";
-import { asc, desc, eq, isNotNull, sql } from "drizzle-orm";
+import { asc, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Database } from "../db";
+import { chunked } from "../scanner/repository";
 import {
   type AnnotationRow,
   annotationColumns,
@@ -242,4 +243,41 @@ export async function listGenres(db: Database): Promise<GenreView[]> {
  */
 function genreName(name: string | null): string {
   return name === null || name === "" ? "<Empty>" : name;
+}
+
+/**
+ * The songs these ids name, by id — for the reads that hold a list of track
+ * ids rather than a query that selects them, the play queue being the first.
+ *
+ * An id that names no track is simply absent from the map: a queue saved
+ * before a rescan removed one of its tracks still resumes, minus that entry,
+ * rather than failing. Duplicates cost nothing, since the caller looks each
+ * position up by id.
+ *
+ * This is one `in (...)` per `KEYS_PER_STATEMENT` ids — D1 allows a hundred
+ * bound parameters per query (`scanner/repository.ts`) — and not one query per
+ * id, so even a very long queue stays well inside the request's subrequest
+ * budget. Order is the caller's to restore; SQL gives none back.
+ */
+export async function findSongsByIds(
+  db: Database,
+  ids: readonly string[],
+  userId: string,
+): Promise<Map<string, SongView>> {
+  const found = new Map<string, SongView>();
+
+  for (const chunk of chunked([...new Set(ids)])) {
+    const rows = await db
+      .select({ track, albumName: album.name, albumCoverKey: album.coverKey, ...annotationColumns })
+      .from(track)
+      .leftJoin(album, eq(album.id, track.albumId))
+      .leftJoin(annotation, annotationJoin(userId, "track", track.id))
+      .where(inArray(track.id, chunk));
+
+    for (const row of rows) {
+      found.set(row.track.id, toSongView(row));
+    }
+  }
+
+  return found;
 }

@@ -1,12 +1,26 @@
 /**
  * The Playback-state module: what a client saves to resume a session — the
- * now-playing feed here, and (next) the play queue and bookmarks.
+ * now-playing feed and the play queue here, and (next) bookmarks.
  */
 
+import { parseIdOfType, prefixedId } from "@stratosonic/db";
 import { database } from "../db";
-import { omitWhenEmpty, songElement } from "../library/serializers";
+import { findSongsByIds } from "../library/repository";
+import {
+  omitWhenEmpty,
+  type SongView,
+  songElement,
+  subsonicTimestamp,
+} from "../library/serializers";
 import { listNowPlaying, type NowPlayingEntry } from "../nowplaying/repository";
+import {
+  clearPlayQueue,
+  findPlayQueue,
+  savePlayQueue as storePlayQueue,
+} from "../playqueue/repository";
+import { integerParameterOr } from "../subsonic/params";
 import type { SubsonicNode } from "../subsonic/response";
+import { SubsonicError, SubsonicErrorCode } from "../subsonic/response";
 import type { SubsonicHandler } from "../subsonic/router";
 
 /**
@@ -49,4 +63,91 @@ function nowPlayingEntryElement(entry: NowPlayingEntry, now: number): SubsonicNo
     minutesAgo: Math.floor((now - entry.startedAt.getTime()) / 60_000),
     playerName: entry.playerName || undefined,
   };
+}
+
+/**
+ * `savePlayQueue` — the caller's queue, the track they are on and how far into
+ * it, so another device can pick the session up.
+ *
+ * `id` is repeatable and carries the queue in order; `current` names the track
+ * being played and `position` is milliseconds into it. The save replaces
+ * whatever was stored — Navidrome clears the user's queue before storing the
+ * new one, so nothing is merged — and **a call naming no track clears the
+ * queue**, which is how a client says it has nothing queued.
+ *
+ * Nothing is checked against the library: a queue is what the client says it
+ * is, and `getPlayQueue` leaves out the entries that no longer resolve. An id
+ * that is not a track id at all is error 70, as it is everywhere a client
+ * sends one.
+ *
+ * `position` follows Navidrome's `Int64Or`: absent or unreadable means 0
+ * rather than a refusal.
+ */
+export const savePlayQueue: SubsonicHandler = async (request) => {
+  const { params } = request;
+  const db = database(request.env);
+  const trackIds = params.getAll("id").map(queueTrackId);
+
+  if (trackIds.length === 0) {
+    await clearPlayQueue(db, request.user.id);
+
+    return {};
+  }
+
+  const current = params.get("current");
+
+  await storePlayQueue(db, request.user.id, {
+    trackIds,
+    current: current === null ? null : queueTrackId(current),
+    position: integerParameterOr(params, "position", 0),
+    changedBy: params.get("c") ?? "",
+    changedAt: new Date(),
+  });
+
+  return {};
+};
+
+/**
+ * `getPlayQueue` — the queue the caller last saved, ready to resume.
+ *
+ * The saved ids are resolved to `<entry>` songs in the order they were saved;
+ * a track that has since left the library is left out rather than failing the
+ * response, so a queue survives a rescan that removed one of its files. A
+ * caller who has saved nothing gets an empty `<playQueue/>`, not an error, as
+ * Navidrome answers.
+ *
+ * Only the caller's own queue is ever read: the row is keyed by user.
+ */
+export const getPlayQueue: SubsonicHandler = async (request) => {
+  const db = database(request.env);
+  const queue = await findPlayQueue(db, request.user.id);
+  if (queue === null) {
+    return { playQueue: {} };
+  }
+
+  const songs = await findSongsByIds(db, queue.trackIds, request.user.id);
+  const entries = queue.trackIds
+    .map((id) => songs.get(id))
+    .filter((song): song is SongView => song !== undefined);
+
+  return {
+    playQueue: {
+      current: queue.current === null ? undefined : prefixedId("track", queue.current),
+      position: queue.position || undefined,
+      username: request.user.userName,
+      changed: subsonicTimestamp(queue.changedAt),
+      changedBy: queue.changedBy,
+      entry: omitWhenEmpty(entries.map(songElement)),
+    },
+  };
+};
+
+/** A queued track id as the client sent it; anything else is error 70. */
+function queueTrackId(value: string): string {
+  const id = parseIdOfType("track", value);
+  if (id === null) {
+    throw new SubsonicError(SubsonicErrorCode.NotFound);
+  }
+
+  return id;
 }
