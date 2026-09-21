@@ -1,8 +1,11 @@
 name: Deploy
 
-# Deploys the production Worker from the cloud on every push to main, so the
-# project never has to be built or deployed from a laptop. Cloudflare
-# credentials live in the repository's Actions secrets, never in the repo:
+# Deploys the production Worker from the cloud when a release tag is pushed, so
+# the project never has to be built or deployed from a laptop and merging to
+# main is not itself a deploy. Cut a release by tagging a commit on main:
+#   git tag v1.0.0 && git push origin v1.0.0
+# (or create the tag/release in the GitHub UI). Cloudflare credentials live in
+# the repository's Actions secrets, never in the repo:
 #   - CLOUDFLARE_API_TOKEN   (an "Edit Cloudflare Workers" token)
 #   - CLOUDFLARE_ACCOUNT_ID
 # The Worker's own runtime secrets (INITIAL_PASSWORD, PASSWORD_ENCRYPTION_KEY)
@@ -11,7 +14,8 @@ name: Deploy
 
 on:
   push:
-    branches: [main]
+    tags: ["v*"]
+  # Manual fallback: pick any branch or tag to deploy from the Actions tab.
   workflow_dispatch: {}
 
 # Never run two deploys at once; let an in-flight one finish rather than cancel.
