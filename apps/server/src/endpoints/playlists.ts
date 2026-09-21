@@ -29,8 +29,10 @@
  *   hidden behind error 70 - the caller is being refused, not told the
  *   playlist is gone.
  *
- * `updatePlaylist` is not mounted yet, so it still answers with the error 70
- * every unimplemented `/rest/` name answers with (ADR-0005).
+ * All three writes take the same route: the whole `.m3u` is rendered and put,
+ * and the row follows from it. `updatePlaylist` is therefore not an edit of a
+ * stored list but a read of the current one, an edit in memory, and a write of
+ * the result - which is also what makes it converge with the next import.
  */
 
 import { parseIdOfType } from "@stratosonic/db";
@@ -43,12 +45,13 @@ import {
   findTracksByIds,
   findWritablePlaylist,
   listPlaylistEntries,
+  listPlaylistEntryTracks,
   listPlaylists,
   type PlaylistViewer,
   type WritablePlaylist,
 } from "../playlists/repository";
 import { erasePlaylist, newPlaylistKey, writePlaylist } from "../playlists/writes";
-import { requiredParameter } from "../subsonic/params";
+import { integerParameterValue, requiredParameter } from "../subsonic/params";
 import { SubsonicError, SubsonicErrorCode, type SubsonicNode } from "../subsonic/response";
 import type { AuthenticatedSubsonicRequest, SubsonicHandler } from "../subsonic/router";
 
@@ -128,6 +131,90 @@ export const createPlaylist: SubsonicHandler = async (request) => {
 
   return playlistWithEntries(db, request, id);
 };
+
+/**
+ * `updatePlaylist` - the edits a client makes to a playlist it already has:
+ * its `name`, `comment` and `public` flag, songs appended by `songIdToAdd`,
+ * and songs dropped by `songIndexToRemove`.
+ *
+ * **The removals are read against the playlist as it was before this call,
+ * and the additions are appended after them**, which is Navidrome's order
+ * (`playlists.Update` removes by index and then adds, core/playlists.go). A
+ * client that sends both in one request is describing one edit of the list it
+ * is looking at, so an index means the position the listener saw, never a
+ * position that only exists once the additions have landed.
+ *
+ * An index naming no position is ignored rather than refused, as Navidrome
+ * ignores it: a client and a server can disagree about a playlist's length
+ * for a moment, and the listener's other removals should still happen.
+ *
+ * Every parameter but `playlistId` is optional, and each is left alone when
+ * it is absent - not reset. `name` absent keeps the name; `name=` empty is
+ * not a rename either, because a nameless playlist is one the `.m3u` cannot
+ * spell. The answer is an empty ok, as Navidrome answers.
+ *
+ * The file is re-rendered and put before the row is written, exactly as a
+ * create does it, so `changed` moves to the new object's upload time and
+ * `created` stays. The key does not change, and the id is the hash of the
+ * key, so a rename leaves both alone - which is the point of not naming the
+ * file after the playlist (ADR-0006).
+ */
+export const updatePlaylist: SubsonicHandler = async (request) => {
+  const { params } = request;
+  const db = database(request.env);
+  const held = await writable(db, request, requiredParameter(params, "playlistId"));
+
+  const [current, added] = await Promise.all([
+    listPlaylistEntryTracks(db, held.id),
+    requestedTracks(db, params.getAll("songIdToAdd")),
+  ]);
+
+  const removed = requestedRemovals(params);
+  const kept = current.filter((_, index) => !removed.has(index));
+
+  await writePlaylist(request.env, db, {
+    r2Key: held.r2Key,
+    name: params.get("name") || held.name,
+    comment: params.get("comment") ?? held.comment,
+    ownerId: held.ownerId,
+    public: booleanParameter(params, "public") ?? held.public,
+    createdAt: held.createdAt,
+    tracks: [...kept, ...added],
+    writesDetails: true,
+  });
+
+  return {};
+};
+
+/**
+ * The positions `songIndexToRemove` names, as a set so the order they arrive
+ * in and any repeats do not matter.
+ *
+ * A value that is not a whole number is error 0, as it is for every other
+ * integer parameter; Navidrome's `p.Ints` quietly drops it instead, which
+ * would turn a client's typo into a removal that silently did not happen.
+ */
+function requestedRemovals(params: URLSearchParams): ReadonlySet<number> {
+  return new Set(
+    params
+      .getAll("songIndexToRemove")
+      .map((value) => integerParameterValue("songIndexToRemove", value)),
+  );
+}
+
+/**
+ * A flag the client either sent or did not: `null` means "leave it alone",
+ * which is how `updatePlaylist` tells an unchanged `public` from one set to
+ * false.
+ *
+ * "true" and "1" are true and everything else is false, as Navidrome's
+ * `p.Bool` reads it.
+ */
+function booleanParameter(params: URLSearchParams, name: string): boolean | null {
+  const value = params.get(name);
+
+  return value === null ? null : value.toLowerCase() === "true" || value === "1";
+}
 
 /**
  * `deletePlaylist` - removes the `.m3u` and the row it stands for, and

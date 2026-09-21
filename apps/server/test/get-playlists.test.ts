@@ -257,12 +257,3 @@ describe("getPlaylist", () => {
     expect((await playlists("getPlaylist", { id: PRIVATE_ID })).status).toBe("ok");
   });
 });
-
-describe("updatePlaylist", () => {
-  it("is not implemented, and answers as every unknown endpoint does", async () => {
-    const response = await playlists("updatePlaylist", { playlistId: FAVOURITES_ID });
-
-    expect(response.status).toBe("failed");
-    expect(response.error).toEqual({ code: 70, message: "view not found" });
-  });
-});
