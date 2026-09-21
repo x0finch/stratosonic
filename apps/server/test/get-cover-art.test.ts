@@ -8,6 +8,7 @@ import {
   fixtureCoverKey,
   type JsonEnvelope,
   seedAlbum,
+  seedArtist,
   seedFixtureLibrary,
   seedFixtureObjects,
   testEnv,
@@ -126,6 +127,11 @@ beforeAll(async () => {
   const emptyKey = coverKeyOf(EMPTY, "png");
   await seedAlbum({ ...EMPTY, coverKey: emptyKey });
   await testEnv.MUSIC.put(emptyKey, new Uint8Array());
+
+  // The artists whose covers are borrowed need rows of their own: an artist's
+  // cover is resolved through the artist, as `getArtist` resolves it.
+  await seedArtist({ name: CHRONOLOGIST });
+  await seedArtist({ name: UNDATED_ARTIST });
 
   for (const [album, bytes] of [
     [OLDER, OLDER_COVER],

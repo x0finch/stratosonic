@@ -1,25 +1,17 @@
-import { type Album, album, type EntityId, type Track, track } from "@stratosonic/db";
-import { and, asc, eq, isNotNull } from "drizzle-orm";
+import type { EntityId } from "@stratosonic/db";
 import type { Database } from "../db";
+import { findAlbum, findArtist, findTrack } from "../library/repository";
 
 /**
- * The reads the media endpoints make: a track by its id, and the cover object
- * an id of any kind resolves to.
+ * Which stored object a client-facing id asks for.
+ *
+ * The reads themselves belong to `library/repository.ts`, which the browsing
+ * endpoints answer from; nothing is queried here. That is deliberate for the
+ * artist's cover in particular: `getArtist` tells a client which album lends
+ * the artist its `coverArt`, and `getCoverArt` must serve that same album's
+ * picture. Two copies of "the first album with a cover" would be two chances
+ * to disagree, so this asks the browsing side which album it named.
  */
-
-/** The track a `tr-` id names, or null when no row has that id. */
-export async function findTrackById(db: Database, id: string): Promise<Track | null> {
-  const rows = await db.select().from(track).where(eq(track.id, id)).limit(1);
-
-  return rows[0] ?? null;
-}
-
-/** The album an `al-` id names. */
-export async function findAlbumById(db: Database, id: string): Promise<Album | null> {
-  const rows = await db.select().from(album).where(eq(album.id, id)).limit(1);
-
-  return rows[0] ?? null;
-}
 
 /**
  * The R2 key of the cover a client-facing id resolves to, or null when there
@@ -33,45 +25,20 @@ export async function findAlbumById(db: Database, id: string): Promise<Album | n
 export async function findCoverKey(db: Database, entity: EntityId): Promise<string | null> {
   switch (entity.type) {
     case "album":
-      return (await findAlbumById(db, entity.id))?.coverKey ?? null;
+      return (await findAlbum(db, entity.id))?.coverKey ?? null;
 
-    case "track": {
-      const found = await findTrackById(db, entity.id);
+    case "track":
+      // A track is read with its album's cover already joined in, so this is
+      // one query rather than two.
+      return (await findTrack(db, entity.id))?.albumCoverKey ?? null;
 
-      return found === null ? null : ((await findAlbumById(db, found.albumId))?.coverKey ?? null);
+    case "artist": {
+      const coverAlbumId = (await findArtist(db, entity.id))?.coverAlbumId ?? null;
+
+      return coverAlbumId === null ? null : ((await findAlbum(db, coverAlbumId))?.coverKey ?? null);
     }
-
-    case "artist":
-      return (await findArtistCoverAlbum(db, entity.id))?.coverKey ?? null;
 
     default:
       return null;
   }
-}
-
-/**
- * The album whose cover stands for an artist: the first of its albums that has
- * one, in the order `getArtist` lists that artist's albums in.
- *
- * Artists have no image of their own in this library (#9), so one is borrowed,
- * and the rule has to be the same one the browsing endpoints sort by — a
- * client that is told the artist's `coverArt` is album X's must not be served
- * album Y's when it asks for it.
- *
- * That order is Navidrome's: `AlbumsByArtistID` sorts by `max_year`
- * (server/filter/filters.go), which `persistence/album_repository.go` maps to
- * year, then release date, then name. We hold no release date, so it is year,
- * then name, then the id as a tiebreaker so the answer never depends on the
- * order rows happen to come back in. A year we do not know sorts first, as
- * SQLite sorts NULL ascending, and matches what the browsing side does.
- */
-export async function findArtistCoverAlbum(db: Database, artistId: string): Promise<Album | null> {
-  const rows = await db
-    .select()
-    .from(album)
-    .where(and(eq(album.artistId, artistId), isNotNull(album.coverKey)))
-    .orderBy(asc(album.year), asc(album.name), asc(album.id))
-    .limit(1);
-
-  return rows[0] ?? null;
 }

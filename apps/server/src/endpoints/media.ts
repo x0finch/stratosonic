@@ -1,10 +1,12 @@
-import { parseIdOfType, parsePrefixedId, type Track } from "@stratosonic/db";
+import { parseIdOfType, parsePrefixedId } from "@stratosonic/db";
 import { database } from "../db";
 import { audioContentType } from "../library/audio-formats";
+import { findTrack } from "../library/repository";
+import type { SongView } from "../library/serializers";
 import { attachmentDisposition, baseName } from "../media/content-disposition";
 import { coverContentType, declaredCoverContentType } from "../media/images";
 import { headStoredObject, serveStoredObject } from "../media/objects";
-import { findCoverKey, findTrackById } from "../media/repository";
+import { findCoverKey } from "../media/repository";
 import { requiredParameter } from "../subsonic/params";
 import { SubsonicError, SubsonicErrorCode } from "../subsonic/response";
 import type { AuthenticatedSubsonicRequest, SubsonicHandler } from "../subsonic/router";
@@ -101,10 +103,10 @@ export const getCoverArt: SubsonicHandler = async (request) => {
  * have minted — is "not found" rather than a bad request, as it is in
  * Navidrome, where every id that resolves to nothing ends at `ErrNotFound`.
  */
-async function requireTrack(request: AuthenticatedSubsonicRequest): Promise<Track> {
+async function requireTrack(request: AuthenticatedSubsonicRequest): Promise<SongView> {
   const id = parseIdOfType("track", requiredParameter(request.params, "id"));
 
-  const found = id === null ? null : await findTrackById(database(request.env), id);
+  const found = id === null ? null : await findTrack(database(request.env), id);
   if (found === null) {
     throw new SubsonicError(SubsonicErrorCode.NotFound);
   }
