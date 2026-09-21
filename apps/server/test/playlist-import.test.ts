@@ -11,7 +11,7 @@ import {
   storedEntries,
   storedPlaylists,
 } from "./playlists-support";
-import { SCAN_TIME, scanUntilComplete, seedFixtureFiles } from "./scan-support";
+import { scanUntilComplete, seedFixtureFiles } from "./scan-support";
 import { testEnv } from "./support";
 
 /**
@@ -33,9 +33,19 @@ const MATCHED_DURATION = PLAYLIST.trackKeys
   .map((key) => fixtureTrack(key).duration.seconds)
   .reduce((total, seconds) => total + seconds, 0);
 
-/** A later run, so a rewritten row's timestamps are visibly newer. */
+/**
+ * A later pass, so a rewritten row's timestamps are visibly newer.
+ *
+ * The passes here run on the real clock rather than on `SCAN_TIME`, because
+ * the bucket does: R2 stamps an object with the time it was really put, a
+ * playlist's `created` comes from that stamp, and the sweep only removes rows
+ * created before the pass began - so a pass pretending to run last year would
+ * sweep nothing.
+ */
+const FIRST_PASS = new Date();
+
 function minutesLater(minutes: number): Date {
-  return new Date(SCAN_TIME.getTime() + minutes * 60_000);
+  return new Date(FIRST_PASS.getTime() + minutes * 60_000);
 }
 
 beforeAll(async () => {

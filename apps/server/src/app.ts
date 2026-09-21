@@ -19,7 +19,7 @@ import {
   getPlayQueue,
   savePlayQueue,
 } from "./endpoints/playback";
-import { getPlaylist, getPlaylists } from "./endpoints/playlists";
+import { createPlaylist, deletePlaylist, getPlaylist, getPlaylists } from "./endpoints/playlists";
 import { search2, search3 } from "./endpoints/search";
 import { getLicense, getOpenSubsonicExtensions, ping } from "./endpoints/system";
 import { getUser, getUsers } from "./endpoints/users";
@@ -86,11 +86,15 @@ export function createApp(): SubsonicApp {
   registerEndpoint(app, "search2", search2);
   registerEndpoint(app, "search3", search3);
 
-  // Playlists, read side: what the cron imported from the `.m3u` files in
-  // the bucket. The write endpoints are Phase 2 and stay unmounted, so they
-  // answer with the error 70 every unknown `/rest/` name answers with.
+  // Playlists: what the cron imported from the `.m3u` files in the bucket,
+  // and the two writes that put a file there themselves. In Navidrome's
+  // order (server/subsonic/api.go), which puts the creates before the
+  // deletes. `updatePlaylist` stays unmounted, so it answers with the error
+  // 70 every unknown `/rest/` name answers with.
   registerEndpoint(app, "getPlaylists", getPlaylists);
   registerEndpoint(app, "getPlaylist", getPlaylist);
+  registerEndpoint(app, "createPlaylist", createPlaylist);
+  registerEndpoint(app, "deletePlaylist", deletePlaylist);
 
   // Annotations: what a client saves about an item. Each answers an empty ok
   // envelope and writes only the caller's rows.

@@ -258,13 +258,11 @@ describe("getPlaylist", () => {
   });
 });
 
-describe("the playlist write endpoints", () => {
-  it("are not implemented, and answer as every unknown endpoint does", async () => {
-    for (const endpoint of ["createPlaylist", "updatePlaylist", "deletePlaylist"]) {
-      const response = await playlists(endpoint, { id: FAVOURITES_ID });
+describe("updatePlaylist", () => {
+  it("is not implemented, and answers as every unknown endpoint does", async () => {
+    const response = await playlists("updatePlaylist", { playlistId: FAVOURITES_ID });
 
-      expect(response.status).toBe("failed");
-      expect(response.error).toEqual({ code: 70, message: "view not found" });
-    }
+    expect(response.status).toBe("failed");
+    expect(response.error).toEqual({ code: 70, message: "view not found" });
   });
 });

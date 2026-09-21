@@ -3,7 +3,9 @@ import {
   entryKeyCandidates,
   isPlaylistKey,
   parseM3u,
+  playlistNameForFile,
   playlistNameFromKey,
+  renderM3u,
 } from "../src/playlists/m3u";
 import { fixturePlaylistText, fixtures } from "./fixtures/files";
 
@@ -148,5 +150,41 @@ describe("which objects are playlists", () => {
   it("names a playlist after its file, without the extension", () => {
     expect(playlistNameFromKey("playlists/Late Night.m3u8")).toBe("Late Night");
     expect(playlistNameFromKey("favourites.m3u")).toBe("favourites");
+  });
+});
+
+describe("writing a playlist back", () => {
+  const NAME = "Late Night";
+  const KEYS = ["Artist/Album/01 One.mp3", "Other/Album/02 Two.flac", "Artist/Album/01 One.mp3"];
+
+  it("renders the header, the name and one key per line", () => {
+    expect(renderM3u(NAME, KEYS)).toBe(`#EXTM3U\n#PLAYLIST:Late Night\n${KEYS.join("\n")}\n`);
+  });
+
+  it("round-trips: what it writes, the parser reads back unchanged", () => {
+    const parsed = parseM3u(renderM3u(NAME, KEYS));
+
+    expect(parsed.name).toBe(NAME);
+    expect(parsed.entries).toEqual(KEYS);
+  });
+
+  it("writes keys the import resolves from the root, wherever the file sits", () => {
+    const parsed = parseM3u(renderM3u(NAME, KEYS));
+
+    for (const entry of parsed.entries) {
+      expect(entryKeyCandidates("playlists/anything.m3u", entry)).toContain(entry);
+    }
+  });
+
+  it("writes a key that begins with a # in the absolute spelling", () => {
+    const hashed = "#1 Artist/Album/01 One.mp3";
+
+    expect(parseM3u(renderM3u(NAME, [hashed])).entries).toEqual([`/${hashed}`]);
+    expect(entryKeyCandidates("playlists/x.m3u", `/${hashed}`)).toEqual([hashed]);
+  });
+
+  it("keeps a name to one line, so the file cannot say something else", () => {
+    expect(playlistNameForFile("  Two\nLines  ")).toBe("Two Lines");
+    expect(parseM3u(renderM3u("  Two\nLines  ", [])).name).toBe("Two Lines");
   });
 });

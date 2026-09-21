@@ -197,3 +197,40 @@ function present(value: string | null): readonly string[] {
 function isPresent(value: string | null): value is string {
   return value !== null;
 }
+
+/* ------------------------------------------------------------- writing -- */
+
+/**
+ * The text of an `.m3u`, the inverse of `parseM3u`: `#EXTM3U`, the
+ * `#PLAYLIST:` name, then one key per line.
+ *
+ * The keys are written **root-relative** - a track's `r2_key` as it stands -
+ * rather than relative to the folder the file is put in, because that is the
+ * spelling the import already resolves without knowing where the `.m3u`
+ * lives: `entryKeyCandidates` tries the key from the root as its second
+ * candidate. A playlist written here therefore re-imports into the same
+ * entries whether it sits under `playlists/` or anywhere else.
+ *
+ * A key that begins with `#` would be read back as a directive and dropped,
+ * so it is written in the absolute spelling instead, which the parser strips
+ * the leading slash from and resolves to the same key.
+ */
+export function renderM3u(name: string, entries: readonly string[]): string {
+  const lines = ["#EXTM3U", `${NAME_DIRECTIVE}${playlistNameForFile(name)}`];
+
+  for (const entry of entries) {
+    lines.push(entry.startsWith("#") ? `/${entry}` : entry);
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
+/**
+ * A name as an `.m3u` can carry it, and therefore as it is stored: one line,
+ * trimmed. A name holding a line break would otherwise end the directive and
+ * turn its tail into a path, so the file and the row would disagree the
+ * moment the next import read the file back.
+ */
+export function playlistNameForFile(name: string): string {
+  return name.replace(/[\r\n]+/g, " ").trim();
+}

@@ -22,7 +22,7 @@
  */
 
 import { album, annotation, playlist, playlistTrack, track } from "@stratosonic/db";
-import { and, asc, eq, gt, inArray, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, lt, lte, or, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import type { Database } from "../db";
 import { annotationColumns, annotationJoin } from "../library/annotations";
@@ -100,6 +100,74 @@ export async function findPlaylistsByKeys(
   }
 
   return found;
+}
+
+/**
+ * The tracks these ids name, by id; ids that name no track are absent.
+ *
+ * This is `findTracksByKeys` asked the other way round, for the write
+ * endpoints: a client sends the track ids it already holds, and the write
+ * needs each one's key - which is what goes in the `.m3u` - and its duration.
+ * The ids are bound, so they are chunked below D1's parameter limit: a
+ * playlist of five hundred songs is six statements, not one that throws.
+ */
+export async function findTracksByIds(
+  db: Database,
+  ids: readonly string[],
+): Promise<Map<string, EntryTrack>> {
+  const found = new Map<string, EntryTrack>();
+
+  for (const chunk of chunked(ids)) {
+    const rows = await db
+      .select({ id: track.id, r2Key: track.r2Key, duration: track.duration })
+      .from(track)
+      .where(inArray(track.id, chunk));
+
+    for (const row of rows) {
+      found.set(row.id, row);
+    }
+  }
+
+  return found;
+}
+
+/** A stored playlist as a write endpoint needs it: everything it must keep. */
+export interface WritablePlaylist extends StoredPlaylist {
+  readonly name: string;
+}
+
+/**
+ * The playlist this id names, whoever owns it, or null when there is none.
+ *
+ * Unlike the reads below, this does not filter by what the caller may *see*:
+ * a write endpoint has its own rule - the owner or an admin, Navidrome's
+ * `isWritable` - and answering "not found" for a playlist the caller may not
+ * write would tell a client to forget a playlist that is still there.
+ */
+export async function findWritablePlaylist(
+  db: Database,
+  id: string,
+): Promise<WritablePlaylist | null> {
+  const rows = await db
+    .select({
+      id: playlist.id,
+      name: playlist.name,
+      r2Key: playlist.r2Key,
+      ownerId: playlist.ownerId,
+      public: playlist.public,
+      comment: playlist.comment,
+      createdAt: playlist.createdAt,
+    })
+    .from(playlist)
+    .where(eq(playlist.id, id))
+    .limit(1);
+
+  return rows[0] ?? null;
+}
+
+/** Removes one playlist; its entries cascade with it. */
+export async function deletePlaylistRow(db: Database, id: string): Promise<void> {
+  await db.delete(playlist).where(eq(playlist.id, id));
 }
 
 /** A playlist as one import writes it. */
@@ -196,6 +264,14 @@ export interface SweptPlaylist {
  * the page did not offer has lost its file. `through` is the page's last key,
  * or null for the final page, after which nothing is left.
  *
+ * `createdBefore` is the instant the pass began, and only rows older than it
+ * are removed. Everything a page saw was listed before the sweep ran, so a
+ * playlist a client created in between - its `.m3u` put in the bucket after
+ * the listing, its row written straight afterwards - is in the interval and
+ * not in the page, and would otherwise be deleted moments after the listener
+ * made it, for no fault of its own. Its row is younger than the pass, so it
+ * is left alone; the next pass lists its file and imports it like any other.
+ *
  * The rows are read before they are deleted rather than deleted by a `not in
  * (...)`, so the number of keys one page carries never has to fit inside a
  * statement's parameter budget.
@@ -205,12 +281,17 @@ export async function sweepMissingPlaylists(
   after: string,
   through: string | null,
   listed: readonly string[],
+  createdBefore: Date,
 ): Promise<SweptPlaylist[]> {
   const inRange = await db
     .select({ id: playlist.id, r2Key: playlist.r2Key })
     .from(playlist)
     .where(
-      and(gt(playlist.r2Key, after), through === null ? undefined : lte(playlist.r2Key, through)),
+      and(
+        gt(playlist.r2Key, after),
+        through === null ? undefined : lte(playlist.r2Key, through),
+        lt(playlist.createdAt, createdBefore),
+      ),
     );
 
   const stillThere = new Set(listed);

@@ -75,7 +75,7 @@ describe("getUser", () => {
       settingsRole: false,
       downloadRole: true,
       uploadRole: false,
-      playlistRole: false,
+      playlistRole: true,
       coverArtRole: true,
       commentRole: false,
       podcastRole: false,

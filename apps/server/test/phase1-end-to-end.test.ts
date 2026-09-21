@@ -44,8 +44,18 @@ import { BASE, type JsonEnvelope, testEnv } from "./support";
 /** The cron that pokes the scan driver in production, from wrangler.jsonc. */
 const CRON = "*/15 * * * *";
 
-/** The instant the first cron run is stamped with. */
-const FIRST_RUN = new Date(1_750_000_000_000);
+/**
+ * The instant the first cron run is stamped with, and the base of the runs
+ * after it.
+ *
+ * It is the real clock rather than a fixed instant, because the bucket's
+ * clock is: R2 stamps an object with the time it was really put, a
+ * playlist's `created` comes from that stamp, and the playlist sweep only
+ * removes rows created before the pass began. A cron pretending to run last
+ * year would therefore never sweep a playlist, which is the whole point of
+ * the third pass below.
+ */
+const FIRST_RUN = new Date();
 
 /** The MP3 fixture, whose 3598 bytes make the ranges below meaningful. */
 const MP3 = "silent-track.mp3";

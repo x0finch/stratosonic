@@ -20,7 +20,10 @@ by album artist, not by per-track performer.
 _Avoid_: Band, Performer, Album Artist (as a separate concept).
 
 **Playlist**:
-A user-ordered list of tracks.
+A user-ordered list of tracks, stored as an `.m3u` in the bucket: the file is
+the playlist, and the row indexes it. One a client creates is written to the
+bucket first and indexed from there (ADR-0006), so it is the same thing as one
+rclone uploaded.
 _Avoid_: Queue, Mix.
 
 **Annotation**:
