@@ -2,6 +2,7 @@ import { SELF } from "cloudflare:test";
 import { type Playlist, type PlaylistTrack, playlist, playlistTrack } from "@stratosonic/db";
 import { asc } from "drizzle-orm";
 import { database } from "../src/db";
+import type { Env } from "../src/env";
 import {
   DEFAULT_PLAYLIST_IMPORT_LIMITS,
   importPlaylists,
@@ -50,6 +51,143 @@ export function importRun(
   limits: Partial<PlaylistImportLimits> = {},
 ): Promise<PlaylistImportRun> {
   return importPlaylists(testEnv, now, { ...DEFAULT_PLAYLIST_IMPORT_LIMITS, ...limits });
+}
+
+/** One statement D1 ran, and the rows it reported writing for it. */
+export interface RecordedWrite {
+  /** The SQL as Drizzle prepared it, which is how the table is recognised. */
+  readonly sql: string;
+  /** D1's own `meta.rows_written`, index rows included, as the bill counts it. */
+  readonly rowsWritten: number;
+}
+
+/** One run of the import, with what it cost D1. */
+export interface CountedImport {
+  readonly run: PlaylistImportRun;
+  /** Every statement the run executed, in order. */
+  readonly writes: readonly RecordedWrite[];
+  /** Rows written to `playlist` and `playlist_track`: what #61 is about. */
+  readonly playlistRowsWritten: number;
+  /** The parameter count of every statement, as the scan's helper records it. */
+  readonly boundCounts: readonly number[];
+  /** How many statements the run ran against this table, read or write. */
+  statementsAgainst(table: string): number;
+}
+
+/**
+ * Runs the import against a D1 that reports what every statement wrote.
+ *
+ * The free tier allows 100,000 rows written a day, and an import that
+ * rewrites every entry of every playlist on every pass spends them (#61), so
+ * a test has to be able to say "this pass wrote nothing" rather than only
+ * "this pass left the rows looking the same".
+ *
+ * Drizzle reaches D1 through `prepare(sql).bind(...).run()/all()` and through
+ * `batch`, so wrapping the two catches every statement, batched or not; the
+ * wrapped statements are the real ones, so the import still runs against real
+ * storage. `rows_written` is D1's own number, which counts the index rows a
+ * write touches as well as the table rows - a test therefore asks whether it
+ * is zero, not what it is.
+ */
+export async function importCountingWrites(
+  now: Date = SCAN_TIME,
+  limits: Partial<PlaylistImportLimits> = {},
+): Promise<CountedImport> {
+  const writes: RecordedWrite[] = [];
+  const boundCounts: number[] = [];
+  const queries = new WeakMap<D1PreparedStatement, string>();
+
+  const record = (sql: string, rowsWritten: number) => {
+    writes.push({ sql, rowsWritten });
+  };
+
+  const counted = (statement: D1PreparedStatement, sql: string): D1PreparedStatement => {
+    const proxy = new Proxy(statement, {
+      get(target, property) {
+        if (property === "bind") {
+          return (...values: unknown[]) => {
+            boundCounts.push(values.length);
+
+            return counted(target.bind(...values), sql);
+          };
+        }
+
+        if (property === "run" || property === "all") {
+          return async () => {
+            const result = property === "run" ? await target.run() : await target.all();
+            record(sql, result.meta.rows_written);
+
+            return result;
+          };
+        }
+
+        // How Drizzle reads a select it maps itself. It answers with rows and
+        // no meta, so it writes nothing by construction - but it is still a
+        // statement, and the cost of the reads this fix adds is the other
+        // half of #61.
+        if (property === "raw") {
+          return async () => {
+            const rows = await target.raw();
+            record(sql, 0);
+
+            return rows;
+          };
+        }
+
+        const value = Reflect.get(target, property, target);
+
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    queries.set(proxy, sql);
+
+    return proxy;
+  };
+
+  const db = new Proxy(testEnv.DB, {
+    get(target, property) {
+      if (property === "prepare") {
+        return (sql: string) => counted(target.prepare(sql), sql);
+      }
+
+      if (property === "batch") {
+        return async (statements: D1PreparedStatement[]) => {
+          const results = await target.batch(statements);
+          for (const [index, result] of results.entries()) {
+            const statement = statements[index];
+            record(
+              statement === undefined ? "" : (queries.get(statement) ?? ""),
+              result.meta.rows_written,
+            );
+          }
+
+          return results;
+        };
+      }
+
+      const value = Reflect.get(target, property, target);
+
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+
+  const env: Env = { ...testEnv, DB: db };
+  const run = await importPlaylists(env, now, { ...DEFAULT_PLAYLIST_IMPORT_LIMITS, ...limits });
+
+  return {
+    run,
+    writes,
+    boundCounts,
+    playlistRowsWritten: rowsWrittenToPlaylists(writes),
+    statementsAgainst: (table) => writes.filter((write) => write.sql.includes(`"${table}"`)).length,
+  };
+}
+
+/** How many rows a run wrote to the two playlist tables and nowhere else. */
+function rowsWrittenToPlaylists(writes: readonly RecordedWrite[]): number {
+  return writes
+    .filter((write) => /"playlist"|"playlist_track"/.test(write.sql))
+    .reduce((total, write) => total + write.rowsWritten, 0);
 }
 
 /**
