@@ -22,6 +22,7 @@ import { encryptPassword } from "../src/auth/crypto";
 import { database } from "../src/db";
 import type { Env } from "../src/env";
 import { suffixOf } from "../src/library/audio-formats";
+import { type ByteSource, bytesSource } from "../src/library/byte-source";
 import { insertUser } from "../src/users/repository";
 import {
   type FixtureAlbum,
@@ -459,4 +460,64 @@ export async function seedFixtureLibrary(): Promise<SeededLibrary> {
 
 function unique(values: readonly string[]): string[] {
   return [...new Set(values)];
+}
+
+/* ------------------------------------------------------- byte sources -- */
+
+/** A range an extraction asked the object for: `[start, end)`. */
+export interface ReadRange {
+  readonly start: number;
+  readonly end: number;
+}
+
+/** A `ByteSource` over bytes in memory that remembers what was asked of it. */
+export interface RecordingSource extends ByteSource {
+  /** Every range read, in the order they were read, `[start, end)`. */
+  readonly ranges: readonly ReadRange[];
+  /** How many reads were made - one Cloudflare subrequest each, in the scan. */
+  readonly readCount: number;
+  /** Total bytes handed out, which may double-count an overlapping read. */
+  readonly bytesRead: number;
+  /** Whether any read covered this byte offset. */
+  readAt(offset: number): boolean;
+  /** Whether every byte in `[start, end)` was left unread. */
+  neverRead(start: number, end: number): boolean;
+}
+
+/**
+ * Wraps bytes as a source that records each range. The metadata tests use it
+ * to prove what they must: that reading a track's tags never reads the track.
+ */
+export function recordingSource(bytes: Uint8Array): RecordingSource {
+  const underlying = bytesSource(bytes);
+  const ranges: ReadRange[] = [];
+
+  return {
+    size: underlying.size,
+    ranges,
+
+    get readCount() {
+      return ranges.length;
+    },
+
+    get bytesRead() {
+      return ranges.reduce((total, range) => total + (range.end - range.start), 0);
+    },
+
+    async read(offset: number, length: number): Promise<Uint8Array> {
+      const chunk = await underlying.read(offset, length);
+      const start = Math.min(Math.max(offset, 0), underlying.size);
+      ranges.push({ start, end: start + chunk.length });
+
+      return chunk;
+    },
+
+    readAt(offset: number): boolean {
+      return ranges.some((range) => range.start <= offset && offset < range.end);
+    },
+
+    neverRead(start: number, end: number): boolean {
+      return !ranges.some((range) => range.start < end && start < range.end);
+    },
+  };
 }
