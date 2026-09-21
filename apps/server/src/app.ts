@@ -4,6 +4,7 @@ import { getIndexes, getMusicDirectory, getMusicFolders } from "./endpoints/fold
 import { getAlbumList2, getRandomSongs, getStarred2 } from "./endpoints/lists";
 import { download, getCoverArt, stream } from "./endpoints/media";
 import { notImplemented } from "./endpoints/not-implemented";
+import { getPlaylist, getPlaylists } from "./endpoints/playlists";
 import { getLicense, getOpenSubsonicExtensions, ping } from "./endpoints/system";
 import { getUser, getUsers } from "./endpoints/users";
 import {
@@ -48,6 +49,12 @@ export function createApp(): SubsonicApp {
   registerEndpoint(app, "getAlbumList2", getAlbumList2);
   registerEndpoint(app, "getRandomSongs", getRandomSongs);
   registerEndpoint(app, "getStarred2", getStarred2);
+
+  // Playlists, read side: what the cron imported from the `.m3u` files in
+  // the bucket. The write endpoints are Phase 2 and stay unmounted, so they
+  // answer with the error 70 every unknown `/rest/` name answers with.
+  registerEndpoint(app, "getPlaylists", getPlaylists);
+  registerEndpoint(app, "getPlaylist", getPlaylist);
 
   registerEndpoint(app, "getUser", getUser);
   registerEndpoint(app, "getUsers", getUsers, { adminOnly: true });
