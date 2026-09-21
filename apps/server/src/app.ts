@@ -26,6 +26,7 @@ import {
   getPlaylists,
   updatePlaylist,
 } from "./endpoints/playlists";
+import { getScanStatus, startScan } from "./endpoints/scanning";
 import { search2, search3 } from "./endpoints/search";
 import { getLicense, getOpenSubsonicExtensions, ping } from "./endpoints/system";
 import { getUser, getUsers } from "./endpoints/users";
@@ -133,6 +134,12 @@ export function createApp(): SubsonicApp {
   for (const name of USER_WRITE_ENDPOINTS) {
     registerEndpoint(app, name, notImplemented);
   }
+
+  // Media library scanning, which is the last group of Navidrome's router and
+  // the last of the Subsonic API's own list. Admin-only, as Navidrome mounts
+  // it: a scan is server-wide, not one listener's business.
+  registerEndpoint(app, "getScanStatus", getScanStatus, { adminOnly: true });
+  registerEndpoint(app, "startScan", startScan, { adminOnly: true });
 
   registerUnknownEndpointHandler(app);
 
