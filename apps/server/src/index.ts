@@ -26,16 +26,26 @@ export default {
    * scheduled time rather than the wall clock, so a run that starts late does
    * not stamp its rows later than the pass it belongs to.
    *
+   * A run that throws is logged and swallowed rather than allowed to fail the
+   * invocation. The scan commits each listing page with its own cursor, so
+   * whatever it had finished is already durable and the next cron run resumes
+   * there; letting the error out would add nothing but a failed invocation in
+   * the dashboard, and would skip the work that follows.
+   *
    * The playlist import (#17) joins this handler after the scan.
    */
   async scheduled(controller, env) {
     await ensureInitialSetup(env);
 
-    const run = await runScan(env, new Date(controller.scheduledTime));
-    console.log(
-      run.completed
-        ? `scan: pass complete, ${JSON.stringify(run.totals)}`
-        : `scan: step complete, ${JSON.stringify(run.counts)}`,
-    );
+    try {
+      const run = await runScan(env, new Date(controller.scheduledTime));
+      console.log(
+        run.completed
+          ? `scan: pass complete, ${JSON.stringify(run.totals)}`
+          : `scan: step complete, ${JSON.stringify(run.counts)}`,
+      );
+    } catch (error) {
+      console.error("scan: the run failed; it resumes from its cursor next run", error);
+    }
   },
 } satisfies ExportedHandler<Env>;
