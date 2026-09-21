@@ -107,13 +107,30 @@ function nowPlayingEntryElement(entry: NowPlayingEntry, now: number): SubsonicNo
  * that is not a track id at all is error 70, as it is everywhere a client
  * sends one.
  *
+ * More than `MAX_QUEUE_TRACKS` of them is error 0. The save itself is one
+ * statement however long the queue, but reading it back is one `in (...)` per
+ * `KEYS_PER_STATEMENT` ids, and a Worker invocation on the free plan has
+ * fifty subrequests - so an unbounded queue would save happily and then be
+ * unreadable, which is the worse of the two failures. At the cap a
+ * `getPlayQueue` is thirteen subrequests. Navidrome stores whatever arrives,
+ * having no such budget; `star` and `scrobble` carry the same kind of cap.
+ *
  * `position` follows Navidrome's `Int64Or`: absent or unreadable means 0
  * rather than a refusal.
  */
 export const savePlayQueue: SubsonicHandler = async (request) => {
   const { params } = request;
   const db = database(request.env);
-  const trackIds = params.getAll("id").map(queueTrackId);
+  const raw = params.getAll("id");
+
+  if (raw.length > MAX_QUEUE_TRACKS) {
+    throw new SubsonicError(
+      SubsonicErrorCode.Generic,
+      `too many ids: ${raw.length}, at most ${MAX_QUEUE_TRACKS} per request`,
+    );
+  }
+
+  const trackIds = raw.map(queueTrackId);
 
   if (trackIds.length === 0) {
     await clearPlayQueue(db, request.user.id);
@@ -168,6 +185,12 @@ export const getPlayQueue: SubsonicHandler = async (request) => {
     },
   };
 };
+
+/**
+ * How many tracks one saved queue may hold, so that reading it back stays
+ * inside a free-plan invocation's subrequest budget.
+ */
+const MAX_QUEUE_TRACKS = 1000;
 
 /** A queued track id as the client sent it; anything else is error 70. */
 function queueTrackId(value: string): string {
