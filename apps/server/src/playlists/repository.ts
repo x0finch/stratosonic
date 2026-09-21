@@ -53,6 +53,20 @@ export interface StoredPlaylist {
   readonly createdAt: Date;
 }
 
+/**
+ * A stored playlist as the import needs to see it: what it keeps, plus
+ * everything the `.m3u` decides - so a pass can tell whether it has anything
+ * to write at all (`matchesStoredPlaylist`).
+ */
+export interface IndexedPlaylist extends StoredPlaylist {
+  readonly name: string;
+  readonly songCount: number;
+  readonly duration: number;
+  readonly changedAt: Date;
+  /** The tracks it holds, in the order the row lists them. */
+  readonly trackIds: readonly string[];
+}
+
 /** The tracks these R2 keys name, by key; keys with no track are absent. */
 export async function findTracksByKeys(
   db: Database,
@@ -74,28 +88,87 @@ export async function findTracksByKeys(
   return found;
 }
 
-/** The playlists already imported from these `.m3u` keys, by key. */
+/**
+ * The playlists already imported from these `.m3u` keys, by key, each with
+ * the entries it holds.
+ *
+ * The entries come with the rows because the import compares them: a pass
+ * that finds the stored playlist already equal to what the file says writes
+ * nothing, and it cannot know that without them. They cost one statement per
+ * hundred playlists rather than one per playlist, since every id is looked up
+ * at once - and the rows themselves were already one statement per hundred
+ * keys here.
+ *
+ * The caller passes the playlists it is about to import, not every playlist
+ * its listing page offered: the entries of a playlist this run will not reach
+ * are rows read for nothing, and a run reads at most `importsPerRun` of them.
+ */
 export async function findPlaylistsByKeys(
   db: Database,
   keys: readonly string[],
-): Promise<Map<string, StoredPlaylist>> {
-  const found = new Map<string, StoredPlaylist>();
+): Promise<Map<string, IndexedPlaylist>> {
+  const rows: Omit<IndexedPlaylist, "trackIds">[] = [];
 
   for (const chunk of chunked(keys)) {
+    rows.push(
+      ...(await db
+        .select({
+          id: playlist.id,
+          name: playlist.name,
+          r2Key: playlist.r2Key,
+          ownerId: playlist.ownerId,
+          public: playlist.public,
+          comment: playlist.comment,
+          songCount: playlist.songCount,
+          duration: playlist.duration,
+          createdAt: playlist.createdAt,
+          changedAt: playlist.changedAt,
+        })
+        .from(playlist)
+        .where(inArray(playlist.r2Key, chunk))),
+    );
+  }
+
+  const entries = await findPlaylistEntryIds(
+    db,
+    rows.map((row) => row.id),
+  );
+  const found = new Map<string, IndexedPlaylist>();
+
+  for (const row of rows) {
+    found.set(row.r2Key, { ...row, trackIds: entries.get(row.id) ?? [] });
+  }
+
+  return found;
+}
+
+/**
+ * The track ids these playlists hold, in position order, by playlist id; a
+ * playlist holding none is absent.
+ *
+ * The ids are bound, so they are chunked below D1's parameter limit like
+ * every other lookup here.
+ */
+async function findPlaylistEntryIds(
+  db: Database,
+  ids: readonly string[],
+): Promise<Map<string, string[]>> {
+  const found = new Map<string, string[]>();
+
+  for (const chunk of chunked(ids)) {
     const rows = await db
-      .select({
-        id: playlist.id,
-        r2Key: playlist.r2Key,
-        ownerId: playlist.ownerId,
-        public: playlist.public,
-        comment: playlist.comment,
-        createdAt: playlist.createdAt,
-      })
-      .from(playlist)
-      .where(inArray(playlist.r2Key, chunk));
+      .select({ playlistId: playlistTrack.playlistId, trackId: playlistTrack.trackId })
+      .from(playlistTrack)
+      .where(inArray(playlistTrack.playlistId, chunk))
+      .orderBy(asc(playlistTrack.playlistId), asc(playlistTrack.position));
 
     for (const row of rows) {
-      found.set(row.r2Key, row);
+      const held = found.get(row.playlistId);
+      if (held === undefined) {
+        found.set(row.playlistId, [row.trackId]);
+      } else {
+        held.push(row.trackId);
+      }
     }
   }
 
@@ -205,6 +278,46 @@ export interface ImportedPlaylist {
   readonly changedAt: Date;
   /** The tracks it holds, in the order the file lists them. */
   readonly trackIds: readonly string[];
+}
+
+/**
+ * Whether the stored playlist already says exactly what this import would
+ * write - in which case the import writes nothing at all.
+ *
+ * The import re-reads and re-resolves every `.m3u` on every pass, which it
+ * must (see `import.ts`), but a pass over a bucket nobody has touched then
+ * rewrote every row and every entry it had just written: D1 bills per row
+ * written, and fourteen playlists of nine hundred entries came to some
+ * 176,000 rows a day at a quarter-hourly schedule, against a free tier of
+ * 100,000 (#61). Reading the rows first costs one statement for all the
+ * playlists a run imports, and makes the pass free.
+ *
+ * Only the columns the upsert would actually change are compared: the name,
+ * the counts, `changed`, and the entries in order. The rest of the
+ * row - the owner, the comment, the visibility and `created` - is taken
+ * *from* the stored row a line above, so it cannot differ; and comparing a
+ * column the upsert leaves alone would be worse than useless, since a row
+ * that somehow disagreed there would be rewritten on every pass for ever
+ * without the rewrite ever settling it.
+ */
+export function matchesStoredPlaylist(
+  held: IndexedPlaylist | undefined,
+  imported: ImportedPlaylist,
+): boolean {
+  if (held === undefined) {
+    return false;
+  }
+
+  // The key and the id are not compared: the row was looked up by that key,
+  // and the id is the hash of it.
+  return (
+    held.name === imported.name &&
+    held.songCount === imported.songCount &&
+    held.duration === imported.duration &&
+    held.changedAt.getTime() === imported.changedAt.getTime() &&
+    held.trackIds.length === imported.trackIds.length &&
+    held.trackIds.every((trackId, position) => trackId === imported.trackIds[position])
+  );
 }
 
 /**
