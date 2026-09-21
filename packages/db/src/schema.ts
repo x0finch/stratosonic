@@ -306,3 +306,37 @@ export const nowPlaying = sqliteTable("now_playing", {
 
 export type NowPlaying = typeof nowPlaying.$inferSelect;
 export type NewNowPlaying = typeof nowPlaying.$inferInsert;
+
+/**
+ * The play queue a listener carries between devices, one row per user — as
+ * Navidrome keeps one queue per user (`model/playqueue.go`, whose repository
+ * clears the user's queue before storing the new one).
+ *
+ * `savePlayQueue` replaces the whole row and `getPlayQueue` reads it back in
+ * one statement, so the queue is stored the way it arrives: `trackIds` is the
+ * ordered list of track ids as a JSON array of strings, not a row per entry.
+ * A queue is written and read whole and never queried into, and one statement
+ * rather than one per entry is what keeps a long queue inside the free tier's
+ * subrequest budget.
+ *
+ * `current` is the track the listener is on — null when the client names none
+ * — and `position` is how far into it, in milliseconds, the unit Subsonic's
+ * `position` parameter carries. `changedBy` is the client's `c` parameter, so
+ * the next device can tell which client left the queue behind.
+ */
+export const playQueue = sqliteTable("play_queue", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => user.id, { onDelete: "cascade" }),
+  /** The queue in order, a JSON array of bare track ids. */
+  trackIds: text("track_ids").notNull().default("[]"),
+  current: text("current"),
+  /** Milliseconds into the current track. */
+  position: integer("position").notNull().default(0),
+  /** The client's `c` parameter, which `getPlayQueue` answers with. */
+  changedBy: text("changed_by").notNull().default(""),
+  changedAt: integer("changed_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+export type PlayQueue = typeof playQueue.$inferSelect;
+export type NewPlayQueue = typeof playQueue.$inferInsert;

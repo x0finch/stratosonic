@@ -11,7 +11,7 @@ import {
 } from "./endpoints/lists";
 import { download, getCoverArt, stream } from "./endpoints/media";
 import { notImplemented } from "./endpoints/not-implemented";
-import { getNowPlaying } from "./endpoints/playback";
+import { getNowPlaying, getPlayQueue, savePlayQueue } from "./endpoints/playback";
 import { getPlaylist, getPlaylists } from "./endpoints/playlists";
 import { search2, search3 } from "./endpoints/search";
 import { getLicense, getOpenSubsonicExtensions, ping } from "./endpoints/system";
@@ -94,6 +94,12 @@ export function createApp(): SubsonicApp {
 
   registerEndpoint(app, "getUser", getUser);
   registerEndpoint(app, "getUsers", getUsers, { adminOnly: true });
+
+  // Bookmarks, which is where the spec — and Navidrome's router, after the
+  // user endpoints — files the play queue as well: what a client saves to
+  // resume a session on another device.
+  registerEndpoint(app, "getPlayQueue", getPlayQueue);
+  registerEndpoint(app, "savePlayQueue", savePlayQueue);
 
   // Media: these answer with bytes rather than with an envelope, and with an
   // error envelope when there are no bytes to send.
