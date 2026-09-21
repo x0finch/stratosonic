@@ -133,11 +133,19 @@ describe("search3 matching", () => {
     expect(body.searchResult3).toEqual({});
   });
 
-  it("treats a wildcard character as a literal, not a pattern", async () => {
-    // "%" would match every row if it leaked into LIKE unescaped.
-    const result = (await search("search3", { query: "%" })).searchResult3;
+  it.each(["%", "_"])("treats the wildcard %s as a literal, not a pattern", async (wildcard) => {
+    // Unescaped these leak into LIKE, where "%" matches every row and "_"
+    // every row of one character; escaped, neither is in the library.
+    const result = (await search("search3", { query: wildcard })).searchResult3;
 
     expect(result).toEqual({});
+  });
+
+  it("ignores leading, trailing and repeated spaces around the words", async () => {
+    const result = (await search("search3", { query: "  beat   parade  " })).searchResult3;
+
+    expect(albumNames(result)).toEqual(["Beat Parade"]);
+    expect(songTitles(result)).toEqual(["Ticket to Ride"]);
   });
 });
 
