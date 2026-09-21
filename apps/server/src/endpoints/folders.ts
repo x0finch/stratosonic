@@ -22,7 +22,7 @@
  */
 
 import { parsePrefixedId, prefixedId } from "@stratosonic/db";
-import { database } from "../db";
+import { type Database, database } from "../db";
 import { groupArtistsByIndex, IGNORED_ARTICLES } from "../library/artist-index";
 import { checkMusicFolderIds, musicFolderElement } from "../library/music-folder";
 import {
@@ -38,6 +38,7 @@ import {
   omitWhenEmpty,
   songElement,
 } from "../library/serializers";
+import { lastScanStartedAt } from "../scanner/state";
 import { parseGoInt64, requiredParameter } from "../subsonic/params";
 import {
   SubsonicError,
@@ -64,17 +65,18 @@ export const getMusicFolders: SubsonicHandler = () => ({
  * report and for `ifModifiedSince` to be compared against.
  *
  * Navidrome reads the *last scan start time* out of its `property` table and
- * — this is the case we are in — **falls back to `time.Now()` when nothing
- * has recorded one yet** (`getArtist` in server/subsonic/browsing.go).
- * Stratosonic's scan does not exist yet (#11) and writes no such property, so
- * the fallback is all there is, and it is also the safe answer: a library that
- * says it changed just now is never skipped by a client's conditional
- * request, which is what a client doing its first sync needs. When the scan
- * lands it should store its start time and this should read it, at which
- * point `ifModifiedSince` starts saving real work.
+ * **falls back to `time.Now()` when nothing has recorded one yet**
+ * (`getArtist` in server/subsonic/browsing.go). The Scan records exactly that
+ * (`scanner/state.ts`), so this reads it and the fallback is left for a
+ * server that has never scanned — which is also the safe answer there, since
+ * a library that says it changed just now is never skipped by a client's
+ * conditional request, and a client doing its first sync needs the data.
+ *
+ * The start, not the finish: a pass in flight is still writing rows, and a
+ * client that cached against its *finish* would never come back for them.
  */
-function libraryLastModified(): number {
-  return Date.now();
+async function libraryLastModified(db: Database): Promise<number> {
+  return (await lastScanStartedAt(db))?.getTime() ?? Date.now();
 }
 
 /** 1970-01-02, the earliest instant Navidrome accepts as a real timestamp. */
@@ -117,9 +119,10 @@ function ifModifiedSince(params: URLSearchParams): bigint {
 export const getIndexes: SubsonicHandler = async (request) => {
   checkMusicFolderIds(request.params);
 
-  const lastModified = libraryLastModified();
+  const db = database(request.env);
+  const lastModified = await libraryLastModified(db);
   const unchanged = lastModified <= ifModifiedSince(request.params);
-  const artists = unchanged ? [] : await listArtists(database(request.env));
+  const artists = unchanged ? [] : await listArtists(db);
 
   const index = groupArtistsByIndex(artists, (artist) => artist.name).map((group) => ({
     name: group.name,
