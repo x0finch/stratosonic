@@ -39,8 +39,14 @@ const MAX_RATING = 5;
  * clears it with 0.
  *
  * The item and the rating are both required (error 10 when absent). A rating
- * that is not a whole number, or is outside 0–5, is error 0 — Navidrome
- * refuses the same range — and an id that names nothing is error 70.
+ * that is not a whole number is error 0, as Navidrome's `req.Params.Int`
+ * refuses one, and an id that names nothing is error 70.
+ *
+ * The 0–5 range, on the other hand, is ours: Navidrome reads `rating` with
+ * `p.Int` and stores whatever comes back unchecked (`annUpsert` in
+ * `persistence/sql_annotations.go`), so it accepts and keeps a 6. We refuse it
+ * with error 0 because the protocol defines 0–5 and a stored 6 would have the
+ * serializers emit an out-of-spec `userRating="6"` on every read of that item.
  */
 export const setRating: SubsonicHandler = async (request) => {
   const item = requestedItem(request.params);
