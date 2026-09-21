@@ -1,0 +1,102 @@
+/**
+ * The Search module: `search2` and `search3`, the two searches a client's
+ * search box calls.
+ *
+ * Both read the same library and match it the same way (library/search.ts);
+ * they differ only in how they render what they find, exactly as Navidrome's
+ * `Search2` and `Search3` differ:
+ *
+ * - **`search3` speaks ID3** — `<artist>` is `ArtistID3` (with `albumCount`)
+ *   and `<album>` is `AlbumID3`, the same elements `getArtist` and `getAlbum`
+ *   answer with.
+ * - **`search2` speaks the folder view** — `<artist>` is the plain `Artist`
+ *   (id, name, cover; no count) and each `<album>` is a `<child>` directory,
+ *   the shape `getMusicDirectory` lists an album as.
+ * - **`<song>` is the same `Child`** in both.
+ *
+ * The children come in Navidrome's order — artist, album, song — and each kind
+ * pages independently by its own `*Count`/`*Offset` parameters, defaulting to
+ * 20 as Navidrome defaults them. A result container is always present, even
+ * when everything in it is empty, so an empty library answers with an empty
+ * `<searchResult3/>` rather than an error (#9).
+ */
+
+import { database } from "../db";
+import { type SearchQuery, type SearchWindow, searchLibrary } from "../library/search";
+import {
+  albumChildElement,
+  albumElement,
+  artistElement,
+  indexArtistElement,
+  omitWhenEmpty,
+  songElement,
+} from "../library/serializers";
+import { integerParameterOr } from "../subsonic/params";
+import { SubsonicError, SubsonicErrorCode } from "../subsonic/response";
+import type { AuthenticatedSubsonicRequest, SubsonicHandler } from "../subsonic/router";
+
+/** Each kind's default page size, matching Navidrome's `Search*` defaults. */
+const DEFAULT_COUNT = 20;
+
+/** `search3` — matches rendered as ID3 elements. */
+export const search3: SubsonicHandler = async (request) => {
+  const results = await searchLibrary(database(request.env), requestedSearch(request));
+
+  return {
+    searchResult3: {
+      artist: omitWhenEmpty(results.artists.map(artistElement)),
+      album: omitWhenEmpty(results.albums.map(albumElement)),
+      song: omitWhenEmpty(results.tracks.map(songElement)),
+    },
+  };
+};
+
+/** `search2` — the same matches rendered as the folder view's elements. */
+export const search2: SubsonicHandler = async (request) => {
+  const results = await searchLibrary(database(request.env), requestedSearch(request));
+
+  return {
+    searchResult2: {
+      artist: omitWhenEmpty(results.artists.map(indexArtistElement)),
+      album: omitWhenEmpty(results.albums.map(albumChildElement)),
+      song: omitWhenEmpty(results.tracks.map(songElement)),
+    },
+  };
+};
+
+/** The words to match and each kind's window, read in Navidrome's order. */
+function requestedSearch(request: AuthenticatedSubsonicRequest): SearchQuery {
+  const { params } = request;
+
+  return {
+    words: searchWords(params),
+    artists: window(params, "artistCount", "artistOffset"),
+    albums: window(params, "albumCount", "albumOffset"),
+    songs: window(params, "songCount", "songOffset"),
+  };
+}
+
+/**
+ * The query, split into the words every match must contain.
+ *
+ * `query` is required — its absence is error 10 — but an *empty* query is a
+ * request in its own right: it matches the whole library, which some clients
+ * use to enumerate it. So the parameter has to be present, and only then may
+ * it be empty; `requiredParameter` would reject the empty string as missing,
+ * which is why the presence is checked directly here.
+ */
+function searchWords(params: URLSearchParams): string[] {
+  if (!params.has("query")) {
+    throw new SubsonicError(SubsonicErrorCode.MissingParameter, "missing parameter: 'query'");
+  }
+
+  return (params.get("query") ?? "").split(/\s+/).filter((word) => word.length > 0);
+}
+
+/** One kind's window: its count (default 20) and offset, neither negative. */
+function window(params: URLSearchParams, countName: string, offsetName: string): SearchWindow {
+  return {
+    count: Math.max(integerParameterOr(params, countName, DEFAULT_COUNT), 0),
+    offset: Math.max(integerParameterOr(params, offsetName, 0), 0),
+  };
+}
