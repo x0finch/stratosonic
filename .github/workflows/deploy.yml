@@ -57,7 +57,7 @@ jobs:
       # applies without a confirmation prompt.
       - name: Apply D1 migrations (remote)
         working-directory: apps/server
-        run: pnpm exec wrangler d1 migrations apply stratosonic --remote
+        run: pnpm exec wrangler d1 migrations apply stratosonic_db --remote
 
       - name: Deploy Worker
         working-directory: apps/server
