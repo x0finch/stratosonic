@@ -198,10 +198,11 @@ export function albumElement(album: AlbumView): SubsonicNode {
 
 /**
  * `<song>`, Navidrome's `Child` as `childFromMediaFile` fills it
- * (server/subsonic/helpers.go), minus the attributes that need data
- * Stratosonic does not have yet: the annotations `starred`, `playCount` and
- * `userRating` (Phase 2) and the transcoding pair (ADR-0001, nothing is
- * transcoded).
+ * (server/subsonic/helpers.go). The annotation attributes — `starred`,
+ * `playCount`, `played` and `userRating` — come from the caller's `Annotated`
+ * data and are left out when the caller has no annotation for the track. The
+ * only attributes still missing are the transcoding pair, which ADR-0001
+ * leaves out because nothing is transcoded.
  *
  * `path` is the track's R2 key. Navidrome sends a path too — a synthesized
  * `albumArtist/album/track - title.suffix` unless the player asks for the real
@@ -260,9 +261,10 @@ export function songElement(song: SongView): SubsonicNode {
  * drops them, and `created` is always present. `year` is the album's one
  * year: Navidrome sends `cmp.Or(MaxOriginalYear, MaxYear)` because it tracks
  * an original and a release year per album, and Stratosonic stores a single
- * `year`, which is what both of those collapse to here. The annotation attributes
- * (`starred`, `playCount`, `userRating`) wait for Phase 2, as they do in
- * `songElement`.
+ * `year`, which is what both of those collapse to here. The annotation
+ * attributes (`starred`, `playCount`, `played`, `userRating`) come from the
+ * caller's `Annotated` data and are left out when the caller has no
+ * annotation for the album, as they are in `songElement`.
  */
 export function albumChildElement(album: AlbumView): SubsonicNode {
   return {
