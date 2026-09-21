@@ -20,22 +20,30 @@
  * entries pointing at it with it, which would otherwise leave the playlist's
  * song count and positions wrong until somebody edited the file.
  *
- * Re-importing is cheap because an `.m3u` is small and there are few of them:
- * one R2 read and one D1 batch each. It is also exactly idempotent - a pass
- * over an unchanged bucket writes the same rows it wrote last time, with the
- * same ids, the same order and the same timestamps.
+ * Re-importing is cheap because an `.m3u` is small and there are few of them,
+ * and because a pass that resolves to what the library already holds writes
+ * nothing: the stored row and its entries are read back and compared first
+ * (`matchesStoredPlaylist`), so a pass over an unchanged bucket is idempotent
+ * in cost as well as in content. It has to be. D1's free tier allows 100,000
+ * rows written a day, and deleting and re-inserting every entry of every
+ * playlist every quarter of an hour spent that many times over on a library
+ * of fourteen playlists (#61). What still costs the same is the reading: the
+ * file, the tracks its lines name and the rows it would write are read on
+ * every pass, and a playlist that differs in anything - a line added, moved
+ * or now resolving, a track the scan swept - is rewritten whole.
  *
  * ## Why a run is bounded
  *
  * As with the scan, a free-tier invocation has a subrequest and CPU budget, so
  * a run does a fixed amount of work and stops, leaving a cursor behind
- * (`state.ts`). `importsPerRun` bounds the expensive path - one R2 read and
- * one D1 batch per playlist - and `objectsPerRun` bounds the cheap walk past
- * everything in the bucket that is not a playlist. A library with a handful
- * of `.m3u` files finishes a pass in a single run; five hundred of them would
- * take twenty-five, which at the default schedule is a few hours for the
- * first pass and nothing at all afterwards, since a run that changes nothing
- * still writes the same rows.
+ * (`state.ts`). `importsPerRun` bounds the expensive path - one R2 read, one
+ * lookup of the tracks a file names and, only for a playlist that differs,
+ * one D1 batch - and `objectsPerRun` bounds the cheap walk past everything in
+ * the bucket that is not a playlist. A library with a handful of `.m3u` files
+ * finishes a pass in a single run; five hundred of them would take
+ * twenty-five, which at the default schedule is a few hours for the first
+ * pass and nothing at all afterwards, since a run that changes nothing now
+ * writes nothing.
  *
  * The progress row is written after **every page**, so an invocation that is
  * killed half way through costs at most the page it was in rather than
@@ -54,8 +62,9 @@ import {
   findPlaylistsByKeys,
   findTracksByKeys,
   type ImportedPlaylist,
+  type IndexedPlaylist,
+  matchesStoredPlaylist,
   runBatch,
-  type StoredPlaylist,
   sweepMissingPlaylists,
   upsertPlaylistStatements,
 } from "./repository";
@@ -255,7 +264,7 @@ async function importOne(
   db: Database,
   object: R2Object,
   adminId: string,
-  held: StoredPlaylist | undefined,
+  held: IndexedPlaylist | undefined,
   counts: PlaylistImportCounts,
 ): Promise<void> {
   const text = await readPlaylistText(env, object.key, counts);
@@ -300,10 +309,19 @@ async function importOne(
     trackIds: matched.map((entry) => entry.id),
   };
 
-  await runBatch(db, upsertPlaylistStatements(db, imported));
-
   counts.imported++;
   counts.entries += matched.length;
+
+  // The resolving is done either way - that is what makes the import correct
+  // - but the writing is skipped when the library already holds this exact
+  // result, which is the ordinary case on every pass after the first.
+  if (matchesStoredPlaylist(held, imported)) {
+    counts.unchanged++;
+
+    return;
+  }
+
+  await runBatch(db, upsertPlaylistStatements(db, imported));
 }
 
 /**

@@ -30,9 +30,15 @@ export interface PlaylistImportCounts {
   steps: number;
   /** Objects the listing offered and the import looked at, playlist or not. */
   examined: number;
-  /** Playlists read from the bucket and written to the library. */
+  /** Playlists read from the bucket and made to agree with the library. */
   imported: number;
-  /** Entries that named a track and became a row. */
+  /**
+   * How many of those needed no writing at all, because the library already
+   * held exactly what the file resolved to. The ordinary case on every pass
+   * after the first, and the reason a quiet library costs no rows written.
+   */
+  unchanged: number;
+  /** Entries that named a track; what the playlist holds once resolved. */
   entries: number;
   /** Entry paths that named no track; skipped, never fatal. */
   unmatched: number;
@@ -43,7 +49,16 @@ export interface PlaylistImportCounts {
 }
 
 export function noPlaylistImportCounts(): PlaylistImportCounts {
-  return { steps: 0, examined: 0, imported: 0, entries: 0, unmatched: 0, deferred: 0, removed: 0 };
+  return {
+    steps: 0,
+    examined: 0,
+    imported: 0,
+    unchanged: 0,
+    entries: 0,
+    unmatched: 0,
+    deferred: 0,
+    removed: 0,
+  };
 }
 
 export function addPlaylistImportCounts(
