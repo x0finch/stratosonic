@@ -29,6 +29,9 @@ import {
 const ARTIST = "Aurora";
 const ALBUM = "Nightside";
 const YEAR = 2020;
+/** A second album of the same artist, which nobody has annotated. */
+const PLAIN_ALBUM = "Zenith";
+const PLAIN_YEAR = 2021;
 const TRACK_KEY = `${ARTIST}/${ALBUM}/01 Polar.mp3`;
 const OTHER_TRACK_KEY = `${ARTIST}/${ALBUM}/02 Second.mp3`;
 const PLAYLIST_KEY = "playlists/mix.m3u";
@@ -77,6 +80,13 @@ beforeAll(async () => {
     albumArtist: ARTIST,
     year: YEAR,
     songCount: 2,
+    coverKey: null,
+  });
+  await seedAlbum({
+    name: PLAIN_ALBUM,
+    albumArtist: ARTIST,
+    year: PLAIN_YEAR,
+    songCount: 0,
     coverKey: null,
   });
   const track = await seedTrack({
@@ -227,6 +237,51 @@ describe("playlist entries and folder children", () => {
     const nightside = directory?.child?.find((child) => child.name === ALBUM);
 
     expect(nightside?.userRating).toBe(5);
+  });
+
+  it("decorates the directory element itself, not only its children", async () => {
+    const directory = (
+      await browse("getMusicDirectory", { id: prefixedId("album", albumId(ARTIST, ALBUM, YEAR)) })
+    ).directory;
+
+    expect(directory?.starred).toBe(ALBUM_STARRED.toISOString());
+    expect(directory?.playCount).toBe(7);
+    expect(directory?.played).toBe(ALBUM_PLAYED.toISOString());
+    expect(directory?.userRating).toBe(5);
+  });
+
+  it("leaves the four off a directory the caller has not annotated", async () => {
+    const directory = (
+      await browse("getMusicDirectory", {
+        id: prefixedId("album", albumId(ARTIST, PLAIN_ALBUM, PLAIN_YEAR)),
+      })
+    ).directory;
+
+    expect(directory?.name).toBe(PLAIN_ALBUM);
+    expect(directory).not.toHaveProperty("starred");
+    expect(directory).not.toHaveProperty("playCount");
+    expect(directory).not.toHaveProperty("played");
+    expect(directory).not.toHaveProperty("userRating");
+  });
+});
+
+describe("the folder view's artist", () => {
+  it("carries starred and userRating wherever the index artist is rendered", async () => {
+    const indexed = (await browse("getIndexes")).indexes?.index?.flatMap((group) => group.artist);
+    const aurora = indexed?.find((artist) => artist.name === ARTIST);
+
+    expect(aurora?.starred).toBe(ARTIST_STARRED.toISOString());
+    expect(aurora?.userRating).toBe(2);
+
+    // search2 renders the same element, and getArtists the ID3 one beside it.
+    const found = (await search("search2", { query: ARTIST })).searchResult2?.artist?.[0];
+    expect(found?.starred).toBe(ARTIST_STARRED.toISOString());
+    expect(found?.userRating).toBe(2);
+
+    const listed = (await browse("getArtists")).artists?.index?.flatMap((group) => group.artist);
+    const id3 = listed?.find((artist) => artist.name === ARTIST);
+    expect(id3?.starred).toBe(ARTIST_STARRED.toISOString());
+    expect(id3?.userRating).toBe(2);
   });
 });
 

@@ -133,6 +133,27 @@ function playedAttribute(item: Annotated): string | undefined {
 }
 
 /**
+ * The annotation attributes of a `<directory>`, for the folder endpoints to
+ * spread into the attributes they build: `starred`, `playCount`, `played` and
+ * `userRating`, in the order Navidrome's `responses.Directory` declares them,
+ * between `parent` and the ID3 attributes that follow.
+ *
+ * Navidrome fills all four on both kinds of directory — an artist's and an
+ * album's (`buildArtistDirectory` and `buildAlbumDirectory`,
+ * server/subsonic/browsing.go) — from that artist's or album's own
+ * annotation, and each is omitted when the caller has none, by the same rules
+ * that omit it from a child element.
+ */
+export function directoryAnnotationAttributes(item: Annotated): SubsonicNode {
+  return {
+    starred: starredAttribute(item),
+    playCount: playCountAttribute(item),
+    played: playedAttribute(item),
+    userRating: userRatingAttribute(item),
+  };
+}
+
+/**
  * `<artist>`, Navidrome's `ArtistID3`: id, name, coverArt, albumCount. The
  * count is not `omitempty` there, so an artist with no albums still says 0.
  */
@@ -198,10 +219,11 @@ export function albumElement(album: AlbumView): SubsonicNode {
 
 /**
  * `<song>`, Navidrome's `Child` as `childFromMediaFile` fills it
- * (server/subsonic/helpers.go), minus the attributes that need data
- * Stratosonic does not have yet: the annotations `starred`, `playCount` and
- * `userRating` (Phase 2) and the transcoding pair (ADR-0001, nothing is
- * transcoded).
+ * (server/subsonic/helpers.go). The annotation attributes — `starred`,
+ * `playCount`, `played` and `userRating` — come from the caller's `Annotated`
+ * data and are left out when the caller has no annotation for the track. The
+ * only attributes still missing are the transcoding pair, which ADR-0001
+ * leaves out because nothing is transcoded.
  *
  * `path` is the track's R2 key. Navidrome sends a path too — a synthesized
  * `albumArtist/album/track - title.suffix` unless the player asks for the real
@@ -260,9 +282,10 @@ export function songElement(song: SongView): SubsonicNode {
  * drops them, and `created` is always present. `year` is the album's one
  * year: Navidrome sends `cmp.Or(MaxOriginalYear, MaxYear)` because it tracks
  * an original and a release year per album, and Stratosonic stores a single
- * `year`, which is what both of those collapse to here. The annotation attributes
- * (`starred`, `playCount`, `userRating`) wait for Phase 2, as they do in
- * `songElement`.
+ * `year`, which is what both of those collapse to here. The annotation
+ * attributes (`starred`, `playCount`, `played`, `userRating`) come from the
+ * caller's `Annotated` data and are left out when the caller has no
+ * annotation for the album, as they are in `songElement`.
  */
 export function albumChildElement(album: AlbumView): SubsonicNode {
   return {
