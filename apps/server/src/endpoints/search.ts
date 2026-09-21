@@ -16,9 +16,13 @@
  *
  * The children come in Navidrome's order — artist, album, song — and each kind
  * pages independently by its own `*Count`/`*Offset` parameters, defaulting to
- * 20 as Navidrome defaults them. A result container is always present, even
- * when everything in it is empty, so an empty library answers with an empty
- * `<searchResult3/>` rather than an error (#9).
+ * 20 as Navidrome defaults them and capped at 500. The cap is this server's,
+ * not Navidrome's, which caps no search count: a Worker builds the whole
+ * response in memory out of rows D1 returns in one read, so an unbounded
+ * `songCount` would let one request ask for the entire library at once, the
+ * same reason the album lists cap their `size`. A result container is always
+ * present, even when everything in it is empty, so an empty library answers
+ * with an empty `<searchResult3/>` rather than an error (#9).
  */
 
 import { database } from "../db";
@@ -37,6 +41,9 @@ import type { AuthenticatedSubsonicRequest, SubsonicHandler } from "../subsonic/
 
 /** Each kind's default page size, matching Navidrome's `Search*` defaults. */
 const DEFAULT_COUNT = 20;
+
+/** The most one kind can carry, however large a `*Count` the client sends. */
+const MAX_COUNT = 500;
 
 /** `search3` — matches rendered as ID3 elements. */
 export const search3: SubsonicHandler = async (request) => {
@@ -101,10 +108,15 @@ function searchWords(params: URLSearchParams): string[] {
   return query.split(/\s+/).filter((word) => word.length > 0);
 }
 
-/** One kind's window: its count (default 20) and offset, neither negative. */
+/**
+ * One kind's window: its count (default 20, at most 500) and offset, neither
+ * negative.
+ */
 function window(params: URLSearchParams, countName: string, offsetName: string): SearchWindow {
+  const count = Math.max(integerParameterOr(params, countName, DEFAULT_COUNT), 0);
+
   return {
-    count: Math.max(integerParameterOr(params, countName, DEFAULT_COUNT), 0),
+    count: Math.min(count, MAX_COUNT),
     offset: Math.max(integerParameterOr(params, offsetName, 0), 0),
   };
 }

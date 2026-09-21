@@ -171,6 +171,16 @@ describe("search3 enumeration and paging", () => {
     expect(songTitles(result)).toHaveLength(2);
   });
 
+  it("caps a count at 500 however large a one the client sends", async () => {
+    // The library is far smaller than the cap, so what this pins is that a
+    // count no server should honour is served, bounded, rather than passed
+    // through to D1 as a limit of a hundred thousand rows.
+    const result = (await search("search3", { query: "", songCount: "100000" })).searchResult3;
+
+    expect(songTitles(result).length).toBeLessThanOrEqual(500);
+    expect(songTitles(result)).toHaveLength(TRACKS.length);
+  });
+
   it("defaults each kind's count to 20", async () => {
     const result = (await search("search3", { query: "" })).searchResult3;
 
