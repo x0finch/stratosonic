@@ -4,6 +4,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { database } from "../src/db";
 import worker from "../src/index";
 import { MUSIC_FOLDER_ID, MUSIC_FOLDER_NAME } from "../src/library/music-folder";
+import { DEFAULT_SCAN_LIMITS } from "../src/scanner/scan";
 import { readLastScanSummary, readScanProgress, type ScanSummary } from "../src/scanner/state";
 import type { BrowsingResponse } from "./browsing-support";
 import { bootstrapAdmin, browse, browseXml, fixtureAlbum, query } from "./browsing-support";
@@ -102,7 +103,15 @@ async function scheduledUntilComplete(now: Date): Promise<number> {
     }
   }
 
-  throw new Error("the scheduled entry never completed a pass");
+  // `scheduled` logs and swallows a step that throws, so the state the scan
+  // left behind is the only account of why it is not finished.
+  const progress = await readScanProgress(db);
+  const summary = await readLastScanSummary(db);
+
+  throw new Error(
+    `the scheduled entry never completed a pass: progress ${JSON.stringify(progress)}, ` +
+      `last summary ${JSON.stringify(summary)}`,
+  );
 }
 
 /** What the pass that began at this instant did, as the scan recorded it. */
@@ -164,6 +173,19 @@ function durationOf(tracks: readonly FixtureTrack[]): number {
 function titlesOf(tracks: readonly FixtureTrack[]): string[] {
   return tracks.map((entry) => entry.tags?.title ?? entry.pathFallback.title).sort();
 }
+
+/**
+ * What each fixture's `duration` must render as, taken from the manifest
+ * rather than from an answer. A `<song>` carries whole seconds, so the
+ * fixtures shorter than a second carry no duration at all and the one-second
+ * FLAC is the one that proves a duration comes through.
+ */
+const MANIFEST_DURATIONS = new Map<string, number | undefined>(
+  fixtures.tracks.map((entry) => [
+    entry.tags?.title ?? entry.pathFallback.title,
+    Math.trunc(entry.duration.seconds) || undefined,
+  ]),
+);
 
 /** The album artists the manifest names, once each, in first-seen order. */
 function albumArtistNames(): string[] {
@@ -241,6 +263,10 @@ beforeAll(async () => {
 
 describe("the cron indexing a fresh bucket", () => {
   it("finishes the pass in a single invocation at the production limits", () => {
+    // One invocation is enough only because the bucket holds no more audio
+    // objects than a run may read. A sixth fixture would still be indexed,
+    // over two runs; this says why the count below is what it is.
+    expect(fixtures.tracks.length).toBeLessThanOrEqual(DEFAULT_SCAN_LIMITS.extractionsPerRun);
     expect(firstPassInvocations).toBe(1);
   });
 
@@ -295,15 +321,10 @@ describe("browsing the library the cron built", () => {
       expect(body.album?.songCount).toBe(tracks.length);
       expect(body.album?.duration).toBe(durationOf(tracks));
       expect((body.album?.song ?? []).map((song) => song.title).sort()).toEqual(titlesOf(tracks));
-      expect((body.album?.song ?? []).map((song) => song.duration)).toEqual(
-        (body.album?.song ?? []).map((song) => {
-          const fixture = tracks.find(
-            (entry) => (entry.tags?.title ?? entry.pathFallback.title) === song.title,
-          );
 
-          return Math.trunc(fixture?.duration.seconds ?? 0) || undefined;
-        }),
-      );
+      for (const song of body.album?.song ?? []) {
+        expect(song.duration).toBe(MANIFEST_DURATIONS.get(song.title));
+      }
     },
   );
 
@@ -481,15 +502,24 @@ describe("playing what the cron indexed", () => {
 
 describe("the lists a client fills its home screens from", () => {
   it("lists every album under newest, most recent first", async () => {
-    const body = await list("getAlbumList2", { type: "newest", size: "50" });
-    const listed = body.albumList2?.album ?? [];
+    // The order to expect is worked out from what `getAlbum` says each album
+    // was created at, not from the list's own answer, so a list in the wrong
+    // order cannot agree with itself. `newest` is Navidrome's
+    // `recently_added` descending — created, then id, both descending — and
+    // the fixtures are uploaded in one tight loop, so the id is what tells
+    // most of them apart.
+    const dated: { id: string; created: number }[] = [];
+    for (const album of fixtures.albums) {
+      const body = await browse("getAlbum", { id: albumUrlId(album) });
+      dated.push({ id: albumUrlId(album), created: Date.parse(body.album?.created ?? "") });
+    }
+    const expected = [...dated]
+      .sort((left, right) => right.created - left.created || (left.id < right.id ? 1 : -1))
+      .map((album) => album.id);
 
-    expect(listed.map((album) => album.name).sort()).toEqual(
-      fixtures.albums.map((album) => album.name).sort(),
-    );
+    const listed = (await list("getAlbumList2", { type: "newest", size: "50" })).albumList2?.album;
 
-    const created = listed.map((album) => Date.parse(album.created));
-    expect(created).toEqual([...created].sort((left, right) => right - left));
+    expect((listed ?? []).map((album) => album.id)).toEqual(expected);
   });
 
   it("lists every album alphabetically by name", async () => {
