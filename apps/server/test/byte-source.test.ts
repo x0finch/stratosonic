@@ -5,8 +5,11 @@ import {
   chunkedSource,
   DEFAULT_CACHED_CHUNKS,
   DEFAULT_CHUNK_SIZE,
+  r2Source,
 } from "../src/library/byte-source";
-import { recordingSource } from "./support";
+import { extractMetadata } from "../src/library/metadata";
+import { fixtureBytes, fixtureTrack } from "./fixtures/files";
+import { recordingSource, seedFixtureObject, testEnv } from "./support";
 
 /** Bytes whose value says where they are, so a wrong offset cannot pass. */
 function ramp(size: number): Uint8Array {
@@ -216,5 +219,51 @@ describe("recordingSource", () => {
     expect(source.readAt(20)).toBe(false);
     expect(source.neverRead(20, 100)).toBe(true);
     expect(source.neverRead(0, 11)).toBe(false);
+  });
+});
+
+describe("r2Source", () => {
+  it("reads a range of an object in the bucket", async () => {
+    const track = fixtureTrack("silent-track.mp3");
+    const stored = await seedFixtureObject(track.file);
+    const source = r2Source(testEnv.MUSIC, stored.key, stored.size);
+
+    expect(source.size).toBe(track.size);
+    await expect(source.read(10, 20)).resolves.toEqual(fixtureBytes(track.file).subarray(10, 30));
+  });
+
+  it("stops at the end of the object rather than asking R2 for more", async () => {
+    const track = fixtureTrack("hushed-interlude.flac");
+    const stored = await seedFixtureObject(track.file);
+    const source = r2Source(testEnv.MUSIC, stored.key, stored.size);
+
+    // R2 refuses a range that begins past the end, so the clamping is not a
+    // convenience: a parser reading the last bytes of a file would throw.
+    await expect(source.read(stored.size - 8, 64)).resolves.toEqual(
+      fixtureBytes(track.file).subarray(stored.size - 8),
+    );
+    await expect(source.read(stored.size, 64)).resolves.toEqual(new Uint8Array(0));
+  });
+
+  it("says so when the object has gone", async () => {
+    const stored = await seedFixtureObject("untagged.mp3");
+    await testEnv.MUSIC.delete(stored.key);
+
+    await expect(r2Source(testEnv.MUSIC, stored.key, stored.size).read(0, 16)).rejects.toThrow(
+      stored.key,
+    );
+  });
+
+  it("describes a track read straight out of the bucket", async () => {
+    const track = fixtureTrack("tail-loaded.m4a");
+    const stored = await seedFixtureObject(track.file);
+
+    const metadata = await extractMetadata(
+      r2Source(testEnv.MUSIC, stored.key, stored.size),
+      track.suffix,
+    );
+
+    expect(metadata.title).toBe(track.tags?.title);
+    expect(metadata.duration).toBeCloseTo(track.duration.seconds, 3);
   });
 });
