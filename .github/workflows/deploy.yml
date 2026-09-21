@@ -1,11 +1,21 @@
 name: Deploy
 
-# Deploys the production Worker from the cloud when a release tag is pushed, so
-# the project never has to be built or deployed from a laptop and merging to
-# main is not itself a deploy. Cut a release by tagging a commit on main:
-#   git tag v1.0.0 && git push origin v1.0.0
-# (or create the tag/release in the GitHub UI). Cloudflare credentials live in
-# the repository's Actions secrets, never in the repo:
+# Deploys the production Worker from the cloud. Two ways to release, both
+# ending in a `v*` tag that marks exactly what was shipped:
+#
+#   1. Push a tag yourself:      git tag v0.1.0 && git push origin v0.1.0
+#      (or create the tag/release in the GitHub UI) — the tag already exists,
+#      so this run just deploys the tagged commit.
+#   2. Run this workflow manually from the Actions tab with a `version` input
+#      (e.g. v0.14.1) — CI deploys the selected ref and then creates and pushes
+#      that tag for you. Use this when you cannot push tags yourself.
+#
+# Pushing the tag from case 2 with the built-in GITHUB_TOKEN does NOT start a
+# second run (GitHub does not re-trigger workflows on GITHUB_TOKEN pushes), so
+# the two triggers never double-deploy.
+#
+# Cloudflare credentials live in the repository's Actions secrets, never in the
+# repo:
 #   - CLOUDFLARE_API_TOKEN   (an "Edit Cloudflare Workers" token)
 #   - CLOUDFLARE_ACCOUNT_ID
 # The Worker's own runtime secrets (INITIAL_PASSWORD, PASSWORD_ENCRYPTION_KEY)
@@ -15,8 +25,12 @@ name: Deploy
 on:
   push:
     tags: ["v*"]
-  # Manual fallback: pick any branch or tag to deploy from the Actions tab.
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号,形如 v0.14.1(CI 会打成 tag)"
+        required: true
+        type: string
 
 # Never run two deploys at once; let an in-flight one finish rather than cancel.
 concurrency:
@@ -28,12 +42,30 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      contents: read
+      # write is needed only to push the tag on a manual run; a tag-push run
+      # never creates a tag.
+      contents: write
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
+
+      # On a manual run, reject a malformed or already-used version before we
+      # spend time deploying, so a run either produces a clean new tag or fails
+      # fast.
+      - name: Validate the requested version
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          version="${{ inputs.version }}"
+          if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::version must look like v0.14.1 (got '$version')"
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$version" >/dev/null 2>&1; then
+            echo "::error::tag $version already exists; pick a new version"
+            exit 1
+          fi
 
       - uses: pnpm/action-setup@v4
         with:
@@ -46,7 +78,7 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Gate the deploy on the same checks a contributor runs, so a red main is
+      # Gate the deploy on the same checks a contributor runs, so a red build is
       # never shipped.
       - run: pnpm lint
       - run: pnpm typecheck
@@ -62,3 +94,15 @@ jobs:
       - name: Deploy Worker
         working-directory: apps/server
         run: pnpm exec wrangler deploy
+
+      # Only on a manual run, and only after a successful deploy, stamp the
+      # deployed commit with the requested tag so it is never created for a
+      # failed release.
+      - name: Tag the released commit
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          version="${{ inputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$version" -m "Release $version"
+          git push origin "$version"
