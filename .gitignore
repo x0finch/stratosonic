@@ -7,3 +7,6 @@ coverage/
 .dev.vars.*
 !.dev.vars.example
 .DS_Store
+
+# Agent worktrees created by Claude Code (git worktree isolation)
+.claude/worktrees/
