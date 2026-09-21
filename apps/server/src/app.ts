@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { getAlbum, getArtist, getArtists, getGenres, getSong } from "./endpoints/browsing";
 import { getIndexes, getMusicDirectory, getMusicFolders } from "./endpoints/folders";
-import { getAlbumList2, getRandomSongs, getStarred2 } from "./endpoints/lists";
+import { getAlbumList2, getRandomSongs, getSongsByGenre, getStarred2 } from "./endpoints/lists";
 import { download, getCoverArt, stream } from "./endpoints/media";
 import { notImplemented } from "./endpoints/not-implemented";
 import { getPlaylist, getPlaylists } from "./endpoints/playlists";
@@ -57,6 +57,7 @@ export function createApp(): SubsonicApp {
   // Lists: the home screens, and the lists a client's first sync reads.
   registerEndpoint(app, "getAlbumList2", getAlbumList2);
   registerEndpoint(app, "getRandomSongs", getRandomSongs);
+  registerEndpoint(app, "getSongsByGenre", getSongsByGenre);
   registerEndpoint(app, "getStarred2", getStarred2);
 
   // Searching: the search box, over the library the client already has.
