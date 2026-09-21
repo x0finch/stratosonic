@@ -5,7 +5,14 @@ import { getIndexes, getMusicDirectory, getMusicFolders } from "./endpoints/fold
 import { getAlbumList2, getRandomSongs, getStarred2 } from "./endpoints/lists";
 import { download, getCoverArt, stream } from "./endpoints/media";
 import { notImplemented } from "./endpoints/not-implemented";
-import { getNowPlaying, getPlayQueue, savePlayQueue } from "./endpoints/playback";
+import {
+  createBookmark,
+  deleteBookmark,
+  getBookmarks,
+  getNowPlaying,
+  getPlayQueue,
+  savePlayQueue,
+} from "./endpoints/playback";
 import { getPlaylist, getPlaylists } from "./endpoints/playlists";
 import { search2, search3 } from "./endpoints/search";
 import { getLicense, getOpenSubsonicExtensions, ping } from "./endpoints/system";
@@ -86,6 +93,9 @@ export function createApp(): SubsonicApp {
   // Bookmarks, which is where the spec — and Navidrome's router, after the
   // user endpoints — files the play queue as well: what a client saves to
   // resume a session on another device.
+  registerEndpoint(app, "getBookmarks", getBookmarks);
+  registerEndpoint(app, "createBookmark", createBookmark);
+  registerEndpoint(app, "deleteBookmark", deleteBookmark);
   registerEndpoint(app, "getPlayQueue", getPlayQueue);
   registerEndpoint(app, "savePlayQueue", savePlayQueue);
 
