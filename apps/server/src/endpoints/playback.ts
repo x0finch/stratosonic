@@ -295,12 +295,19 @@ export const deleteBookmark: SubsonicHandler = async (request) => {
 /**
  * `<bookmark>`, Navidrome's `Bookmark`: the attributes it carries, and the
  * bookmarked song as its one `<entry>` child.
+ *
+ * `comment` is omitted when the client attached none, as Navidrome's
+ * `omitempty` omits it; the other four are always sent, `position` included,
+ * because a bookmark at 0 is still a bookmark. The column stores `""` for a
+ * bookmark made without a comment, and a later one made with a comment
+ * replaces it, so "no comment" and "the empty comment" are one state on both
+ * servers.
  */
 function bookmarkElement(entry: BookmarkEntry, userName: string): SubsonicNode {
   return {
     position: entry.position,
     username: userName,
-    comment: entry.comment,
+    comment: entry.comment || undefined,
     created: subsonicTimestamp(entry.createdAt),
     changed: subsonicTimestamp(entry.changedAt),
     entry: songElement(entry.song),

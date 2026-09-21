@@ -47,7 +47,7 @@ interface BookmarkElement {
   entry: SubsonicSongElement;
   position: number;
   username: string;
-  comment: string;
+  comment?: string;
   created: string;
   changed: string;
 }
@@ -180,10 +180,16 @@ describe("creating a bookmark", () => {
     );
   });
 
-  it("takes no comment as an empty one", async () => {
+  it("leaves the comment attribute off when the client attached none", async () => {
     await call("createBookmark", { id: id(SONGS.talk), position: "1000" });
 
-    expect((await bookmarkOf(SONGS.talk))?.comment).toBe("");
+    const bookmark = await bookmarkOf(SONGS.talk);
+    expect(bookmark).toBeDefined();
+    expect(bookmark).not.toHaveProperty("comment");
+
+    // And it is absent from the XML too, as Navidrome's `omitempty` leaves it.
+    const xml = await callXml("getBookmarks");
+    expect(xml).not.toContain('comment=""');
   });
 });
 
