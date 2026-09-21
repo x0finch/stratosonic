@@ -10,6 +10,7 @@ import {
   driveUntilIdle,
   nextAlarmAt,
   poke,
+  pokeDuringAStep,
   runNextAlarm,
   slowTuning,
 } from "./driver-support";
@@ -119,14 +120,18 @@ describe("a cron poke driving a pass through chained alarms", () => {
     expect(summary.startedAt).toBe(FIRST_POKE.getTime());
     expect(summary.counts.indexed).toBe(fixtures.tracks.length);
     expect(summary.counts.broken).toBe(0);
+    // The scan itself counts its steps, so this says how many the pass took
+    // whoever fired the alarms.
+    expect(summary.counts.steps).toBe(1);
   });
 
   it("takes one alarm for the scan and one for the import, then stops", async () => {
     // Five fixtures is fewer than one step may read, so the scan's pass ends
-    // in its first step and the import has the second. The count is an upper
-    // bound because miniflare fires a due alarm of its own accord as well,
-    // which can only take a step off what this test had to fire itself.
+    // in its first step and the import has the second. The scan's own step
+    // count is the exact one; the alarms this test fired are an upper bound,
+    // because miniflare fires a due alarm of its own accord as well.
     expect(fixtures.tracks.length).toBeLessThanOrEqual(DEFAULT_SCAN_LIMITS.extractionsPerRun);
+    expect((await completedPass()).counts.steps).toBe(1);
     expect(alarms).toBeLessThanOrEqual(2);
 
     // And having done them, the driver stops: no alarm is left scheduled,
@@ -163,7 +168,10 @@ describe("a pass whose scan does not fit in one step", () => {
     alarms = await driveUntilIdle();
   });
 
-  it("chains one alarm after another until the pass is done", () => {
+  it("chains one alarm after another until the pass is done", async () => {
+    // Five fixtures, two a step: the scan records the three steps it took,
+    // and the import had the alarm after them.
+    expect((await completedPass()).counts.steps).toBe(3);
     expect(alarms).toBeGreaterThanOrEqual(3);
   });
 
@@ -178,7 +186,8 @@ describe("a pass whose scan does not fit in one step", () => {
 describe("a second poke while a pass is in flight", () => {
   const poked = new Date(FIRST_POKE.getTime() + 3 * QUARTER_HOUR);
   const pokedAgain = new Date(poked.getTime() + QUARTER_HOUR);
-  let secondOutcome = "";
+  let betweenSteps = "";
+  let duringAStep = "";
   let due: number | null = null;
   let dueAfterSecondPoke: number | null = null;
 
@@ -191,12 +200,24 @@ describe("a second poke while a pass is in flight", () => {
     await runNextAlarm();
     due = await nextAlarmAt();
 
-    secondOutcome = await poke(pokedAgain);
+    // Between two steps, where an alarm is scheduled and nothing is running.
+    betweenSteps = await poke(pokedAgain);
     dueAfterSecondPoke = await nextAlarmAt();
+
+    duringAStep = await pokeDuringAStep(pokedAgain);
   });
 
-  it("starts nothing new", () => {
-    expect(secondOutcome).toBe("running");
+  it("starts nothing new between two steps", () => {
+    expect(betweenSteps).toBe("running");
+  });
+
+  it("starts nothing new during a step either", () => {
+    // The harder half of the same question. A step is not atomic — input
+    // gates only cover storage operations, so a poke really can arrive while
+    // `runScan` waits on R2 — and `getAlarm()` answers null while the
+    // handler runs, so the driver has nothing to see but the instant its
+    // state was armed at.
+    expect(duringAStep).toBe("running");
   });
 
   it("leaves the alarm the pass had already scheduled", () => {
@@ -207,6 +228,8 @@ describe("a second poke while a pass is in flight", () => {
   it("finishes the pass the first poke started, under its own stamp", async () => {
     await driveUntilIdle();
 
+    // Had either poke been taken, the pass would carry the later stamp and
+    // its steps would have started over.
     expect((await completedPass()).startedAt).toBe(poked.getTime());
     await expectWholeLibrary();
   });
@@ -271,7 +294,7 @@ describe("a step that keeps throwing", () => {
     // failures shows itself: doubling means it went up.
     await expectNextAlarmIn(FIRST_RETRY);
     await expectNextAlarmIn(2 * FIRST_RETRY);
-    // The fourth failure would ask for 4,800,000 ms; the cap is what it gets.
+    // The third failure asks for 2,400,000 ms; the cap is what it gets.
     await expectNextAlarmIn(MAX_RETRY);
   });
 
@@ -290,5 +313,56 @@ describe("a step that keeps throwing", () => {
     await driveUntilIdle();
 
     await expectWholeLibrary();
+  });
+});
+
+/* ================================ the delays production runs with == */
+
+describe("the delays a pass runs with when nothing is injected", () => {
+  const poked = new Date(FIRST_POKE.getTime() + 7 * QUARTER_HOUR);
+  const pokedAgain = new Date(poked.getTime() + QUARTER_HOUR);
+
+  /** How long after a step the next one is due, with no tuning at all. */
+  const STEP_DELAY = 1_000;
+
+  /** How long after the first failed step it is tried again. */
+  const FIRST_RETRY = 2_000;
+
+  beforeAll(async () => {
+    await resetLibrary();
+    await seedFixtureFiles();
+  });
+
+  it("puts the next step a second after the one before", async () => {
+    const before = Date.now();
+    expect(await poke(poked, {})).toBe("started");
+
+    const due = await nextAlarmAt();
+    expect(due).not.toBeNull();
+    expect((due ?? 0) - before).toBeGreaterThanOrEqual(STEP_DELAY);
+    expect((due ?? 0) - before).toBeLessThan(STEP_DELAY + 30_000);
+
+    await driveUntilIdle();
+  });
+
+  it("waits two seconds before trying a failed step again", async () => {
+    // Only the failure bound is injected, and only so that the driver stops
+    // after the second failure instead of retrying for a minute; the delay
+    // asserted here is the production one.
+    expect(await poke(pokedAgain, { maxFailures: 2 })).toBe("started");
+    await testEnv.DB.exec("ALTER TABLE property RENAME TO property_taken_away");
+
+    const before = Date.now();
+    expect(await runNextAlarm()).toBe(true);
+    const due = await nextAlarmAt();
+    expect(due).not.toBeNull();
+    expect((due ?? 0) - before).toBeGreaterThanOrEqual(FIRST_RETRY);
+    expect((due ?? 0) - before).toBeLessThan(FIRST_RETRY + 30_000);
+
+    // The second failure is the bound, so the driver stops and leaves no
+    // alarm behind for the rest of this file to trip over.
+    expect(await runNextAlarm()).toBe(true);
+    expect(await driverIsIdle()).toBe(true);
+    await testEnv.DB.exec("ALTER TABLE property_taken_away RENAME TO property");
   });
 });

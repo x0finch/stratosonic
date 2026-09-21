@@ -272,14 +272,17 @@ beforeAll(async () => {
 /* ============================================================ the scan == */
 
 describe("the cron indexing a fresh bucket", () => {
-  it("finishes the pass in one scan step and one import step", () => {
+  it("finishes the pass in one scan step and one import step", async () => {
     // One step is enough for the scan only because the bucket holds no more
     // audio objects than a step may read; a sixth fixture would take a second
     // alarm. The import has the step after it, which is what the driver does
-    // when the scan's pass completes. The count is an upper bound because
-    // miniflare fires a due alarm of its own accord too, which can only take
-    // a step off what the test had to fire itself.
+    // when the scan's pass completes.
+    //
+    // The exact figure is the one the scan recorded itself: the alarms this
+    // test fired are only an upper bound, since miniflare fires a due alarm
+    // of its own accord too.
     expect(fixtures.tracks.length).toBeLessThanOrEqual(DEFAULT_SCAN_LIMITS.extractionsPerRun);
+    expect((await summaryOf(FIRST_RUN)).counts.steps).toBe(1);
     expect(firstPassSteps).toBeLessThanOrEqual(2);
   });
 
@@ -640,6 +643,7 @@ describe("a second cron run over the unchanged bucket", () => {
     const indexedBefore = await browse("getIndexes");
 
     expect(await scheduledUntilComplete(secondRun)).toBeLessThanOrEqual(2);
+    expect((await summaryOf(secondRun)).counts.steps).toBe(1);
 
     expect(await librarySnapshot()).toEqual(before);
     // `getIndexes` carries when the library was last scanned, which has to
@@ -650,6 +654,7 @@ describe("a second cron run over the unchanged bucket", () => {
   it("reports a pass that read nothing and removed nothing", async () => {
     const summary = await summaryOf(secondRun);
 
+    expect(summary.counts.steps).toBe(1);
     expect(summary.counts.indexed).toBe(0);
     expect(summary.counts.added).toBe(0);
     expect(summary.counts.updated).toBe(0);
