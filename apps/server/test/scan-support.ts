@@ -1,6 +1,17 @@
-import { type Album, type Artist, album, artist, type Track, track } from "@stratosonic/db";
+import {
+  type Album,
+  type Artist,
+  album,
+  artist,
+  playlist,
+  playlistTrack,
+  property,
+  type Track,
+  track,
+} from "@stratosonic/db";
 import { asc } from "drizzle-orm";
 import { database } from "../src/db";
+import type { Env } from "../src/env";
 import { DEFAULT_SCAN_LIMITS, runScan, type ScanLimits, type ScanRun } from "../src/scanner/scan";
 import { fixtures } from "./fixtures/files";
 import { seedFixtureObject, testEnv } from "./support";
@@ -19,9 +30,24 @@ import { seedFixtureObject, testEnv } from "./support";
 /** The instant a scan is stamped with, unless a test wants another. */
 export const SCAN_TIME = new Date(1_750_000_000_000);
 
+/**
+ * Limits generous enough that a scan of the handful of fixtures finishes in
+ * one run. The production defaults (`DEFAULT_SCAN_LIMITS`) are sized to the
+ * free plan's fifty subrequests, which is fewer reads than some of these
+ * fixtures need at once; a test about *correctness* rather than *batching*
+ * wants the whole pass, so it starts from these and a batching test lowers
+ * whichever limit it is exercising.
+ */
+export const UNBOUNDED_LIMITS: ScanLimits = {
+  pageSize: DEFAULT_SCAN_LIMITS.pageSize,
+  pagesPerRun: 1000,
+  extractionsPerRun: 1000,
+  deletionsPerPage: DEFAULT_SCAN_LIMITS.deletionsPerPage,
+};
+
 /** One run of the scan, with whichever limits the test needs. */
 export function scan(now: Date = SCAN_TIME, limits: Partial<ScanLimits> = {}): Promise<ScanRun> {
-  return runScan(testEnv, now, { ...DEFAULT_SCAN_LIMITS, ...limits });
+  return runScan(testEnv, now, { ...UNBOUNDED_LIMITS, ...limits });
 }
 
 /**
@@ -58,6 +84,29 @@ export async function seedFixtureFiles(): Promise<void> {
   }
 
   await seedFixtureObject(fixtures.playlist.file);
+}
+
+/**
+ * Empties the library and the scan's own state.
+ *
+ * D1 and R2 are isolated per test *file* but shared between the tests within
+ * one (see `apply-migrations.ts`), so a file that runs several independent
+ * scans clears the bucket and this between them; otherwise one test's rows,
+ * covers and cursor are another's starting point.
+ */
+export async function resetLibrary(): Promise<void> {
+  const db = database(testEnv);
+  await db.delete(playlistTrack);
+  await db.delete(playlist);
+  await db.delete(track);
+  await db.delete(album);
+  await db.delete(artist);
+  await db.delete(property);
+
+  const listing = await testEnv.MUSIC.list();
+  if (listing.objects.length > 0) {
+    await testEnv.MUSIC.delete(listing.objects.map((object) => object.key));
+  }
 }
 
 /** Every track row, in key order, for the columns no endpoint renders. */
@@ -99,4 +148,57 @@ export async function listedObjects(): Promise<
       { etag: object.etag, size: object.size, uploaded: object.uploaded },
     ]),
   );
+}
+
+/** A scan run against an env whose D1 counts what each statement binds. */
+export interface CountedRun {
+  readonly run: ScanRun;
+  /** The parameter count of every statement D1 executed, in order. */
+  readonly boundCounts: number[];
+}
+
+/**
+ * Runs the scan against a D1 that records how many parameters each statement
+ * binds, so a test can prove no statement crosses the limit Miniflare does
+ * not enforce.
+ *
+ * Drizzle's D1 driver reaches the binding through `prepare(sql).bind(...params)`
+ * for every statement it runs, batched or not, so wrapping `prepare` catches
+ * them all - and the wrapped statement is the real one, so the scan still runs
+ * against real storage.
+ */
+export async function scanCountingParameters(
+  limits: Partial<ScanLimits> = {},
+  now: Date = SCAN_TIME,
+): Promise<CountedRun> {
+  const boundCounts: number[] = [];
+  const db = new Proxy(testEnv.DB, {
+    get(target, property, receiver) {
+      if (property !== "prepare") {
+        return Reflect.get(target, property, receiver);
+      }
+
+      return (query: string) => {
+        const statement = target.prepare(query);
+
+        return new Proxy(statement, {
+          get(stmt, prop, stmtReceiver) {
+            if (prop !== "bind") {
+              return Reflect.get(stmt, prop, stmtReceiver);
+            }
+
+            return (...values: unknown[]) => {
+              boundCounts.push(values.length);
+              return stmt.bind(...values);
+            };
+          },
+        });
+      };
+    },
+  });
+
+  const env: Env = { ...testEnv, DB: db };
+  const run = await runScan(env, now, { ...UNBOUNDED_LIMITS, ...limits });
+
+  return { run, boundCounts };
 }

@@ -118,6 +118,12 @@ export function deriveRows(object: LibraryObject, metadata: TrackMetadata, now: 
     artist: {
       id: ofArtist,
       name: albumArtist,
+      // Navidrome's `sort_artist_name`, which comes from an `albumartistsort`
+      // tag and is empty when the file has none. The extractor does not read
+      // sort tags, so it is always empty here - deliberately, not by
+      // omission. What browsing actually sorts and buckets by is Navidrome's
+      // *order* name, which `library/artist-index.ts` derives from the
+      // artist's name at read time and does not need a column.
       sortName: "",
       createdAt: now,
       updatedAt: now,

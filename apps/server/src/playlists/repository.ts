@@ -8,10 +8,11 @@
  * entries reach D1 as a single `batch` - one transaction, one subrequest -
  * rather than as a write per entry.
  *
- * **No statement binds more than a hundred parameters.** That is D1's limit,
- * and it is what decides the chunk sizes below: a lookup takes a hundred keys
- * at a time, and an entry insert thirty rows, since each row binds three
- * columns.
+ * **No statement binds more than D1 allows.** The budget and the chunker are
+ * the scan's (`scanner/repository.ts`), because the limit belongs to the
+ * platform rather than to either pass: a lookup takes `KEYS_PER_STATEMENT`
+ * keys at a time, and an entry insert a third as many rows, since each row
+ * binds three columns.
  *
  * **Nothing is deleted from a set this module did not see in full.** The
  * sweep is given the keys one listing page offered and the stretch of the key
@@ -25,18 +26,13 @@ import { and, asc, eq, gt, inArray, lte, or, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import type { Database } from "../db";
 import type { PlaylistView, SongView } from "../library/serializers";
+import { chunked, KEYS_PER_STATEMENT } from "../scanner/repository";
 
 /** A statement built now and run later, as part of a batch. */
 export type PlaylistStatement = BatchItem<"sqlite">;
 
-/**
- * D1 binds at most a hundred parameters per statement, so a lookup over a
- * list of keys is asked a hundred at a time.
- */
-const KEYS_PER_LOOKUP = 100;
-
-/** Three columns per entry row, so thirty rows stay inside the same limit. */
-const ENTRIES_PER_INSERT = 30;
+/** Three columns per entry row, so a third as many rows fit the same budget. */
+const ENTRIES_PER_INSERT = Math.floor(KEYS_PER_STATEMENT / 3);
 
 /** What the importer needs to know about a track an entry may name. */
 export interface EntryTrack {
@@ -62,7 +58,7 @@ export async function findTracksByKeys(
 ): Promise<Map<string, EntryTrack>> {
   const found = new Map<string, EntryTrack>();
 
-  for (const chunk of chunked(keys, KEYS_PER_LOOKUP)) {
+  for (const chunk of chunked(keys)) {
     const rows = await db
       .select({ id: track.id, r2Key: track.r2Key, duration: track.duration })
       .from(track)
@@ -83,7 +79,7 @@ export async function findPlaylistsByKeys(
 ): Promise<Map<string, StoredPlaylist>> {
   const found = new Map<string, StoredPlaylist>();
 
-  for (const chunk of chunked(keys, KEYS_PER_LOOKUP)) {
+  for (const chunk of chunked(keys)) {
     const rows = await db
       .select({
         id: playlist.id,
@@ -218,10 +214,7 @@ export async function sweepMissingPlaylists(
   const stillThere = new Set(listed);
   const gone = inRange.filter((row) => !stillThere.has(row.r2Key));
 
-  for (const chunk of chunked(
-    gone.map((row) => row.id),
-    KEYS_PER_LOOKUP,
-  )) {
+  for (const chunk of chunked(gone.map((row) => row.id))) {
     // The entries go with them: `playlist_track` cascades on the playlist.
     await db.delete(playlist).where(inArray(playlist.id, chunk));
   }
@@ -336,13 +329,4 @@ export async function runBatch(
   }
 
   await db.batch([first, ...rest]);
-}
-
-function chunked<T>(items: readonly T[], size: number): T[][] {
-  const chunks: T[][] = [];
-  for (let start = 0; start < items.length; start += size) {
-    chunks.push(items.slice(start, start + size));
-  }
-
-  return chunks;
 }
