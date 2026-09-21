@@ -31,21 +31,15 @@
 import { type Album, album, artist, playlistTrack, track } from "@stratosonic/db";
 import { and, eq, gt, inArray, lte, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
+import { D1_MAX_BOUND_PARAMETERS } from "../d1-limits";
 import type { Database } from "../db";
 import type { DerivedRows } from "./derive";
 
 /** A statement built now and run later, as part of a batch. */
 export type ScanStatement = BatchItem<"sqlite">;
 
-/**
- * D1's ceiling on bound parameters in one query. Miniflare does not enforce
- * it - it is SQLite, which allows 999 - so nothing but this constant stands
- * between a statement that binds per row and a production-only failure.
- */
-export const D1_MAX_BOUND_PARAMETERS = 100;
-
 /** How many ids or keys one statement may bind, with room for the rest. */
-export const KEYS_PER_STATEMENT = 90;
+export const KEYS_PER_STATEMENT = D1_MAX_BOUND_PARAMETERS - 10;
 
 /** What the scan needs to know about a track it may already hold. */
 export interface StoredTrack {
