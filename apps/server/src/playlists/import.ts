@@ -92,8 +92,12 @@ export const DEFAULT_PLAYLIST_IMPORT_LIMITS: PlaylistImportLimits = {
  * many users imported them. Stratosonic serves one person, who owns every
  * `.m3u` in the bucket, and #17 asks for `public` true so nothing is hidden
  * from a second account added later. An existing row keeps whatever it has.
+ *
+ * `createPlaylist` uses the same value, so a playlist a client made and the
+ * same playlist imported from its file on a rebuilt database are one row and
+ * not two spellings of one.
  */
-const DEFAULT_PUBLIC = true;
+export const DEFAULT_PUBLIC = true;
 
 /** What one run of the import did. */
 export interface PlaylistImportRun {
@@ -202,6 +206,7 @@ export async function importPlaylists(
       sweptTo,
       listing.truncated ? (lastKey ?? sweptTo) : null,
       pageKeys,
+      new Date(startedAt),
     );
     counts.removed += removed.length;
 

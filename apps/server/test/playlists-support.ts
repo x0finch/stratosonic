@@ -117,6 +117,53 @@ export async function putPlaylistObject(
  * document, in the order the document carries them. Navidrome's attribute
  * order is part of what a strict client reads, so a test says it out loud.
  */
+/** Credentials a call is made with; the bootstrap admin unless a test says. */
+export interface PlaylistCaller {
+  readonly user: string;
+  readonly password: string;
+}
+
+export const ADMIN_CALLER: PlaylistCaller = { user: "admin", password: "sesame" };
+
+/**
+ * Calls a playlist endpoint with parameters that may repeat - `songId` does -
+ * as whichever account the test names.
+ */
+export async function callPlaylists(
+  endpoint: string,
+  parameters: readonly (readonly [string, string])[],
+  caller: PlaylistCaller = ADMIN_CALLER,
+): Promise<PlaylistsResponse> {
+  const params = new URLSearchParams({
+    u: caller.user,
+    p: caller.password,
+    v: "1.16.1",
+    c: "Substreamer",
+    f: "json",
+  });
+  for (const [name, value] of parameters) {
+    params.append(name, value);
+  }
+
+  const response = await SELF.fetch(`${BASE}/rest/${endpoint}?${params.toString()}`);
+  const body = (await response.json()) as { "subsonic-response": PlaylistsResponse };
+
+  return body["subsonic-response"];
+}
+
+/** Every object the bucket holds under a prefix, with its text, by key. */
+export async function playlistObjects(prefix = "playlists/"): Promise<Map<string, string>> {
+  const listing = await testEnv.MUSIC.list({ prefix });
+  const objects = new Map<string, string>();
+
+  for (const object of listing.objects) {
+    const stored = await testEnv.MUSIC.get(object.key);
+    objects.set(object.key, stored === null ? "" : await stored.text());
+  }
+
+  return objects;
+}
+
 export function attributeNames(xml: string, element: string): string[] {
   const match = new RegExp(`<${element}\\s([^>]*?)/?>`).exec(xml);
   if (!match?.[1]) {
