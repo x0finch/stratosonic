@@ -23,7 +23,13 @@ import { database } from "../src/db";
 import type { Env } from "../src/env";
 import { suffixOf } from "../src/library/audio-formats";
 import { insertUser } from "../src/users/repository";
-import { fixtureBytes, fixtures, fixtureTrack } from "./fixtures/files";
+import {
+  type FixtureAlbum,
+  fixtureBytes,
+  fixtureCoverBytes,
+  fixtures,
+  fixtureTrack,
+} from "./fixtures/files";
 
 /**
  * Helpers shared by the tests. The bindings come from vitest.config.ts, which
@@ -239,6 +245,11 @@ export interface PlaylistSeed {
   readonly r2Key: string;
   readonly name?: string;
   readonly comment?: string;
+  /**
+   * Who owns it. The default is not a real user row - a test that cares about
+   * the owner, as the playlist endpoints do, passes the id `seedUser`
+   * returned.
+   */
   readonly ownerId?: string;
   readonly public?: boolean;
   /** The tracks it holds, in order. */
@@ -328,6 +339,11 @@ export interface SeededObject {
  * it, which is where a scan would find them, and answers with what R2 then
  * knows about each one - the etag and size the scanner skips unchanged objects
  * by.
+ *
+ * The extracted covers go in too, under `_covers/<albumId>.<ext>`, for the
+ * albums whose tracks carry one: `getCoverArt` serves those objects, and a
+ * seeded album whose cover key pointed at nothing would make it look broken.
+ * The album with no cover has none written, as it should not.
  */
 export async function seedFixtureObjects(): Promise<Map<string, SeededObject>> {
   const seeded = new Map<string, SeededObject>();
@@ -336,7 +352,23 @@ export async function seedFixtureObjects(): Promise<Map<string, SeededObject>> {
     seeded.set(r2Key, await seedFixtureObject(file));
   }
 
+  for (const album of fixtures.albums) {
+    const key = fixtureCoverKey(album);
+    if (key) {
+      seeded.set(key, await putObject(key, fixtureCoverBytes()));
+    }
+  }
+
   return seeded;
+}
+
+/** Where an album's extracted cover lives, or null when it has none. */
+export function fixtureCoverKey(album: FixtureAlbum): string | null {
+  if (!album.hasCover) {
+    return null;
+  }
+
+  return `_covers/${albumId(album.albumArtist, album.name, album.year)}.png`;
 }
 
 /** Puts one fixture file in the bucket, named either by file or by R2 key. */
@@ -345,17 +377,16 @@ export async function seedFixtureObject(fileOrKey: string): Promise<SeededObject
     fileOrKey === fixtures.playlist.file || fileOrKey === fixtures.playlist.r2Key
       ? fixtures.playlist
       : fixtureTrack(fileOrKey);
-  const stored = await testEnv.MUSIC.put(r2Key, fixtureBytes(file));
+  return putObject(r2Key, fixtureBytes(file));
+}
+
+async function putObject(key: string, bytes: Uint8Array): Promise<SeededObject> {
+  const stored = await testEnv.MUSIC.put(key, bytes);
   if (!stored) {
-    throw new Error(`R2 refused the fixture ${file}`);
+    throw new Error(`R2 refused ${key}`);
   }
 
-  return {
-    key: r2Key,
-    size: stored.size,
-    etag: stored.etag,
-    uploaded: stored.uploaded,
-  };
+  return { key, size: stored.size, etag: stored.etag, uploaded: stored.uploaded };
 }
 
 /** The library the fixtures describe: every artist, album and track in them. */
@@ -369,53 +400,53 @@ export interface SeededLibrary {
  * Seeds the rows a completed scan of the fixtures would leave behind, straight
  * into D1: one artist per album artist, one album per (album artist, album,
  * year), and one track per fixture, with each album's song count, duration and
- * size added up from its tracks. Nothing is written to R2 - a test that also
- * needs the bytes calls `seedFixtureObjects`.
+ * size added up from its tracks, and its cover key set only where its tracks
+ * carry a cover. The untagged fixture lands under the artist, album and title
+ * its R2 key implies, as the scanner's fallback would put it.
+ *
+ * Nothing is written to R2 - a test that also needs the bytes, or the cover
+ * objects those cover keys point at, calls `seedFixtureObjects`.
  */
 export async function seedFixtureLibrary(): Promise<SeededLibrary> {
   const artists: Artist[] = [];
   const albums: Album[] = [];
   const tracks: Track[] = [];
 
-  for (const name of unique(fixtures.tracks.map((fixture) => fixture.tags.albumArtist))) {
+  for (const name of unique(fixtures.albums.map((album) => album.albumArtist))) {
     artists.push(await seedArtist({ name }));
   }
 
+  for (const album of fixtures.albums) {
+    const ofAlbum = album.trackFiles.map((file) => fixtureTrack(file));
+
+    albums.push(
+      await seedAlbum({
+        name: album.name,
+        albumArtist: album.albumArtist,
+        year: album.year,
+        genre: album.genre,
+        songCount: ofAlbum.length,
+        duration: ofAlbum.reduce((total, entry) => total + entry.duration.seconds, 0),
+        size: ofAlbum.reduce((total, entry) => total + entry.size, 0),
+        coverKey: fixtureCoverKey(album),
+      }),
+    );
+  }
+
   for (const fixture of fixtures.tracks) {
-    const { tags } = fixture;
-    const id = albumId(tags.albumArtist, tags.album, tags.year);
-
-    if (!albums.some((seeded) => seeded.id === id)) {
-      const ofAlbum = fixtures.tracks.filter(
-        (candidate) =>
-          albumId(candidate.tags.albumArtist, candidate.tags.album, candidate.tags.year) === id,
-      );
-
-      albums.push(
-        await seedAlbum({
-          name: tags.album,
-          albumArtist: tags.albumArtist,
-          year: tags.year,
-          genre: tags.genre,
-          songCount: ofAlbum.length,
-          duration: ofAlbum.reduce((total, entry) => total + entry.duration.seconds, 0),
-          size: ofAlbum.reduce((total, entry) => total + entry.size, 0),
-          coverKey: `_covers/${id}.png`,
-        }),
-      );
-    }
+    const { tags, pathFallback } = fixture;
 
     tracks.push(
       await seedTrack({
         r2Key: fixture.r2Key,
-        title: tags.title,
-        album: tags.album,
-        albumArtist: tags.albumArtist,
-        artist: tags.artist,
-        trackNumber: tags.trackNumber,
-        discNumber: tags.discNumber,
-        year: tags.year,
-        genre: tags.genre,
+        title: tags?.title ?? pathFallback.title,
+        album: tags?.album ?? pathFallback.album,
+        albumArtist: tags?.albumArtist ?? pathFallback.albumArtist,
+        artist: tags?.artist ?? pathFallback.albumArtist,
+        trackNumber: tags?.trackNumber ?? null,
+        discNumber: tags?.discNumber ?? null,
+        year: tags?.year ?? null,
+        genre: tags?.genre ?? null,
         duration: fixture.duration.seconds,
         bitRate: fixture.bitRate.kbps,
         size: fixture.size,

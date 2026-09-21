@@ -4,6 +4,13 @@
     "source": "apps/server/test/fixtures/build.ts",
     "engine": "programmatic"
   },
+  "cover": {
+    "file": "cover.png",
+    "mimeType": "image/png",
+    "size": 72,
+    "width": 1,
+    "height": 1
+  },
   "tracks": [
     {
       "file": "silent-track.mp3",
@@ -26,6 +33,11 @@
         "year": 2001,
         "genre": "Electronic"
       },
+      "pathFallback": {
+        "albumArtist": "Silent Artist",
+        "album": "Quiet Album",
+        "title": "01 Silent Track"
+      },
       "duration": {
         "seconds": 0.209,
         "toleranceSeconds": 0.05,
@@ -45,7 +57,7 @@
     {
       "file": "hushed-interlude.flac",
       "r2Key": "Silent Artist/Quiet Album/02 Hushed Interlude.flac",
-      "size": 2443,
+      "size": 2458,
       "suffix": "flac",
       "contentType": "audio/flac",
       "container": {
@@ -63,13 +75,18 @@
         "year": 2001,
         "genre": "Electronic"
       },
+      "pathFallback": {
+        "albumArtist": "Silent Artist",
+        "album": "Quiet Album",
+        "title": "02 Hushed Interlude"
+      },
       "duration": {
         "seconds": 1,
         "toleranceSeconds": 0.01,
         "source": "streaminfo"
       },
       "bitRate": {
-        "kbps": 20,
+        "kbps": 16,
         "source": "size-and-duration"
       },
       "cover": {
@@ -82,7 +99,7 @@
     {
       "file": "front-loaded.m4a",
       "r2Key": "Mute Ensemble/Faststart Sessions/01 Front Loaded.m4a",
-      "size": 2631,
+      "size": 3179,
       "suffix": "m4a",
       "contentType": "audio/mp4",
       "container": {
@@ -101,13 +118,18 @@
         "year": 2019,
         "genre": "Ambient"
       },
+      "pathFallback": {
+        "albumArtist": "Mute Ensemble",
+        "album": "Faststart Sessions",
+        "title": "01 Front Loaded"
+      },
       "duration": {
-        "seconds": 2.5,
+        "seconds": 0.743,
         "toleranceSeconds": 0.01,
         "source": "mvhd"
       },
       "bitRate": {
-        "kbps": 8,
+        "kbps": 22,
         "source": "size-and-duration"
       },
       "cover": {
@@ -120,7 +142,7 @@
     {
       "file": "tail-loaded.m4a",
       "r2Key": "Mute Ensemble/Trailing Sessions/01 Tail Loaded.m4a",
-      "size": 2629,
+      "size": 3177,
       "suffix": "m4a",
       "contentType": "audio/mp4",
       "container": {
@@ -139,13 +161,18 @@
         "year": 2019,
         "genre": "Ambient"
       },
+      "pathFallback": {
+        "albumArtist": "Mute Ensemble",
+        "album": "Trailing Sessions",
+        "title": "01 Tail Loaded"
+      },
       "duration": {
-        "seconds": 2.5,
+        "seconds": 0.743,
         "toleranceSeconds": 0.01,
         "source": "mvhd"
       },
       "bitRate": {
-        "kbps": 8,
+        "kbps": 22,
         "source": "size-and-duration"
       },
       "cover": {
@@ -154,53 +181,136 @@
         "width": 1,
         "height": 1
       }
+    },
+    {
+      "file": "untagged.mp3",
+      "r2Key": "Fallback Artist/Fallback Album/01 Untagged.mp3",
+      "size": 3336,
+      "suffix": "mp3",
+      "contentType": "audio/mpeg",
+      "container": {
+        "tagFormat": "none"
+      },
+      "tags": null,
+      "pathFallback": {
+        "albumArtist": "Fallback Artist",
+        "album": "Fallback Album",
+        "title": "01 Untagged"
+      },
+      "duration": {
+        "seconds": 0.209,
+        "toleranceSeconds": 0.05,
+        "source": "cbr-estimate"
+      },
+      "bitRate": {
+        "kbps": 128,
+        "source": "frame-header"
+      },
+      "cover": null
+    }
+  ],
+  "albums": [
+    {
+      "name": "Quiet Album",
+      "albumArtist": "Silent Artist",
+      "year": 2001,
+      "genre": "Electronic",
+      "trackFiles": [
+        "silent-track.mp3",
+        "hushed-interlude.flac"
+      ],
+      "hasCover": true
+    },
+    {
+      "name": "Faststart Sessions",
+      "albumArtist": "Mute Ensemble",
+      "year": 2019,
+      "genre": "Ambient",
+      "trackFiles": [
+        "front-loaded.m4a"
+      ],
+      "hasCover": true
+    },
+    {
+      "name": "Trailing Sessions",
+      "albumArtist": "Mute Ensemble",
+      "year": 2019,
+      "genre": "Ambient",
+      "trackFiles": [
+        "tail-loaded.m4a"
+      ],
+      "hasCover": true
+    },
+    {
+      "name": "Fallback Album",
+      "albumArtist": "Fallback Artist",
+      "year": null,
+      "genre": null,
+      "trackFiles": [
+        "untagged.mp3"
+      ],
+      "hasCover": false
     }
   ],
   "playlist": {
     "file": "favourites.m3u",
     "r2Key": "playlists/favourites.m3u",
     "name": "favourites",
-    "size": 249,
+    "size": 300,
     "lines": [
       {
         "text": "#EXTM3U",
         "resolvesTo": null,
-        "matchesATrack": false
+        "matchesATrack": false,
+        "carriageReturn": false
       },
       {
         "text": "#EXTINF:1,Silent Artist - Silent Track",
         "resolvesTo": null,
-        "matchesATrack": false
+        "matchesATrack": false,
+        "carriageReturn": false
       },
       {
         "text": "../Silent Artist/Quiet Album/01 Silent Track.mp3",
         "resolvesTo": "Silent Artist/Quiet Album/01 Silent Track.mp3",
-        "matchesATrack": true
+        "matchesATrack": true,
+        "carriageReturn": false
       },
       {
         "text": "/Mute Ensemble/Faststart Sessions/01 Front Loaded.m4a",
         "resolvesTo": "Mute Ensemble/Faststart Sessions/01 Front Loaded.m4a",
-        "matchesATrack": true
+        "matchesATrack": true,
+        "carriageReturn": false
+      },
+      {
+        "text": "../Fallback Artist/Fallback Album/01 Untagged.mp3",
+        "resolvesTo": "Fallback Artist/Fallback Album/01 Untagged.mp3",
+        "matchesATrack": true,
+        "carriageReturn": true
       },
       {
         "text": "",
         "resolvesTo": null,
-        "matchesATrack": false
+        "matchesATrack": false,
+        "carriageReturn": false
       },
       {
         "text": "../Missing Artist/Missing Album/Nowhere.mp3",
         "resolvesTo": "Missing Artist/Missing Album/Nowhere.mp3",
-        "matchesATrack": false
+        "matchesATrack": false,
+        "carriageReturn": false
       },
       {
         "text": "../Silent Artist/Quiet Album/02 Hushed Interlude.flac",
         "resolvesTo": "Silent Artist/Quiet Album/02 Hushed Interlude.flac",
-        "matchesATrack": true
+        "matchesATrack": true,
+        "carriageReturn": false
       }
     ],
     "trackKeys": [
       "Silent Artist/Quiet Album/01 Silent Track.mp3",
       "Mute Ensemble/Faststart Sessions/01 Front Loaded.m4a",
+      "Fallback Artist/Fallback Album/01 Untagged.mp3",
       "Silent Artist/Quiet Album/02 Hushed Interlude.flac"
     ],
     "unmatchedLineCount": 1

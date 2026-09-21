@@ -5,6 +5,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { database } from "../src/db";
 import { fixtures } from "./fixtures/files";
 import {
+  fixtureCoverKey,
   seedAlbum,
   seedAnnotation,
   seedArtist,
@@ -120,6 +121,7 @@ describe("seeding library rows", () => {
 describe("seeding the fixtures", () => {
   // D1 is shared by the tests in a file, so the library is seeded once.
   let library: Awaited<ReturnType<typeof seedFixtureLibrary>>;
+  const seedFixtureLibraryOnce = async () => library;
 
   beforeAll(async () => {
     library = await seedFixtureLibrary();
@@ -128,15 +130,43 @@ describe("seeding the fixtures", () => {
   it("leaves the library a completed scan would leave", () => {
     const { artists, albums, tracks } = library;
 
-    // Two album artists, three albums (the two M4As are on albums of their
-    // own), and one track per fixture.
-    expect(artists.map((row) => row.name)).toEqual(["Silent Artist", "Mute Ensemble"]);
+    // Three album artists, four albums (the two M4As are on albums of their
+    // own, and so is the untagged track), and one track per fixture.
+    expect(artists.map((row) => row.name)).toEqual([
+      "Silent Artist",
+      "Mute Ensemble",
+      "Fallback Artist",
+    ]);
     expect(albums.map((row) => row.name)).toEqual([
       "Quiet Album",
       "Faststart Sessions",
       "Trailing Sessions",
+      "Fallback Album",
     ]);
     expect(tracks.map((row) => row.r2Key)).toEqual(fixtures.tracks.map((fixture) => fixture.r2Key));
+  });
+
+  it("files the untagged fixture under what its key says", () => {
+    const untagged = library.tracks.find((row) => row.r2Key.includes("Untagged"));
+
+    expect(untagged).toMatchObject({
+      title: "01 Untagged",
+      albumArtist: "Fallback Artist",
+      artist: "Fallback Artist",
+      year: null,
+      genre: null,
+      trackNumber: null,
+    });
+    expect(untagged?.albumId).toBe(albumId("Fallback Artist", "Fallback Album", null));
+  });
+
+  it("gives every album a cover key except the one whose tracks have none", () => {
+    const withoutCover = library.albums.filter((row) => row.coverKey === null);
+
+    expect(withoutCover.map((row) => row.name)).toEqual(["Fallback Album"]);
+    for (const row of library.albums.filter((album) => album.coverKey !== null)) {
+      expect(row.coverKey).toBe(`_covers/${row.id}.png`);
+    }
   });
 
   it("adds each album's counts up from its own tracks", () => {
@@ -165,7 +195,7 @@ describe("seeding the fixtures", () => {
   it("puts every fixture in the bucket under its own key", async () => {
     const seeded = await seedFixtureObjects();
 
-    expect([...seeded.keys()]).toEqual([
+    expect([...seeded.keys()].slice(0, fixtures.tracks.length + 1)).toEqual([
       ...fixtures.tracks.map((fixture) => fixture.r2Key),
       fixtures.playlist.r2Key,
     ]);
@@ -175,6 +205,39 @@ describe("seeding the fixtures", () => {
 
       expect(stored?.size, key).toBe(object.size);
       expect(stored?.etag, key).toBe(object.etag);
+    }
+  });
+
+  it("writes a cover object for every album that has one, and none for the other", async () => {
+    await seedFixtureObjects();
+
+    for (const album of fixtures.albums) {
+      const key = fixtureCoverKey(album);
+
+      if (key === null) {
+        expect(album.hasCover).toBe(false);
+        continue;
+      }
+
+      const stored = await env.MUSIC.head(key);
+
+      expect(stored?.size, key).toBe(fixtures.cover.size);
+    }
+
+    // The album with no cover has no object waiting under a key nobody set.
+    const fallback = fixtures.albums.find((album) => !album.hasCover);
+    const listed = await env.MUSIC.list({ prefix: "_covers/" });
+
+    expect(fallback).toBeDefined();
+    expect(listed.objects).toHaveLength(fixtures.albums.length - 1);
+  });
+
+  it("seeds cover objects the seeded albums' cover keys point at", async () => {
+    const { albums } = await seedFixtureLibraryOnce();
+    await seedFixtureObjects();
+
+    for (const album of albums.filter((row) => row.coverKey !== null)) {
+      expect(await env.MUSIC.head(album.coverKey as string), album.name).not.toBeNull();
     }
   });
 

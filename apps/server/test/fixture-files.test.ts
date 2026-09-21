@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildFixtures } from "./fixtures/build";
-import { fixtureBytes, fixturePlaylistText, fixtures, fixtureTrack } from "./fixtures/files";
+import { buildFixtures, type FixtureTags } from "./fixtures/build";
+import {
+  fixtureBytes,
+  fixtureCoverBytes,
+  fixturePlaylistText,
+  fixtures,
+  fixtureTrack,
+} from "./fixtures/files";
 
 /**
  * The committed fixtures: that they are what the manifest says, that they parse
@@ -15,21 +21,37 @@ import { fixtureBytes, fixturePlaylistText, fixtures, fixtureTrack } from "./fix
 
 const KILOBYTE = 1024;
 
+/** The tags of a fixture that has them; fails loudly for one that does not. */
+function tagsOf(file: string): FixtureTags {
+  const { tags } = fixtureTrack(file);
+  if (!tags) {
+    throw new Error(`${file} carries no tags`);
+  }
+
+  return tags;
+}
+
 describe("the fixture manifest", () => {
   it("describes exactly the files that are committed", () => {
-    const named = [...fixtures.tracks.map((track) => track.file), fixtures.playlist.file];
+    const named = [
+      ...fixtures.tracks.map((track) => track.file),
+      fixtures.cover.file,
+      fixtures.playlist.file,
+    ];
 
     expect(named).toEqual([
       "silent-track.mp3",
       "hushed-interlude.flac",
       "front-loaded.m4a",
       "tail-loaded.m4a",
+      "untagged.mp3",
+      "cover.png",
       "favourites.m3u",
     ]);
   });
 
   it("records each file's real size, and each file stays small", () => {
-    for (const { file, size } of [...fixtures.tracks, fixtures.playlist]) {
+    for (const { file, size } of [...fixtures.tracks, fixtures.cover, fixtures.playlist]) {
       const bytes = fixtureBytes(file);
 
       expect(bytes.length, file).toBe(size);
@@ -45,6 +67,45 @@ describe("the fixture manifest", () => {
       expect(key.split("/")).toHaveLength(3);
     }
   });
+
+  it("reads each track's path fallback off its own key", () => {
+    for (const track of fixtures.tracks) {
+      const [albumArtist, album, file] = track.r2Key.split("/");
+
+      expect(track.pathFallback.albumArtist).toBe(albumArtist);
+      expect(track.pathFallback.album).toBe(album);
+      expect(`${track.pathFallback.title}.${track.suffix}`).toBe(file);
+    }
+  });
+
+  it("groups the tracks into the albums a scan would record", () => {
+    const albums = fixtures.albums;
+
+    expect(albums.map((album) => album.name)).toEqual([
+      "Quiet Album",
+      "Faststart Sessions",
+      "Trailing Sessions",
+      "Fallback Album",
+    ]);
+    expect(albums.flatMap((album) => album.trackFiles)).toHaveLength(fixtures.tracks.length);
+
+    for (const album of albums) {
+      for (const file of album.trackFiles) {
+        const track = fixtureTrack(file);
+
+        expect(track.tags?.album ?? track.pathFallback.album).toBe(album.name);
+        expect(track.tags?.albumArtist ?? track.pathFallback.albumArtist).toBe(album.albumArtist);
+      }
+    }
+  });
+
+  it("leaves exactly one album without a cover, and it is the untagged one", () => {
+    const without = fixtures.albums.filter((album) => !album.hasCover);
+
+    expect(without.map((album) => album.name)).toEqual(["Fallback Album"]);
+    expect(without[0]?.trackFiles).toEqual(["untagged.mp3"]);
+    expect(fixtureTrack("untagged.mp3").cover).toBeNull();
+  });
 });
 
 describe("the generator", () => {
@@ -55,7 +116,11 @@ describe("the generator", () => {
     // reproducibility claim: anyone can regenerate the fixtures and get these
     // same bytes, with nothing installed.
     expect(built.files.map((file) => file.name).sort()).toEqual(
-      [...fixtures.tracks.map((track) => track.file), fixtures.playlist.file].sort(),
+      [
+        ...fixtures.tracks.map((track) => track.file),
+        fixtures.cover.file,
+        fixtures.playlist.file,
+      ].sort(),
     );
 
     for (const file of built.files) {
@@ -68,8 +133,25 @@ describe("the generator", () => {
   });
 });
 
+describe("the cover image", () => {
+  const bytes = fixtureCoverBytes();
+
+  it("is a PNG of the size the manifest gives", () => {
+    expect([...bytes.slice(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    expect(bytes.length).toBe(fixtures.cover.size);
+    expect(fixtures.cover.mimeType).toBe("image/png");
+  });
+
+  it("is the same image the tagged fixtures embed", () => {
+    for (const track of fixtures.tracks.filter((candidate) => candidate.cover !== null)) {
+      expect(track.cover?.size, track.file).toBe(bytes.length);
+      expect(track.cover?.mimeType, track.file).toBe(fixtures.cover.mimeType);
+    }
+  });
+});
+
 describe("the MP3 fixture", () => {
-  const track = fixtures.tracks[0];
+  const tags = tagsOf("silent-track.mp3");
   const bytes = fixtureBytes("silent-track.mp3");
 
   it("opens with an ID3v2.3 tag", () => {
@@ -80,14 +162,14 @@ describe("the MP3 fixture", () => {
   it("carries the tagged text the manifest promises, and a front cover", () => {
     const { frames, audioAt } = readId3(bytes);
 
-    expect(frames.get("TIT2")).toBe(track?.tags.title);
-    expect(frames.get("TPE1")).toBe(track?.tags.artist);
-    expect(frames.get("TPE2")).toBe(track?.tags.albumArtist);
-    expect(frames.get("TALB")).toBe(track?.tags.album);
+    expect(frames.get("TIT2")).toBe(tags.title);
+    expect(frames.get("TPE1")).toBe(tags.artist);
+    expect(frames.get("TPE2")).toBe(tags.albumArtist);
+    expect(frames.get("TALB")).toBe(tags.album);
     expect(frames.get("TRCK")).toBe("1/2");
     expect(frames.get("TPOS")).toBe("1/1");
     expect(frames.get("TYER")).toBe("2001");
-    expect(frames.get("TCON")).toBe(track?.tags.genre);
+    expect(frames.get("TCON")).toBe(tags.genre);
     expect(frames.has("APIC")).toBe(true);
     expect(audioAt).toBeLessThan(bytes.length);
   });
@@ -96,25 +178,47 @@ describe("the MP3 fixture", () => {
     const start = indexOfPngSignature(bytes);
 
     expect(start).toBeGreaterThan(0);
-    expect(bytes.length - start).toBeGreaterThanOrEqual(track?.cover?.size ?? 0);
-    expect(track?.cover?.mimeType).toBe("image/png");
+    expect(bytes.length - start).toBeGreaterThanOrEqual(fixtures.cover.size);
+    expect(fixtureTrack("silent-track.mp3").cover?.mimeType).toBe("image/png");
   });
 
   it("continues with MPEG frames whose header says 128 kbps at 44.1 kHz", () => {
     const { audioAt } = readId3(bytes);
-    const header = bytes.slice(audioAt, audioAt + 4);
 
-    expect(header[0]).toBe(0xff);
-    // Sync, MPEG-1, Layer III, no CRC.
-    expect(header[1]).toBe(0xfb);
-    // Bit rate index 9 (128 kbps) and sample rate index 0 (44.1 kHz).
-    expect((header[2] as number) >> 4).toBe(9);
-    expect(((header[2] as number) >> 2) & 0b11).toBe(0);
+    expectMpegFrameHeader(bytes.slice(audioAt, audioAt + 4));
+  });
+});
+
+describe("the untagged MP3 fixture", () => {
+  const track = fixtureTrack("untagged.mp3");
+  const bytes = fixtureBytes("untagged.mp3");
+
+  it("carries no tag at all, only frames", () => {
+    expect(track.tags).toBeNull();
+    expect(track.container.tagFormat).toBe("none");
+    expect(String.fromCharCode(...bytes.slice(0, 3))).not.toBe("ID3");
+    expectMpegFrameHeader(bytes.slice(0, 4));
+  });
+
+  it("leaves its artist, album and title to be read off its key", () => {
+    expect(track.r2Key).toBe("Fallback Artist/Fallback Album/01 Untagged.mp3");
+    expect(track.pathFallback).toEqual({
+      albumArtist: "Fallback Artist",
+      album: "Fallback Album",
+      title: "01 Untagged",
+    });
+  });
+
+  it("is the same audio as the tagged MP3, without the tag in front of it", () => {
+    const tagged = fixtureBytes("silent-track.mp3");
+
+    expect([...bytes]).toEqual([...tagged.slice(readId3(tagged).audioAt)]);
   });
 });
 
 describe("the FLAC fixture", () => {
-  const track = fixtures.tracks[1];
+  const tags = tagsOf("hushed-interlude.flac");
+  const track = fixtureTrack("hushed-interlude.flac");
   const bytes = fixtureBytes("hushed-interlude.flac");
 
   it("opens with the fLaC marker", () => {
@@ -136,19 +240,24 @@ describe("the FLAC fixture", () => {
     const totalSamples = Number(packed & 0xf_ffff_ffffn);
 
     expect(sampleRate).toBe(44_100);
-    expect(totalSamples / sampleRate).toBeCloseTo(track?.duration.seconds ?? 0, 3);
+    expect(totalSamples / sampleRate).toBeCloseTo(track.duration.seconds, 3);
   });
 
-  it("names the tags in its comment block", () => {
+  it("names the tags in its comment block, both totals included", () => {
     const comments = readVorbisComments(blockOfType(bytes, 4));
 
-    expect(comments.get("TITLE")).toBe(track?.tags.title);
-    expect(comments.get("ARTIST")).toBe(track?.tags.artist);
-    expect(comments.get("ALBUMARTIST")).toBe(track?.tags.albumArtist);
-    expect(comments.get("ALBUM")).toBe(track?.tags.album);
-    expect(comments.get("TRACKNUMBER")).toBe("2");
+    expect(comments.get("TITLE")).toBe(tags.title);
+    expect(comments.get("ARTIST")).toBe(tags.artist);
+    expect(comments.get("ALBUMARTIST")).toBe(tags.albumArtist);
+    expect(comments.get("ALBUM")).toBe(tags.album);
+    expect(comments.get("TRACKNUMBER")).toBe(String(tags.trackNumber));
+    expect(comments.get("TRACKTOTAL")).toBe(String(tags.trackCount));
+    expect(comments.get("DISCNUMBER")).toBe(String(tags.discNumber));
+    // Without this, a parser reports "disc 1 of null" and the manifest's
+    // discCount would be promising something the bytes do not say.
+    expect(comments.get("DISCTOTAL")).toBe(String(tags.discCount));
     expect(comments.get("DATE")).toBe("2001");
-    expect(comments.get("GENRE")).toBe(track?.tags.genre);
+    expect(comments.get("GENRE")).toBe(tags.genre);
   });
 
   it("holds the cover in its PICTURE block", () => {
@@ -159,7 +268,7 @@ describe("the FLAC fixture", () => {
 
     // Picture type 3 is the front cover.
     expect(view.getUint32(0)).toBe(3);
-    expect(mimeType).toBe(track?.cover?.mimeType);
+    expect(mimeType).toBe(track.cover?.mimeType);
     expect(indexOfPngSignature(picture)).toBeGreaterThan(0);
   });
 });
@@ -197,16 +306,66 @@ describe("the M4A fixtures", () => {
     (file) => {
       const mvhd = atomBody(atomBody(fixtureBytes(file), "moov"), "mvhd");
       const view = new DataView(mvhd.buffer, mvhd.byteOffset, mvhd.byteLength);
-      const expected = fixtureTrack(file);
 
       // Version 0: version and flags, created and modified, then the timescale
       // and the duration counted in it.
-      expect(view.getUint32(16) / view.getUint32(12)).toBeCloseTo(expected.duration.seconds, 3);
+      expect(view.getUint32(16) / view.getUint32(12)).toBeCloseTo(
+        fixtureTrack(file).duration.seconds,
+        3,
+      );
+    },
+  );
+
+  it.each(["front-loaded.m4a", "tail-loaded.m4a"])(
+    "carries a sound track in %s that agrees with its movie header",
+    (file) => {
+      const expected = fixtureTrack(file);
+      const mdia = atomBody(atomBody(atomBody(fixtureBytes(file), "moov"), "trak"), "mdia");
+      const mdhd = atomBody(mdia, "mdhd");
+      const header = new DataView(mdhd.buffer, mdhd.byteOffset, mdhd.byteLength);
+      const stbl = atomBody(atomBody(atomBody(mdia, "minf"), "stbl"), "stsd");
+      const mp4a = atomBody(stbl.slice(8), "mp4a");
+      const sample = new DataView(mp4a.buffer, mp4a.byteOffset, mp4a.byteLength);
+
+      // The media counts time in samples, so its own duration divided by its
+      // timescale is the same length the movie header states.
+      expect(header.getUint32(16) / header.getUint32(12)).toBeCloseTo(expected.duration.seconds, 2);
+      // The media header comes first in the media box, where a parser that
+      // walks rather than searches expects it.
+      expect(readAtoms(mdia).map((atom) => atom.type)).toEqual(["mdhd", "hdlr", "minf"]);
+      // Channel count, sample size, and the sample rate as 16.16 fixed point.
+      expect(sample.getUint16(16)).toBe(2);
+      expect(sample.getUint16(18)).toBe(16);
+      expect(sample.getUint32(24) / 0x10000).toBe(44_100);
+    },
+  );
+
+  it.each(["front-loaded.m4a", "tail-loaded.m4a"])(
+    "sizes %s's samples so the stated bit rate can be derived",
+    (file) => {
+      const expected = fixtureTrack(file);
+      const stbl = atomBody(
+        atomBody(atomBody(atomBody(fixtureBytes(file), "moov"), "trak"), "mdia"),
+        "minf",
+      );
+      const stsz = atomBody(atomBody(stbl, "stbl"), "stsz");
+      const view = new DataView(stsz.buffer, stsz.byteOffset, stsz.byteLength);
+      const count = view.getUint32(8);
+
+      let total = 0;
+      for (let index = 0; index < count; index++) {
+        total += view.getUint32(12 + index * 4);
+      }
+
+      expect(count).toBeGreaterThan(0);
+      expect(Math.round((total * 8) / expected.duration.seconds / 1000)).toBe(
+        expected.bitRate.kbps,
+      );
     },
   );
 
   it.each(["front-loaded.m4a", "tail-loaded.m4a"])("tags %s in an ilst", (file) => {
-    const expected = fixtureTrack(file);
+    const expected = tagsOf(file);
     const moov = atomBody(fixtureBytes(file), "moov");
     const meta = atomBody(atomBody(moov, "udta"), "meta");
     // `meta` is a full box: four bytes of version and flags come first.
@@ -230,27 +389,40 @@ describe("the M4A fixtures", () => {
       "disk",
       "covr",
     ]);
-    expect(text("\u00a9nam")).toBe(expected.tags.title);
-    expect(text("aART")).toBe(expected.tags.albumArtist);
-    expect(text("\u00a9alb")).toBe(expected.tags.album);
-    expect(text("\u00a9day")).toBe(String(expected.tags.year));
+    expect(text("\u00a9nam")).toBe(expected.title);
+    expect(text("aART")).toBe(expected.albumArtist);
+    expect(text("\u00a9alb")).toBe(expected.album);
+    expect(text("\u00a9day")).toBe(String(expected.year));
     expect(indexOfPngSignature(atomBody(items.at(-1)?.body ?? new Uint8Array(0), "data"))).toBe(8);
   });
 });
 
 describe("the m3u fixture", () => {
-  it("is the lines the manifest lists, newline-separated", () => {
-    expect(fixturePlaylistText.split("\n").slice(0, -1)).toEqual(
-      fixtures.playlist.lines.map((line) => line.text),
-    );
+  it("is the lines the manifest lists, each ended the way it says", () => {
+    const text = fixturePlaylistText;
+    const written = text.split("\n").slice(0, -1);
+
+    expect(written).toHaveLength(fixtures.playlist.lines.length);
+    for (const [index, line] of fixtures.playlist.lines.entries()) {
+      expect(written[index]).toBe(line.text + (line.carriageReturn ? "\r" : ""));
+    }
   });
 
-  it("names three tracks that exist, one that does not, and one relative path", () => {
+  it("ends exactly one line CRLF, and that line names a track", () => {
+    const crlf = fixtures.playlist.lines.filter((line) => line.carriageReturn);
+
+    expect(crlf).toHaveLength(1);
+    expect(crlf[0]?.matchesATrack).toBe(true);
+    // An importer that keeps the carriage return looks up a key ending in one.
+    expect(fixturePlaylistText).toContain(`${crlf[0]?.text}\r\n`);
+  });
+
+  it("names four tracks that exist, one that does not, and one relative path", () => {
     const { lines, trackKeys, unmatchedLineCount } = fixtures.playlist;
     const paths = lines.filter((line) => line.resolvesTo !== null);
     const known = new Set(fixtures.tracks.map((track) => track.r2Key));
 
-    expect(trackKeys).toHaveLength(3);
+    expect(trackKeys).toHaveLength(4);
     expect(trackKeys.every((key) => known.has(key))).toBe(true);
     expect(paths.filter((line) => !line.matchesATrack)).toHaveLength(unmatchedLineCount);
     expect(paths.some((line) => line.text.startsWith("../"))).toBe(true);
@@ -265,6 +437,16 @@ describe("the m3u fixture", () => {
 });
 
 /* ------------------------------------------------- container walkers -- */
+
+/** MPEG-1 Layer III, 128 kbps, 44.1 kHz: what both MP3 fixtures declare. */
+function expectMpegFrameHeader(header: Uint8Array): void {
+  expect(header[0]).toBe(0xff);
+  // Sync, MPEG-1, Layer III, no CRC.
+  expect(header[1]).toBe(0xfb);
+  // Bit rate index 9 (128 kbps) and sample rate index 0 (44.1 kHz).
+  expect((header[2] as number) >> 4).toBe(9);
+  expect(((header[2] as number) >> 2) & 0b11).toBe(0);
+}
 
 /** The text frames of an ID3v2.3 tag, and where the audio starts after it. */
 function readId3(bytes: Uint8Array): { frames: Map<string, string>; audioAt: number } {
@@ -292,6 +474,12 @@ function readId3(bytes: Uint8Array): { frames: Map<string, string>; audioAt: num
   return { frames, audioAt: end };
 }
 
+interface FlacBlock {
+  readonly type: number;
+  readonly last: boolean;
+  readonly body: Uint8Array;
+}
+
 /** The body of the one metadata block of this type. */
 function blockOfType(bytes: Uint8Array, type: number): Uint8Array {
   const block = readFlacBlocks(bytes).find((candidate) => candidate.type === type);
@@ -300,12 +488,6 @@ function blockOfType(bytes: Uint8Array, type: number): Uint8Array {
   }
 
   return block.body;
-}
-
-interface FlacBlock {
-  readonly type: number;
-  readonly last: boolean;
-  readonly body: Uint8Array;
 }
 
 function readFlacBlocks(bytes: Uint8Array): FlacBlock[] {
@@ -351,6 +533,13 @@ function readVorbisComments(block: Uint8Array): Map<string, string> {
   return comments;
 }
 
+interface Mp4Atom {
+  readonly type: string;
+  readonly size: number;
+  readonly offset: number;
+  readonly body: Uint8Array;
+}
+
 /** The body of the one child atom of this type, which must be there. */
 function atomBody(bytes: Uint8Array, type: string): Uint8Array {
   const atom = readAtoms(bytes).find((candidate) => candidate.type === type);
@@ -359,13 +548,6 @@ function atomBody(bytes: Uint8Array, type: string): Uint8Array {
   }
 
   return atom.body;
-}
-
-interface Mp4Atom {
-  readonly type: string;
-  readonly size: number;
-  readonly offset: number;
-  readonly body: Uint8Array;
 }
 
 function readAtoms(bytes: Uint8Array): Mp4Atom[] {
