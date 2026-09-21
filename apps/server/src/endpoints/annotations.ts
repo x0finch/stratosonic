@@ -13,17 +13,92 @@
  *   the same answer browsing gives for a deleted item.
  */
 
-import { parsePrefixedId } from "@stratosonic/db";
+import { parseIdOfType, parsePrefixedId } from "@stratosonic/db";
 import {
   type AnnotatedItem,
   findMissingItems,
+  type Play,
+  recordPlays,
   setRating as saveRating,
   setStarred,
 } from "../annotations/repository";
 import { database } from "../db";
-import { requiredIntegerParameter, requiredParameter } from "../subsonic/params";
+import { registerNowPlaying } from "../nowplaying/repository";
+import { parseGoInt64, requiredIntegerParameter, requiredParameter } from "../subsonic/params";
 import { SubsonicError, SubsonicErrorCode } from "../subsonic/response";
 import type { AuthenticatedSubsonicRequest, SubsonicHandler } from "../subsonic/router";
+
+/**
+ * `scrobble` — a client tells the server the caller played a track.
+ *
+ * `submission=false` (a track starting) only registers the caller's
+ * now-playing entry; `submission=true` (the default, a track finished) only
+ * counts the play and moves its last-played instant. The two are exclusive, as
+ * in Navidrome: a play does not touch now-playing, which expires by TTL, and a
+ * now-playing does not count a play. `id` and `time` are repeatable and paired
+ * by position; a missing or unreadable `time` means now.
+ *
+ * `id` is required (error 10) and must name a track that exists (error 70).
+ */
+export const scrobble: SubsonicHandler = async (request) => {
+  const { params } = request;
+  const ids = requestedTrackIds(params);
+  const db = database(request.env);
+
+  const missing = await findMissingItems(
+    db,
+    ids.map((id) => ({ type: "track", id })),
+  );
+  if (missing.length > 0) {
+    throw new SubsonicError(SubsonicErrorCode.NotFound);
+  }
+
+  const times = params.getAll("time");
+  const at = (index: number): Date => scrobbleTime(times[index]);
+
+  if (isSubmission(params)) {
+    const plays: Play[] = ids.map((id, index) => ({ trackId: id, playDate: at(index) }));
+    await recordPlays(db, request.user.id, plays);
+  } else {
+    const playerName = params.get("c") ?? "";
+    for (const [index, id] of ids.entries()) {
+      await registerNowPlaying(db, request.user.id, id, playerName, at(index));
+    }
+  }
+
+  return {};
+};
+
+/** The track ids of a `scrobble`: required, and each a real track id. */
+function requestedTrackIds(params: URLSearchParams): string[] {
+  const raw = params.getAll("id");
+  if (raw.length === 0) {
+    throw new SubsonicError(SubsonicErrorCode.MissingParameter, "missing parameter: 'id'");
+  }
+
+  return raw.map((value) => {
+    const id = parseIdOfType("track", value);
+    if (id === null) {
+      throw new SubsonicError(SubsonicErrorCode.NotFound);
+    }
+
+    return id;
+  });
+}
+
+/** Whether this is a play submission (the default) rather than a now-playing. */
+function isSubmission(params: URLSearchParams): boolean {
+  const value = (params.get("submission") ?? "").toLowerCase();
+
+  return value !== "false" && value !== "0";
+}
+
+/** The instant a scrobbled play happened: the given epoch-ms `time`, or now. */
+function scrobbleTime(value: string | undefined): Date {
+  const parsed = value === undefined ? null : parseGoInt64(value);
+
+  return parsed === null ? new Date() : new Date(Number(parsed));
+}
 
 /** `star` — starring the caller's songs, albums and artists. */
 export const star: SubsonicHandler = (request) => setStars(request, true);

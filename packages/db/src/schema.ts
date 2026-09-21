@@ -284,3 +284,25 @@ export const annotation = sqliteTable(
 
 export type Annotation = typeof annotation.$inferSelect;
 export type NewAnnotation = typeof annotation.$inferInsert;
+
+/**
+ * Who a user is listening to right now, one row per user — as Navidrome keeps
+ * one now-playing entry per user (`core/playback`/`ffmpeg` aside, its
+ * `NowPlaying` map is keyed by user). `scrobble` with `submission=false`
+ * writes it at the start of a track; `getNowPlaying` returns only the rows
+ * whose `startedAt` is within a TTL window, and a stale one is left to be
+ * overwritten in place by the next track rather than swept, so the free tier
+ * runs no cleaner.
+ */
+export const nowPlaying = sqliteTable("now_playing", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => user.id, { onDelete: "cascade" }),
+  trackId: text("track_id").notNull(),
+  /** The client's `c` parameter, shown in the now-playing feed. */
+  playerName: text("player_name").notNull().default(""),
+  startedAt: integer("started_at", { mode: "timestamp_ms" }).notNull(),
+});
+
+export type NowPlaying = typeof nowPlaying.$inferSelect;
+export type NewNowPlaying = typeof nowPlaying.$inferInsert;

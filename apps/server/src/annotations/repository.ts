@@ -119,6 +119,48 @@ export async function setRating(
     });
 }
 
+/** One track's play, at the instant it was played. */
+export interface Play {
+  readonly trackId: string;
+  readonly playDate: Date;
+}
+
+/**
+ * Records the caller's plays: each increments the track's play count and moves
+ * its last-played instant, leaving its star and rating alone. A play the
+ * caller has never annotated starts the count at 1. Written in one D1 batch;
+ * the same track named twice in one call counts twice, as each `scrobble`
+ * submission is a play.
+ */
+export async function recordPlays(
+  db: Database,
+  userId: string,
+  plays: readonly Play[],
+): Promise<void> {
+  const statements = plays.map((play) =>
+    db
+      .insert(annotation)
+      .values({
+        userId,
+        itemId: play.trackId,
+        itemType: "track",
+        playCount: 1,
+        playDate: play.playDate,
+      })
+      .onConflictDoUpdate({
+        target: [annotation.userId, annotation.itemId, annotation.itemType],
+        set: { playCount: sql`${annotation.playCount} + 1`, playDate: play.playDate },
+      }),
+  );
+
+  const [first, ...rest] = statements;
+  if (first === undefined) {
+    return;
+  }
+
+  await db.batch([first, ...rest]);
+}
+
 function starStatement(
   db: Database,
   userId: string,
