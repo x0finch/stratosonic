@@ -35,6 +35,16 @@ export const annotationColumns = {
 };
 
 /**
+ * The user a read serves when it serves no caller — an internal read that only
+ * needs the item's own row, such as resolving a cover. No account has an empty
+ * id, so the left join matches nothing and the item comes back undecorated.
+ *
+ * It is a named constant, and every read takes its user explicitly, so that a
+ * read never loses its decoration by simply forgetting to say whose it is.
+ */
+export const NO_USER = "";
+
+/**
  * The `ON` of the left join that brings in one item's row for the caller.
  * `itemId` is the item table's id column, compared against the annotation's.
  */

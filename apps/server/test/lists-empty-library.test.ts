@@ -7,9 +7,9 @@ import { list } from "./lists-support";
  *
  * This file seeds nothing, and storage is isolated per test file, so the
  * library really is empty. It is the state every client meets on its first
- * sync, and these three endpoints are the ones it reads then: each has to
- * answer with a valid, empty container, because an error here can stop the
- * sync altogether (#9).
+ * sync, and these endpoints are the ones it reads then: each has to answer
+ * with a valid, empty container, because an error here can stop the sync
+ * altogether (#9).
  */
 
 beforeAll(async () => {
@@ -28,6 +28,8 @@ const EMPTY = [
   ["getAlbumList2", { type: "frequent" }, "albumList2"],
   ["getAlbumList2", { type: "highest" }, "albumList2"],
   ["getRandomSongs", {}, "randomSongs"],
+  ["getSongsByGenre", { genre: "Ambient" }, "songsByGenre"],
+  ["getTopSongs", { artist: "Nobody" }, "topSongs"],
   ["getStarred2", {}, "starred2"],
 ] as const;
 
