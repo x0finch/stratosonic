@@ -8,9 +8,13 @@
  *
  * - **No item at all is error 10.** A `star` naming none of `id`, `albumId`
  *   or `artistId` cannot be acted on.
- * - **An item that names nothing is error 70.** An id that is malformed, or
- *   that resolves to no row of its kind, is "not found", the same answer
- *   browsing gives for a deleted item.
+ * - **An item that names nothing is error 70, and nothing is written.** An id
+ *   that is malformed, or that resolves to no row of its kind, is "not
+ *   found", the same answer browsing gives for a deleted item — and one such
+ *   id refuses the whole request, leaving the ids beside it unstarred. That
+ *   is a deliberate divergence from Navidrome, whose `setStar` skips the ids
+ *   it cannot resolve and stars the rest; issue #40 asks for error 70, so a
+ *   client is told rather than left to guess which of its ids took.
  * - **More than `MAX_ITEMS_PER_REQUEST` ids is error 0.** The work a request
  *   costs grows with the ids it names, and a Worker invocation on the free
  *   plan has fifty subrequests (a D1 query is one). The existence check takes

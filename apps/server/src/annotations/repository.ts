@@ -105,7 +105,9 @@ function itemKey(type: AnnotatedType, id: string): string {
  * Starring upserts the row: a new one records `starred_at` now, and an
  * already-starred one keeps the instant it was first starred, so starring
  * twice is idempotent — the order "most recently starred" that `getStarred2`
- * reads does not shuffle when a client re-sends a star it already has.
+ * reads does not shuffle when a client re-sends a star it already has. That
+ * is issue #40's requirement, not Navidrome's behaviour: Navidrome's
+ * `SetStar` stamps `starred_at` with now on every star, re-sent or not.
  * Unstarring clears the flag and the instant on whatever row exists and
  * inserts nothing: an item that was never annotated has nothing to unstar.
  */
