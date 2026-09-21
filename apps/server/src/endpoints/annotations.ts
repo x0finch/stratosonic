@@ -11,6 +11,13 @@
  * - **An item that names nothing is error 70.** An id that is malformed, of a
  *   kind that cannot be starred, or that resolves to no row is "not found",
  *   the same answer browsing gives for a deleted item.
+ * - **More than `MAX_ITEMS_PER_REQUEST` ids is error 0.** The work a request
+ *   costs grows with the ids it names, and the Workers free plan allows fifty
+ *   subrequests per invocation (a D1 query is one). At the cap, the chunked
+ *   existence check is at most one select per kind per `KEYS_PER_STATEMENT`
+ *   ids — three kinds, so at most 3 * ceil(1000 / 90) = 36 — plus the single
+ *   batch that writes, which leaves the budget room to spare. A client with
+ *   more to star sends more requests.
  */
 
 import { parsePrefixedId } from "@stratosonic/db";
@@ -18,6 +25,9 @@ import { type AnnotatedItem, findMissingItems, setStarred } from "../annotations
 import { database } from "../db";
 import { SubsonicError, SubsonicErrorCode } from "../subsonic/response";
 import type { AuthenticatedSubsonicRequest, SubsonicHandler } from "../subsonic/router";
+
+/** How many items one `star` or `unstar` may name, ids of all kinds together. */
+const MAX_ITEMS_PER_REQUEST = 1000;
 
 /** `star` — starring the caller's songs, albums and artists. */
 export const star: SubsonicHandler = (request) => setStars(request, true);
@@ -46,13 +56,21 @@ async function setStars(request: AuthenticatedSubsonicRequest, starred: boolean)
  * The item's kind comes from the id's prefix, not from which parameter carried
  * it — Navidrome concatenates the three lists and resolves each id to its
  * entity, and our prefixed ids carry the kind with them. A request with no ids
- * at all is error 10; an id that does not parse, or names a playlist (which
- * these endpoints do not star), is error 70.
+ * at all is error 10; more than `MAX_ITEMS_PER_REQUEST` of them is error 0,
+ * counted before anything is parsed; an id that does not parse, or names a
+ * playlist (which these endpoints do not star), is error 70.
  */
 function requestedItems(params: URLSearchParams): AnnotatedItem[] {
   const raw = [...params.getAll("id"), ...params.getAll("albumId"), ...params.getAll("artistId")];
   if (raw.length === 0) {
     throw new SubsonicError(SubsonicErrorCode.MissingParameter);
+  }
+
+  if (raw.length > MAX_ITEMS_PER_REQUEST) {
+    throw new SubsonicError(
+      SubsonicErrorCode.Generic,
+      `too many ids: ${raw.length}, at most ${MAX_ITEMS_PER_REQUEST} per request`,
+    );
   }
 
   return raw.map((value) => {

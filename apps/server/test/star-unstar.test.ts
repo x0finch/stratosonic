@@ -146,6 +146,16 @@ describe("bad requests", () => {
     const body = await write("star", { id: "not-an-id" });
     expect(body.error?.code).toBe(70);
   });
+
+  // The cap is counted before the ids are parsed, so these need not name rows.
+  it("is error 0 for more ids than one request may name", async () => {
+    const body = await write("star", { id: Array.from({ length: 1200 }, () => "x") });
+
+    expect(body.error).toEqual({
+      code: 0,
+      message: "too many ids: 1200, at most 1000 per request",
+    });
+  });
 });
 
 describe("envelope", () => {
