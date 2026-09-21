@@ -166,6 +166,28 @@ export async function readLastScanSummary(db: Database): Promise<ScanSummary | n
   );
 }
 
+/**
+ * A pass in flight and the last one that completed, read together.
+ *
+ * `getScanStatus` needs both — whether a pass is running, and what the last
+ * one did when none is — and one query is one subrequest, which on the free
+ * plan is the unit that matters.
+ */
+export interface ScanReport {
+  readonly progress: ScanProgress | null;
+  readonly lastCompleted: ScanSummary | null;
+}
+
+/** Both of a scan's public rows in one query. */
+export async function readScanReport(db: Database): Promise<ScanReport> {
+  const stored = await readProperties(db, [SCAN_PROGRESS_KEY, LAST_SCAN_SUMMARY_KEY]);
+
+  return {
+    progress: readProgress(stored.get(SCAN_PROGRESS_KEY)),
+    lastCompleted: readSummary(stored.get(LAST_SCAN_SUMMARY_KEY)),
+  };
+}
+
 /** The objects currently written off as unreadable. */
 export async function readBrokenObjects(db: Database): Promise<BrokenObjects> {
   return readBroken((await readProperties(db, [BROKEN_OBJECTS_KEY])).get(BROKEN_OBJECTS_KEY));
@@ -198,15 +220,12 @@ export function clearScanProgressStatement(db: Database): ScanStatement {
  * older than anything a scan in flight is still writing.
  */
 export async function lastScanStartedAt(db: Database): Promise<Date | null> {
-  const stored = await readProperties(db, [SCAN_PROGRESS_KEY, LAST_SCAN_SUMMARY_KEY]);
-  const inFlight = readProgress(stored.get(SCAN_PROGRESS_KEY));
-  if (inFlight !== null) {
-    return new Date(inFlight.startedAt);
+  const { progress, lastCompleted } = await readScanReport(db);
+  if (progress !== null) {
+    return new Date(progress.startedAt);
   }
 
-  const summary = readSummary(stored.get(LAST_SCAN_SUMMARY_KEY));
-
-  return summary === null ? null : new Date(summary.startedAt);
+  return lastCompleted === null ? null : new Date(lastCompleted.startedAt);
 }
 
 /**
