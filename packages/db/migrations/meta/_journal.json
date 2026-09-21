@@ -15,6 +15,13 @@
       "when": 1789944321529,
       "tag": "0001_create_user_table",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1789952204093,
+      "tag": "0002_create_library_tables",
+      "breakpoints": true
     }
   ]
 }

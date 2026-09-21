@@ -13,6 +13,7 @@
       "!**/*.sql",
       "!.claude",
       "!**/migrations/meta",
+      "!**/test/fixtures/manifest.json",
       "!**/worker-configuration.d.ts"
     ]
   },
