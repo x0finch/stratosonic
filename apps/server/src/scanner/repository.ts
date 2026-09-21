@@ -169,24 +169,29 @@ export function setAlbumCoverStatement(
  * the same batch as the rows that made them stale. Every column is written
  * from the `track` table, so running it twice changes nothing.
  *
- * The SQL is written out rather than composed from the schema objects: an
- * `UPDATE` names one table, so Drizzle would render the correlated
- * `album.id` inside these subqueries as a bare `id`, which SQLite would bind
- * to `track` instead and quietly match nothing.
+ * Each subquery is written out rather than composed from the schema objects,
+ * and qualifies `album.id` by hand: the `UPDATE` names one table, so Drizzle
+ * would render that correlation as a bare `id`, which SQLite would resolve
+ * against `track` inside the subquery and quietly match nothing. It is an
+ * `update ... set` rather than raw SQL because Drizzle's D1 driver can only
+ * put a *prepared* statement in a batch - a raw one carrying parameters has
+ * nothing to bind them to.
  */
 export function recomputeAlbumStatement(db: Database, id: string, now: Date): ScanStatement {
-  return db.run(sql`
-    update album set
-      song_count = (select count(*) from track where track.album_id = album.id),
-      duration = (select coalesce(sum(track.duration), 0) from track where track.album_id = album.id),
-      size = (select coalesce(sum(track.size), 0) from track where track.album_id = album.id),
-      created_at = (select coalesce(min(track.created_at), album.created_at) from track where track.album_id = album.id),
-      genre = (select track.genre from track
-        where track.album_id = album.id and track.genre is not null
-        group by track.genre order by count(*) desc, track.genre limit 1),
-      updated_at = ${now.getTime()}
-    where album.id = ${id}
-  `);
+  const ofThisAlbum = sql`from track where track.album_id = album.id`;
+
+  return db
+    .update(album)
+    .set({
+      songCount: sql`(select count(*) ${ofThisAlbum})`,
+      duration: sql`(select coalesce(sum(track.duration), 0) ${ofThisAlbum})`,
+      size: sql`(select coalesce(sum(track.size), 0) ${ofThisAlbum})`,
+      createdAt: sql`(select coalesce(min(track.created_at), album.created_at) ${ofThisAlbum})`,
+      genre: sql`(select track.genre ${ofThisAlbum} and track.genre is not null
+        group by track.genre order by count(*) desc, track.genre limit 1)`,
+      updatedAt: now,
+    })
+    .where(eq(album.id, id));
 }
 
 /**
