@@ -55,7 +55,7 @@ export const setRating: SubsonicHandler = async (request) => {
   // rating -- error 10 -- rather than for the id it never got to look up.
   const id = requiredParameter(request.params, "id");
   const rating = requestedRating(request.params);
-  const item = requestedItem(id);
+  const item = annotatedItem(id);
   const db = database(request.env);
 
   const missing = await findMissingItems(db, [item]);
@@ -67,16 +67,6 @@ export const setRating: SubsonicHandler = async (request) => {
 
   return {};
 };
-
-/** The one item `setRating` names, by its id's prefix. */
-function requestedItem(value: string): AnnotatedItem {
-  const parsed = parsePrefixedId(value);
-  if (parsed === null || parsed.type === "playlist") {
-    throw new SubsonicError(SubsonicErrorCode.NotFound);
-  }
-
-  return { type: parsed.type, id: parsed.id };
-}
 
 /** The rating, required and within 0–5. */
 function requestedRating(params: URLSearchParams): number {
@@ -112,8 +102,7 @@ async function setStars(request: AuthenticatedSubsonicRequest, starred: boolean)
  * The item's kind comes from the id's prefix, not from which parameter carried
  * it — Navidrome concatenates the three lists and resolves each id to its
  * entity, and our prefixed ids carry the kind with them. A request with no ids
- * at all is error 10; an id that does not parse, or names a playlist (which
- * these endpoints do not star), is error 70.
+ * at all is error 10; what each id may be is `annotatedItem`'s to say.
  */
 function requestedItems(params: URLSearchParams): AnnotatedItem[] {
   const raw = [...params.getAll("id"), ...params.getAll("albumId"), ...params.getAll("artistId")];
@@ -121,12 +110,20 @@ function requestedItems(params: URLSearchParams): AnnotatedItem[] {
     throw new SubsonicError(SubsonicErrorCode.MissingParameter);
   }
 
-  return raw.map((value) => {
-    const parsed = parsePrefixedId(value);
-    if (parsed === null || parsed.type === "playlist") {
-      throw new SubsonicError(SubsonicErrorCode.NotFound);
-    }
+  return raw.map((value) => annotatedItem(value));
+}
 
-    return { type: parsed.type, id: parsed.id };
-  });
+/**
+ * The item one id names, for whichever endpoint carried it: the kind is the
+ * id's prefix, and an id that does not parse, or names a playlist (which none
+ * of these endpoints annotate), is error 70 — "not found", the same answer
+ * browsing gives for a deleted item.
+ */
+function annotatedItem(value: string): AnnotatedItem {
+  const parsed = parsePrefixedId(value);
+  if (parsed === null || parsed.type === "playlist") {
+    throw new SubsonicError(SubsonicErrorCode.NotFound);
+  }
+
+  return { type: parsed.type, id: parsed.id };
 }
