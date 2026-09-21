@@ -1,0 +1,208 @@
+{
+  "generator": {
+    "command": "pnpm --filter @stratosonic/server fixtures",
+    "source": "apps/server/test/fixtures/build.ts",
+    "engine": "programmatic"
+  },
+  "tracks": [
+    {
+      "file": "silent-track.mp3",
+      "r2Key": "Silent Artist/Quiet Album/01 Silent Track.mp3",
+      "size": 3598,
+      "suffix": "mp3",
+      "contentType": "audio/mpeg",
+      "container": {
+        "tagFormat": "id3v2.3"
+      },
+      "tags": {
+        "title": "Silent Track",
+        "artist": "Silent Artist",
+        "albumArtist": "Silent Artist",
+        "album": "Quiet Album",
+        "trackNumber": 1,
+        "trackCount": 2,
+        "discNumber": 1,
+        "discCount": 1,
+        "year": 2001,
+        "genre": "Electronic"
+      },
+      "duration": {
+        "seconds": 0.209,
+        "toleranceSeconds": 0.05,
+        "source": "cbr-estimate"
+      },
+      "bitRate": {
+        "kbps": 128,
+        "source": "frame-header"
+      },
+      "cover": {
+        "mimeType": "image/png",
+        "size": 72,
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "file": "hushed-interlude.flac",
+      "r2Key": "Silent Artist/Quiet Album/02 Hushed Interlude.flac",
+      "size": 2443,
+      "suffix": "flac",
+      "contentType": "audio/flac",
+      "container": {
+        "tagFormat": "vorbis-comment"
+      },
+      "tags": {
+        "title": "Hushed Interlude",
+        "artist": "Silent Artist feat. Echo",
+        "albumArtist": "Silent Artist",
+        "album": "Quiet Album",
+        "trackNumber": 2,
+        "trackCount": 2,
+        "discNumber": 1,
+        "discCount": 1,
+        "year": 2001,
+        "genre": "Electronic"
+      },
+      "duration": {
+        "seconds": 1,
+        "toleranceSeconds": 0.01,
+        "source": "streaminfo"
+      },
+      "bitRate": {
+        "kbps": 20,
+        "source": "size-and-duration"
+      },
+      "cover": {
+        "mimeType": "image/png",
+        "size": 72,
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "file": "front-loaded.m4a",
+      "r2Key": "Mute Ensemble/Faststart Sessions/01 Front Loaded.m4a",
+      "size": 2631,
+      "suffix": "m4a",
+      "contentType": "audio/mp4",
+      "container": {
+        "tagFormat": "mp4-ilst",
+        "moovBeforeMdat": true
+      },
+      "tags": {
+        "title": "Front Loaded",
+        "artist": "Mute Ensemble",
+        "albumArtist": "Mute Ensemble",
+        "album": "Faststart Sessions",
+        "trackNumber": 1,
+        "trackCount": 3,
+        "discNumber": 1,
+        "discCount": 1,
+        "year": 2019,
+        "genre": "Ambient"
+      },
+      "duration": {
+        "seconds": 2.5,
+        "toleranceSeconds": 0.01,
+        "source": "mvhd"
+      },
+      "bitRate": {
+        "kbps": 8,
+        "source": "size-and-duration"
+      },
+      "cover": {
+        "mimeType": "image/png",
+        "size": 72,
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "file": "tail-loaded.m4a",
+      "r2Key": "Mute Ensemble/Trailing Sessions/01 Tail Loaded.m4a",
+      "size": 2629,
+      "suffix": "m4a",
+      "contentType": "audio/mp4",
+      "container": {
+        "tagFormat": "mp4-ilst",
+        "moovBeforeMdat": false
+      },
+      "tags": {
+        "title": "Tail Loaded",
+        "artist": "Mute Ensemble",
+        "albumArtist": "Mute Ensemble",
+        "album": "Trailing Sessions",
+        "trackNumber": 1,
+        "trackCount": 3,
+        "discNumber": 1,
+        "discCount": 1,
+        "year": 2019,
+        "genre": "Ambient"
+      },
+      "duration": {
+        "seconds": 2.5,
+        "toleranceSeconds": 0.01,
+        "source": "mvhd"
+      },
+      "bitRate": {
+        "kbps": 8,
+        "source": "size-and-duration"
+      },
+      "cover": {
+        "mimeType": "image/png",
+        "size": 72,
+        "width": 1,
+        "height": 1
+      }
+    }
+  ],
+  "playlist": {
+    "file": "favourites.m3u",
+    "r2Key": "playlists/favourites.m3u",
+    "name": "favourites",
+    "size": 249,
+    "lines": [
+      {
+        "text": "#EXTM3U",
+        "resolvesTo": null,
+        "matchesATrack": false
+      },
+      {
+        "text": "#EXTINF:1,Silent Artist - Silent Track",
+        "resolvesTo": null,
+        "matchesATrack": false
+      },
+      {
+        "text": "../Silent Artist/Quiet Album/01 Silent Track.mp3",
+        "resolvesTo": "Silent Artist/Quiet Album/01 Silent Track.mp3",
+        "matchesATrack": true
+      },
+      {
+        "text": "/Mute Ensemble/Faststart Sessions/01 Front Loaded.m4a",
+        "resolvesTo": "Mute Ensemble/Faststart Sessions/01 Front Loaded.m4a",
+        "matchesATrack": true
+      },
+      {
+        "text": "",
+        "resolvesTo": null,
+        "matchesATrack": false
+      },
+      {
+        "text": "../Missing Artist/Missing Album/Nowhere.mp3",
+        "resolvesTo": "Missing Artist/Missing Album/Nowhere.mp3",
+        "matchesATrack": false
+      },
+      {
+        "text": "../Silent Artist/Quiet Album/02 Hushed Interlude.flac",
+        "resolvesTo": "Silent Artist/Quiet Album/02 Hushed Interlude.flac",
+        "matchesATrack": true
+      }
+    ],
+    "trackKeys": [
+      "Silent Artist/Quiet Album/01 Silent Track.mp3",
+      "Mute Ensemble/Faststart Sessions/01 Front Loaded.m4a",
+      "Silent Artist/Quiet Album/02 Hushed Interlude.flac"
+    ],
+    "unmatchedLineCount": 1
+  }
+}
