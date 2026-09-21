@@ -89,6 +89,29 @@ const LABELLED_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
 /** An album whose cover object is there, and empty: nothing to recognise. */
 const EMPTY: NamedAlbum = { name: "Empty Sleeve", albumArtist: "Blank Studio", year: 2021 };
 
+/**
+ * An artist whose two covered albums disagree about which comes first: the
+ * older one is the later one alphabetically, so only the year can decide.
+ */
+const CHRONOLOGIST = "Chrono Ensemble";
+const OLDER: NamedAlbum = { name: "Zeta Beginnings", albumArtist: CHRONOLOGIST, year: 1999 };
+const NEWER: NamedAlbum = { name: "Alpha Afterwards", albumArtist: CHRONOLOGIST, year: 2020 };
+
+/** An artist one of whose albums has no year at all. */
+const UNDATED_ARTIST = "Timeless Trio";
+const UNDATED: NamedAlbum = { name: "Zeta Undated", albumArtist: UNDATED_ARTIST, year: null };
+const DATED: NamedAlbum = { name: "Alpha Dated", albumArtist: UNDATED_ARTIST, year: 1980 };
+
+/** A PNG apiece, so which cover was served is visible in the bytes. */
+function pngOf(marker: number): Uint8Array {
+  return new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, marker]);
+}
+
+const OLDER_COVER = pngOf(0x01);
+const NEWER_COVER = pngOf(0x02);
+const UNDATED_COVER = pngOf(0x03);
+const DATED_COVER = pngOf(0x04);
+
 beforeAll(async () => {
   await SELF.fetch(`${BASE}/rest/ping`);
   await seedFixtureLibrary();
@@ -103,6 +126,17 @@ beforeAll(async () => {
   const emptyKey = coverKeyOf(EMPTY, "png");
   await seedAlbum({ ...EMPTY, coverKey: emptyKey });
   await testEnv.MUSIC.put(emptyKey, new Uint8Array());
+
+  for (const [album, bytes] of [
+    [OLDER, OLDER_COVER],
+    [NEWER, NEWER_COVER],
+    [UNDATED, UNDATED_COVER],
+    [DATED, DATED_COVER],
+  ] as const) {
+    const key = coverKeyOf(album, "png");
+    await seedAlbum({ ...album, coverKey: key });
+    await testEnv.MUSIC.put(key, bytes);
+  }
 });
 
 describe("getCoverArt", () => {
@@ -146,8 +180,10 @@ describe("getCoverArt", () => {
     expect(await bytesOf(response)).toEqual(fixtureCoverBytes());
   });
 
-  // The rule, stated once: of the albums an artist has, the first by name and
-  // then by year. "Faststart Sessions" sorts before "Trailing Sessions".
+  // The rule, stated once: of the albums an artist has, the first by year,
+  // then by name — Navidrome's `max_year` sort, which `getArtist` lists an
+  // artist's albums in. The two fixture albums share a year, so the name
+  // decides: "Faststart Sessions" before "Trailing Sessions".
   it("borrows the artist's cover from the album that sorts first", async () => {
     const response = await coverOf(prefixedId("artist", artistId(TWO_ALBUM_ARTIST)));
     const expected = await testEnv.MUSIC.head(
@@ -155,6 +191,19 @@ describe("getCoverArt", () => {
     );
 
     expect(response.headers.get("ETag")).toBe(expected?.httpEtag);
+  });
+
+  it("borrows it from the oldest album, not the first one alphabetically", async () => {
+    const response = await coverOf(prefixedId("artist", artistId(CHRONOLOGIST)));
+
+    expect(response.status).toBe(200);
+    expect(await bytesOf(response)).toEqual(OLDER_COVER);
+  });
+
+  it("counts an album whose year is unknown as the oldest of them", async () => {
+    const response = await coverOf(prefixedId("artist", artistId(UNDATED_ARTIST)));
+
+    expect(await bytesOf(response)).toEqual(UNDATED_COVER);
   });
 
   it("accepts size and serves the stored cover unchanged", async () => {

@@ -51,18 +51,26 @@ export async function findCoverKey(db: Database, entity: EntityId): Promise<stri
 
 /**
  * The album whose cover stands for an artist: the first of its albums that has
- * one, in the order the artist's albums are listed in — by name, then by year,
- * so a client sees the same picture whichever endpoint it asks.
+ * one, in the order `getArtist` lists that artist's albums in.
  *
- * Artists have no image of their own in this library (#9); this is the rule
- * that decides which of an artist's covers is borrowed.
+ * Artists have no image of their own in this library (#9), so one is borrowed,
+ * and the rule has to be the same one the browsing endpoints sort by — a
+ * client that is told the artist's `coverArt` is album X's must not be served
+ * album Y's when it asks for it.
+ *
+ * That order is Navidrome's: `AlbumsByArtistID` sorts by `max_year`
+ * (server/filter/filters.go), which `persistence/album_repository.go` maps to
+ * year, then release date, then name. We hold no release date, so it is year,
+ * then name, then the id as a tiebreaker so the answer never depends on the
+ * order rows happen to come back in. A year we do not know sorts first, as
+ * SQLite sorts NULL ascending, and matches what the browsing side does.
  */
 export async function findArtistCoverAlbum(db: Database, artistId: string): Promise<Album | null> {
   const rows = await db
     .select()
     .from(album)
     .where(and(eq(album.artistId, artistId), isNotNull(album.coverKey)))
-    .orderBy(asc(album.name), asc(album.year))
+    .orderBy(asc(album.year), asc(album.name), asc(album.id))
     .limit(1);
 
   return rows[0] ?? null;
