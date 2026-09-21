@@ -127,11 +127,18 @@ export interface Play {
 
 /**
  * Records the caller's plays: each increments the item's play count and moves
- * its last-played instant, leaving its star and rating alone. A play the
- * caller has never annotated starts the count at 1. Written in one D1 batch;
- * the same item named twice in one call counts twice, as each `scrobble`
- * submission is a play — and a played track's album is one such item, so
- * `frequent` and `recent` album lists reflect the tracks played from it.
+ * its last-played instant forward, leaving its star and rating alone. A play
+ * the caller has never annotated starts the count at 1. Written in one D1
+ * batch; the same item named twice in one call counts twice, as each
+ * `scrobble` submission is a play — and a played track's album is one such
+ * item, so `frequent` and `recent` album lists reflect the tracks played
+ * from it.
+ *
+ * "Forward" is the whole of it: a client flushing an offline backlog sends
+ * plays out of order, and an older `time` arriving after a newer one must not
+ * drag `played` back into the past — it would unsort "recently played" and
+ * make the newer play look undone. Navidrome guards it the same way, with
+ * `max(ifnull(play_date, ''), ?)` in its annotation upsert.
  */
 export async function recordPlays(
   db: Database,
@@ -150,7 +157,13 @@ export async function recordPlays(
       })
       .onConflictDoUpdate({
         target: [annotation.userId, annotation.itemId, annotation.itemType],
-        set: { playCount: sql`${annotation.playCount} + 1`, playDate: play.playDate },
+        set: {
+          playCount: sql`${annotation.playCount} + 1`,
+          // `play_date` is stored as epoch milliseconds, so the incoming
+          // instant is bound as a number and the two compare on one scale;
+          // a row that has never been played counts as 0, the earliest.
+          playDate: sql`max(ifnull(${annotation.playDate}, 0), ${play.playDate.getTime()})`,
+        },
       }),
   );
 
