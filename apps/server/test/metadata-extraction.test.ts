@@ -120,6 +120,21 @@ describe("the cover", () => {
     expect(cover?.mimeType).toBe("image/png");
     expect(cover?.bytes).toEqual(fixtureBytes(fixtures.cover.file));
   });
+
+  it("is the first picture, not the one that calls itself the front cover", async () => {
+    // Every fixture carries exactly one picture, so the rule #9 states - the
+    // first picture an album's track carries - is untested by them. This
+    // FLAC carries two: an "other" picture first, and the fixture's own
+    // front cover behind it.
+    const other = Uint8Array.of(0xff, 0xd8, 0xff, 0xdb, 0x00, 0x01, 0x02, 0x03);
+    const { cover } = await extractMetadata(
+      bytesSource(flacWithLeadingPicture(other, "image/jpeg")),
+      "flac",
+    );
+
+    expect(cover?.mimeType).toBe("image/jpeg");
+    expect(cover?.bytes).toEqual(other);
+  });
 });
 
 /* -------------------------------------------------------- duration -- */
@@ -341,6 +356,48 @@ describe("what extraction refuses", () => {
     expect(metadata.duration).toBeGreaterThan(0);
   });
 
+  it("blames the source, not the bytes, when a read fails", async () => {
+    const track = fixtureTrack("silent-track.mp3");
+    const outage = new Error("R2 said 500");
+    const failing = {
+      size: track.size,
+      read: () => Promise.reject(outage),
+    };
+
+    const error = await extractMetadata(failing, "mp3").catch((thrown: unknown) => thrown);
+
+    // A bucket that is briefly unavailable must not look like a corrupt
+    // file: the scan would write the track off and never look again.
+    expect(error).toBeInstanceOf(MetadataError);
+    expect((error as MetadataError).code).toBe("source-failed");
+    expect((error as MetadataError).cause).toBe(outage);
+  });
+
+  it("blames the source when it fails partway through a parse", async () => {
+    const track = fixtureTrack("tail-loaded.m4a");
+    const bytes = fixtureBytes(track.file);
+    const vanished = new Error("the object was deleted mid-scan");
+    let reads = 0;
+    const flaky = {
+      size: bytes.length,
+      read: (offset: number, length: number) => {
+        reads += 1;
+
+        return reads > 1
+          ? Promise.reject(vanished)
+          : Promise.resolve(bytes.subarray(offset, Math.min(offset + length, bytes.length)));
+      },
+    };
+
+    const error = await extractMetadata(flaky, "m4a", { chunkSize: SMALL_CHUNK }).catch(
+      (thrown: unknown) => thrown,
+    );
+
+    expect(reads).toBeGreaterThan(1);
+    expect((error as MetadataError).code).toBe("source-failed");
+    expect((error as MetadataError).cause).toBe(vanished);
+  });
+
   it("carries what went wrong as the cause", async () => {
     const error = await extractMetadata(bytesSource(garbage), "flac").catch(
       (thrown: unknown) => thrown,
@@ -456,6 +513,68 @@ function childAtom(bytes: Uint8Array, type: string): Uint8Array {
   }
 
   throw new Error(`no ${type} atom`);
+}
+
+/**
+ * The FLAC fixture with one more PICTURE block in front of the one it has.
+ *
+ * A FLAC metadata block is a byte of "is this the last one" and type, a
+ * 24-bit length, and the body; a PICTURE body is the picture type, then the
+ * MIME string and the description each behind their length, then four
+ * dimensions, then the image behind its own length.
+ */
+function flacWithLeadingPicture(image: Uint8Array, mimeType: string): Uint8Array {
+  const bytes = fixtureBytes("hushed-interlude.flac");
+  const mime = Uint8Array.from(mimeType, (character) => character.charCodeAt(0));
+  const body = new Uint8Array(4 + 4 + mime.length + 4 + 16 + 4 + image.length);
+  const view = new DataView(body.buffer);
+
+  // Picture type 0, "Other": whatever a file calls its front cover, the
+  // first picture is the one an album takes.
+  view.setUint32(0, 0);
+  view.setUint32(4, mime.length);
+  body.set(mime, 8);
+  view.setUint32(8 + mime.length, 0);
+  view.setUint32(8 + mime.length + 4 + 16, image.length);
+  body.set(image, 8 + mime.length + 4 + 16 + 4);
+
+  const block = new Uint8Array(4 + body.length);
+  block[0] = 6;
+  block[1] = (body.length >> 16) & 0xff;
+  block[2] = (body.length >> 8) & 0xff;
+  block[3] = body.length & 0xff;
+  block.set(body, 4);
+
+  // In front of the block that is there, which stays the last one.
+  const at = flacPictureBlockOffset(bytes);
+  const grown = new Uint8Array(bytes.length + block.length);
+  grown.set(bytes.subarray(0, at));
+  grown.set(block, at);
+  grown.set(bytes.subarray(at), at + block.length);
+
+  return grown;
+}
+
+/** Where the FLAC fixture's PICTURE block header begins. */
+function flacPictureBlockOffset(bytes: Uint8Array): number {
+  let offset = 4;
+  while (offset + 4 <= bytes.length) {
+    const type = (bytes[offset] as number) & 0x7f;
+    if (type === 6) {
+      return offset;
+    }
+
+    const length =
+      ((bytes[offset + 1] as number) << 16) |
+      ((bytes[offset + 2] as number) << 8) |
+      (bytes[offset + 3] as number);
+    if ((bytes[offset] as number) & 0x80) {
+      break;
+    }
+    offset += 4 + length;
+  }
+
+  throw new Error("the FLAC fixture has no PICTURE block");
 }
 
 /** The STREAMINFO block of a FLAC file, which is always the first one. */

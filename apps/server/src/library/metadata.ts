@@ -65,15 +65,21 @@ export type MetadataErrorCode =
   /** The key's suffix is not one of the formats this can read. */
   | "unsupported-format"
   /** The bytes are not the format the suffix promised, or are cut short. */
-  | "unreadable";
+  | "unreadable"
+  /** The bytes never arrived: the source itself failed. */
+  | "source-failed";
 
 /**
  * Why a track could not be described.
  *
- * The scan meets both of these in a bucket someone uploads to by hand, and
- * neither should end a run: it counts the object as unreadable and moves on,
- * which it can only do if the failure arrives as this rather than as whatever
- * a parser happened to throw.
+ * The three are not the same kind of news, and the scan must tell them apart.
+ * `unsupported-format` and `unreadable` are facts about one object in a
+ * bucket someone uploads to by hand: the scan counts it as unreadable, moves
+ * on, and will get the same answer next run. `source-failed` is not about the
+ * object at all - R2 answered with an error, or the object was deleted while
+ * it was being read - and the next run may well succeed, so the scan must not
+ * write that object off. Neither should end a run, but only if the failure
+ * arrives as this rather than as whatever a parser happened to throw.
  */
 export class MetadataError extends Error {
   readonly code: MetadataErrorCode;
@@ -87,8 +93,14 @@ export class MetadataError extends Error {
 
 export interface ExtractOptions {
   /**
-   * Bytes per underlying read. The default suits a real track; a test that
-   * wants to see which regions of a small fixture were touched lowers it.
+   * Bytes per underlying read, **for tests only**.
+   *
+   * The default is tuned to what a track's header costs and to how many
+   * subrequests a scheduled run can afford, and a caller has no reason to
+   * choose differently; it exists so a test can watch which regions of a
+   * fixture of a few kilobytes get read. It also sets how much a parse may
+   * hold, at up to `DEFAULT_CACHED_CHUNKS` times this. `chunkedSource`
+   * refuses anything that is not a positive whole number.
    */
   readonly chunkSize?: number;
 }
@@ -103,6 +115,11 @@ export interface ExtractOptions {
  *
  * The source is wrapped in `chunkedSource` here, so a caller passes the plain
  * range-reading source and still pays only a handful of reads.
+ *
+ * Everything that can go wrong arrives as a `MetadataError`: `unsupported-
+ * format` for a suffix this cannot read, `unreadable` for bytes that are not
+ * what the suffix promised, and `source-failed` when the source could not
+ * produce the bytes at all.
  */
 export async function extractMetadata(
   source: ByteSource,
@@ -117,7 +134,7 @@ export async function extractMetadata(
   }
 
   const tokenizer = new ByteSourceTokenizer(
-    chunkedSource(source, { chunkSize: options.chunkSize }),
+    chunkedSource(reportingSource(source), { chunkSize: options.chunkSize }),
     AUDIO_CONTENT_TYPES[suffix satisfies AudioSuffix],
   );
 
@@ -166,6 +183,32 @@ export async function extractMetadata(
   } finally {
     await tokenizer.close();
   }
+}
+
+/**
+ * Wraps the caller's source so a read that fails says so in its own words.
+ *
+ * Without this, a bucket that is briefly unavailable and a file that is
+ * corrupt are the same news: the parser meets an exception, gives up, and the
+ * blanket conversion below calls it `unreadable`. The scan would then write
+ * off a perfectly good track over a 500.
+ */
+function reportingSource(source: ByteSource): ByteSource {
+  return {
+    size: source.size,
+
+    async read(offset: number, length: number): Promise<Uint8Array> {
+      try {
+        return await source.read(offset, length);
+      } catch (cause) {
+        throw new MetadataError(
+          "source-failed",
+          `could not read ${length} bytes at ${offset} of the object`,
+          { cause },
+        );
+      }
+    },
+  };
 }
 
 /** Whether the parse found anything: a tag, a picture, or format numbers. */
