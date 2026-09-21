@@ -23,6 +23,12 @@
  *   writes are one batch however many there are: sixteen subrequests at the
  *   cap, well inside the budget. A client with more to star sends more
  *   requests.
+ *
+ *   `scrobble` is held to the same cap and for the same reason. A client
+ *   flushing an offline backlog is the one caller that really does send
+ *   hundreds of ids at once, and its submission path reads them in chunks
+ *   too (`findTrackAlbums`), so a thousand ids are ceil(1000 / 90) = 12
+ *   selects and one batch.
  */
 
 import { parseIdOfType, parsePrefixedId } from "@stratosonic/db";
@@ -148,11 +154,21 @@ function albumPlays(played: readonly PlayedTrack[], albumOf: ReadonlyMap<string,
   }));
 }
 
-/** The track ids of a `scrobble`: required, and each a real track id. */
+/**
+ * The track ids of a `scrobble`: required, at most `MAX_ITEMS_PER_REQUEST` of
+ * them, and each a real track id.
+ */
 function requestedTrackIds(params: URLSearchParams): string[] {
   const raw = params.getAll("id");
   if (raw.length === 0) {
     throw new SubsonicError(SubsonicErrorCode.MissingParameter, "missing parameter: 'id'");
+  }
+
+  if (raw.length > MAX_ITEMS_PER_REQUEST) {
+    throw new SubsonicError(
+      SubsonicErrorCode.Generic,
+      `too many ids: ${raw.length}, at most ${MAX_ITEMS_PER_REQUEST} per request`,
+    );
   }
 
   return raw.map((value) => {
@@ -198,7 +214,10 @@ function requestedTimes(params: URLSearchParams, idCount: number): Date[] {
   return raw.map((value) => new Date(integerParameterValue("time", value)));
 }
 
-/** How many items one `star` or `unstar` may name, ids of all kinds together. */
+/**
+ * How many items one write may name: for `star` and `unstar`, ids of all
+ * kinds together; for `scrobble`, the tracks of one submission.
+ */
 const MAX_ITEMS_PER_REQUEST = 1000;
 
 /** `star` — starring the caller's songs, albums, artists and playlists. */
