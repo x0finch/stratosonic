@@ -205,6 +205,7 @@ export async function runScan(
   const startedAt = previous?.startedAt ?? now.getTime();
 
   const counts = noCounts();
+  counts.steps = 1;
   let cursor = previous?.cursor ?? "";
   let skip = previous?.skip ?? 0;
   let sweptTo = previous?.sweptTo ?? "";
