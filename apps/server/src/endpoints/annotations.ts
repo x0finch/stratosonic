@@ -49,8 +49,13 @@ const MAX_RATING = 5;
  * serializers emit an out-of-spec `userRating="6"` on every read of that item.
  */
 export const setRating: SubsonicHandler = async (request) => {
-  const item = requestedItem(request.params);
+  // Both parameters are read before the id is resolved, as Navidrome reads
+  // them (p.String("id"), then p.Int("rating"), and only then the entity
+  // lookup): a malformed id sent without a rating is answered for the missing
+  // rating -- error 10 -- rather than for the id it never got to look up.
+  const id = requiredParameter(request.params, "id");
   const rating = requestedRating(request.params);
+  const item = requestedItem(id);
   const db = database(request.env);
 
   const missing = await findMissingItems(db, [item]);
@@ -64,8 +69,8 @@ export const setRating: SubsonicHandler = async (request) => {
 };
 
 /** The one item `setRating` names, by its id's prefix. */
-function requestedItem(params: URLSearchParams): AnnotatedItem {
-  const parsed = parsePrefixedId(requiredParameter(params, "id"));
+function requestedItem(value: string): AnnotatedItem {
+  const parsed = parsePrefixedId(value);
   if (parsed === null || parsed.type === "playlist") {
     throw new SubsonicError(SubsonicErrorCode.NotFound);
   }

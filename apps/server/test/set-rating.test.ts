@@ -115,6 +115,11 @@ describe("bad requests", () => {
     expect((await write("setRating", { id: songId })).error?.code).toBe(10);
   });
 
+  it("is error 10 for a missing rating even when the id is malformed", async () => {
+    const body = await write("setRating", { id: "garbage" });
+    expect(body.error?.code).toBe(10);
+  });
+
   it("is error 70 for an id that names nothing", async () => {
     const body = await write("setRating", {
       id: prefixedId("track", trackId("Ghost/None/x.mp3")),
