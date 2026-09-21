@@ -1,5 +1,5 @@
 import { type NewUser, type User, user } from "@stratosonic/db";
-import { eq, sql } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import type { Database } from "../db";
 
 /**
@@ -18,6 +18,27 @@ export async function findUserByUsername(db: Database, userName: string): Promis
     .select()
     .from(user)
     .where(sql`lower(${user.userName}) = lower(${userName})`)
+    .limit(1);
+
+  return rows[0] ?? null;
+}
+
+/**
+ * The administrator an imported playlist belongs to: the longest-standing
+ * one, which on this server is the account the first run bootstrapped.
+ *
+ * Navidrome picks the owner of an auto-imported playlist the same way, with
+ * `FindFirstAdmin` - `Sort: "updated_at", Max: 1` over the admins
+ * (persistence/user_repository.go), read by the playlist phase of its scanner
+ * (scanner/phase_4_playlists.go). The id breaks a tie so two admins written
+ * in the same millisecond still give one answer.
+ */
+export async function findFirstAdmin(db: Database): Promise<User | null> {
+  const rows = await db
+    .select()
+    .from(user)
+    .where(eq(user.isAdmin, true))
+    .orderBy(asc(user.updatedAt), asc(user.id))
     .limit(1);
 
   return rows[0] ?? null;
