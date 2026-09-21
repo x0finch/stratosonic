@@ -282,6 +282,20 @@ describe("what the write endpoints refuse", () => {
     expect((await callPlaylists("deletePlaylist", [["id", unknown]])).error?.code).toBe(70);
     expect((await callPlaylists("deletePlaylist", [["id", "not-an-id"]])).error?.code).toBe(70);
   });
+
+  it("refuses more songIds than the cap, before writing anything to the bucket", async () => {
+    const before = (await playlistObjects()).size;
+    const tooMany: [string, string][] = Array.from({ length: 1001 }, (_, index) => [
+      "songId",
+      prefixedId("track", trackId(`Silent Artist/Quiet Album/never-${index}.mp3`)),
+    ]);
+
+    const response = await callPlaylists("createPlaylist", [["name", "Too Long"], ...tooMany]);
+
+    expect(response.error?.code).toBe(0);
+    expect(response.error?.message).toContain("too many ids");
+    expect((await playlistObjects()).size).toBe(before);
+  });
 });
 
 describe("the sweep and a playlist created while a pass was running", () => {

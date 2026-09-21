@@ -55,6 +55,9 @@ import type { AuthenticatedSubsonicRequest, SubsonicHandler } from "../subsonic/
 /** Navidrome's message for a playlist it cannot produce. */
 const NOT_FOUND = "playlist not found";
 
+/** How many `songId`s one write may name, so its lookup stays affordable. */
+const MAX_SONGS_PER_REQUEST = 1000;
+
 /**
  * `getPlaylists` - every playlist the caller may see, by name.
  *
@@ -190,11 +193,25 @@ async function writable(
  * client can report. The lookup is one statement per ninety distinct ids, so
  * a playlist of hundreds of songs costs a handful of them rather than
  * throwing on D1's parameter limit.
+ *
+ * More than `MAX_SONGS_PER_REQUEST` of them is error 0, as it is on every
+ * other endpoint here that takes a repeatable id (`star`, `scrobble`,
+ * `savePlayQueue`). Those statements are subrequests, and a free-plan
+ * invocation has fifty; at the cap the lookup is twelve of them, leaving room
+ * for the R2 put and the batch that follow. Navidrome has no cap because it
+ * has no such budget.
  */
 async function requestedTracks(
   db: Database,
   songIds: readonly string[],
 ): Promise<readonly EntryTrack[]> {
+  if (songIds.length > MAX_SONGS_PER_REQUEST) {
+    throw new SubsonicError(
+      SubsonicErrorCode.Generic,
+      `too many ids: ${songIds.length}, at most ${MAX_SONGS_PER_REQUEST} per request`,
+    );
+  }
+
   const ids = songIds.map((value) => parseIdOfType("track", value));
   const found = await findTracksByIds(db, [...new Set(ids.filter((id) => id !== null))]);
 
