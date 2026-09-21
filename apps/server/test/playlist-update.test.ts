@@ -222,6 +222,25 @@ describe("renaming", () => {
 
     expect((await read(mix.id)).name).toBe("Unchanged");
   });
+
+  it("does not rename to a name of nothing but spaces, and stays convergent", async () => {
+    const mix = await create("Still Named", [SONG_IDS[0] ?? ""]);
+
+    const response = await update([
+      ["playlistId", mix.id],
+      ["name", "   "],
+    ]);
+    expect(response.status).toBe("ok");
+    expect((await read(mix.id)).name).toBe("Still Named");
+
+    // The file would otherwise carry a `#PLAYLIST:` line with nothing after
+    // it, which the parser reads as no name - and the next pass would rename
+    // the playlist after its file, which is the random id of its key.
+    expect((await fileOf(mix.id)).text).toContain("#PLAYLIST:Still Named");
+
+    await importUntilComplete();
+    expect((await read(mix.id)).name).toBe("Still Named");
+  });
 });
 
 describe("comment and public", () => {

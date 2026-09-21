@@ -283,6 +283,18 @@ describe("what the write endpoints refuse", () => {
     expect((await callPlaylists("deletePlaylist", [["id", "not-an-id"]])).error?.code).toBe(70);
   });
 
+  it("answers a name of nothing but spaces as a missing one, with error 10", async () => {
+    const before = (await playlistObjects()).size;
+
+    const response = await callPlaylists("createPlaylist", [["name", "   "]]);
+
+    // A name the `.m3u` cannot carry is no name: written through, the file's
+    // `#PLAYLIST:` line would be empty, the parser would read no name at all,
+    // and the next pass would rename the playlist after its own key.
+    expect(response.error?.code).toBe(10);
+    expect((await playlistObjects()).size).toBe(before);
+  });
+
   it("refuses more songIds than the cap, before writing anything to the bucket", async () => {
     const before = (await playlistObjects()).size;
     const tooMany: [string, string][] = Array.from({ length: 1001 }, (_, index) => [

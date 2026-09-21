@@ -39,6 +39,7 @@ import { parseIdOfType } from "@stratosonic/db";
 import { type Database, database } from "../db";
 import { omitWhenEmpty, playlistElement, songElement } from "../library/serializers";
 import { DEFAULT_PUBLIC } from "../playlists/import";
+import { playlistNameForFile } from "../playlists/m3u";
 import {
   type EntryTrack,
   findPlaylist,
@@ -105,7 +106,12 @@ export const getPlaylist: SubsonicHandler = async (request) => {
 export const createPlaylist: SubsonicHandler = async (request) => {
   const db = database(request.env);
   const requestedId = request.params.get("playlistId") ?? "";
-  const name = request.params.get("name") ?? "";
+  // Normalised before it is judged: a name of nothing but spaces is a name
+  // the file cannot carry - `playlistNameForFile` trims it to "" and the
+  // parser reads a `#PLAYLIST:` line with nothing after it as no name at all
+  // - so it counts as no name here rather than as a playlist whose row and
+  // whose file disagree from the moment it is written.
+  const name = playlistNameForFile(request.params.get("name") ?? "");
 
   if (requestedId === "" && name === "") {
     // Navidrome's `req.NewMissingParamError("name or playlistId")`, wording
@@ -171,10 +177,15 @@ export const updatePlaylist: SubsonicHandler = async (request) => {
 
   const removed = requestedRemovals(params);
   const kept = current.filter((_, index) => !removed.has(index));
+  // As in `createPlaylist`: a name the `.m3u` cannot carry is no rename. Left
+  // through, the row would say "   " while the next import, reading a
+  // `#PLAYLIST:` line with nothing after it, renamed the playlist after its
+  // file - which is the random id the key is made of.
+  const renamed = playlistNameForFile(params.get("name") ?? "");
 
   await writePlaylist(request.env, db, {
     r2Key: held.r2Key,
-    name: params.get("name") || held.name,
+    name: renamed || held.name,
     comment: params.get("comment") ?? held.comment,
     ownerId: held.ownerId,
     public: booleanParameter(params, "public") ?? held.public,

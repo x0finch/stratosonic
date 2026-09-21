@@ -107,7 +107,7 @@ export async function writePlaylist(env: Env, db: Database, write: PlaylistWrite
 
   await runBatch(
     db,
-    upsertPlaylistStatements(db, imported, { writesDetails: write.writesDetails ?? false }),
+    upsertPlaylistStatements(db, imported, { writesDetails: write.writesDetails }),
   );
 
   return imported.id;
