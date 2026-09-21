@@ -18,9 +18,10 @@ import { seedAlbum, seedArtist, seedTrack } from "./support";
  * `search2` returns the same items under the folder view's elements.
  *
  * The seeded library is chosen so a single query reaches every kind: "beat" is
- * a substring of three artists, two album names and — through the album name
- * and the track's artist — three songs, with one artist, album and song that
- * contains it nowhere as a control.
+ * a substring of three artists, three albums — two by name and Help! through
+ * its album artist — and, through the album name and the track's artist, three
+ * songs, with one artist, album and song that contains it nowhere as a
+ * control.
  */
 
 const ARTISTS = ["The Beatles", "Beatnik", "Heartbeat Trio", "Quietus"];
@@ -80,7 +81,8 @@ describe("search3 matching", () => {
     const result = (await search("search3", { query: "BEAT" })).searchResult3;
 
     expect(artistNames(result).sort()).toEqual(["Beatnik", "Heartbeat Trio", "The Beatles"]);
-    expect(albumNames(result).sort()).toEqual(["Beat Parade", "Offbeat"]);
+    // "Help!" comes back through its album artist, The Beatles.
+    expect(albumNames(result).sort()).toEqual(["Beat Parade", "Help!", "Offbeat"]);
     // "Help" through its artist, "Ticket to Ride" through its album, "Groove"
     // through both — "Hush" through nothing.
     expect(songTitles(result).sort()).toEqual(["Groove", "Help", "Ticket to Ride"]);
@@ -96,11 +98,13 @@ describe("search3 matching", () => {
   it("requires every word of a multi-word query", async () => {
     const result = (await search("search3", { query: "beatles help" })).searchResult3;
 
-    // The one track that is both a Beatles track and titled Help; the artist
-    // "The Beatles" matches "beatles" but not "help", so no artist comes back.
+    // The one track that is both a Beatles track and titled Help, and the
+    // album Help! — "beatles" matches its album artist and "help" its name,
+    // the way Navidrome's full_text carries both. The artist "The Beatles"
+    // matches "beatles" but not "help", so no artist comes back.
     expect(songTitles(result)).toEqual(["Help"]);
+    expect(albumNames(result)).toEqual(["Help!"]);
     expect(artistNames(result)).toEqual([]);
-    expect(albumNames(result)).toEqual([]);
   });
 
   it("matches nothing a word is absent from", async () => {
@@ -167,6 +171,7 @@ describe("search2 rendering", () => {
     ]);
     expect((result?.album ?? []).map((album) => album.name).sort()).toEqual([
       "Beat Parade",
+      "Help!",
       "Offbeat",
     ]);
     expect(songTitles(result).sort()).toEqual(["Groove", "Help", "Ticket to Ride"]);

@@ -86,7 +86,12 @@ async function searchArtists(
     .offset(window.offset);
 }
 
-/** Albums whose name matches every word, by name, album artist, then id. */
+/**
+ * Albums whose name or album artist matches every word, by name, album artist,
+ * then id. The album artist is matched because Navidrome's `full_text` for an
+ * album is built from its name *and* its artist, so "beatles help" finds the
+ * album Help! there and has to find it here too.
+ */
 async function searchAlbums(
   db: Database,
   words: readonly string[],
@@ -99,17 +104,19 @@ async function searchAlbums(
   return db
     .select()
     .from(album)
-    .where(matchesEveryWord([album.name], words))
+    .where(matchesEveryWord([album.name, album.albumArtist], words))
     .orderBy(byName(album.name), byName(album.albumArtist), asc(album.id))
     .limit(window.count)
     .offset(window.offset);
 }
 
 /**
- * Tracks whose title, album name or own artist matches every word, by title
- * then id. The album is left-joined for the name a word may match and the name
- * and cover every `<song>` carries, so a track whose album row a half-finished
- * scan has not written yet is still found — the same choice `findTrack` makes.
+ * Tracks whose title, album name, own artist or album artist matches every
+ * word, by title then id — the same four fields Navidrome's `full_text` for a
+ * media file is built from. The album is left-joined for the name a word may
+ * match and the name and cover every `<song>` carries, so a track whose album
+ * row a half-finished scan has not written yet is still found — the same
+ * choice `findTrack` makes.
  */
 async function searchTracks(
   db: Database,
@@ -124,7 +131,7 @@ async function searchTracks(
     .select({ track, albumName: album.name, albumCoverKey: album.coverKey })
     .from(track)
     .leftJoin(album, eq(album.id, track.albumId))
-    .where(matchesEveryWord([track.title, album.name, track.artist], words))
+    .where(matchesEveryWord([track.title, album.name, track.artist, track.albumArtist], words))
     .orderBy(byName(track.title), asc(track.id))
     .limit(window.count)
     .offset(window.offset);
