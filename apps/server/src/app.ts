@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { star, unstar } from "./endpoints/annotations";
 import { getAlbum, getArtist, getArtists, getGenres, getSong } from "./endpoints/browsing";
 import { getIndexes, getMusicDirectory, getMusicFolders } from "./endpoints/folders";
 import { getAlbumList2, getRandomSongs, getStarred2 } from "./endpoints/lists";
@@ -69,6 +70,11 @@ export function createApp(): SubsonicApp {
   // answer with the error 70 every unknown `/rest/` name answers with.
   registerEndpoint(app, "getPlaylists", getPlaylists);
   registerEndpoint(app, "getPlaylist", getPlaylist);
+
+  // Annotations: what a client saves about an item. Each answers an empty ok
+  // envelope and writes only the caller's rows.
+  registerEndpoint(app, "star", star);
+  registerEndpoint(app, "unstar", unstar);
 
   registerEndpoint(app, "getUser", getUser);
   registerEndpoint(app, "getUsers", getUsers, { adminOnly: true });
