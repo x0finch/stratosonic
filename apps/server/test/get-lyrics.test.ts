@@ -20,6 +20,9 @@ const DUET = "Host/Duets/01 Duet.mp3";
 /** Three takes of one song, newest first; the newest has no sidecar. */
 const TWINS = ["Twins/Newest/01 Twin.mp3", "Twins/Middle/01 Twin.mp3", "Twins/Oldest/01 Twin.mp3"];
 
+/** Two takes: the newest has only a `.txt`, the older an `.lrc`. */
+const PAIR = ["Pair/Newer/01 Paired.mp3", "Pair/Older/01 Paired.mp3"];
+
 /** More takes than the lookup looks at; only the oldest has a sidecar. */
 const CROWD = Array.from(
   { length: MAX_LYRICS_CANDIDATES + 2 },
@@ -49,6 +52,12 @@ beforeAll(async () => {
   }
   await putSidecar(sidecar(TWINS[1] ?? ""), "[00:01.00]from the middle take\n");
   await putSidecar(sidecar(TWINS[2] ?? ""), "[00:01.00]from the oldest take\n");
+
+  for (const [index, key] of PAIR.entries()) {
+    await seedTrack({ r2Key: key, title: "Paired", artist: "Pair", updatedAt: minutes(-index) });
+  }
+  await putSidecar(sidecar(PAIR[0] ?? "", ".txt"), "plain words of the newer take\n");
+  await putSidecar(sidecar(PAIR[1] ?? ""), "[00:01.00]synced words of the older take\n");
 
   for (const [index, key] of CROWD.entries()) {
     await seedTrack({ r2Key: key, title: "Crowded", artist: "Crowd", updatedAt: minutes(-index) });
@@ -93,6 +102,13 @@ describe("getLyrics", () => {
     const response = await lyrics("getLyrics", { artist: "Twins", title: "Twin" });
 
     expect(response.lyrics?.value).toBe("from the middle take\n");
+  });
+
+  it("prefers an older take's .lrc to the newest take's .txt", async () => {
+    const counted = await lyricsCounting("getLyrics", { artist: "Pair", title: "Paired" });
+
+    expect(counted.body.lyrics?.value).toBe("synced words of the older take\n");
+    expect(counted.r2Gets).toEqual([sidecar(PAIR[0] ?? ""), sidecar(PAIR[1] ?? "")]);
   });
 
   it.each([
@@ -150,12 +166,9 @@ describe("what getLyrics costs", () => {
     expect(counted.statements).toHaveLength(2);
     expect(counted.statements[1]?.bound).toBeLessThanOrEqual(D1_MAX_BOUND_PARAMETERS);
     expect(counted.rowsWritten).toBe(0);
-    // The newest take is probed for both suffixes, the middle one answers.
-    expect(counted.r2Gets).toEqual([
-      sidecar(TWINS[0] ?? ""),
-      sidecar(TWINS[0] ?? "", ".txt"),
-      sidecar(TWINS[1] ?? ""),
-    ]);
+    // Every take's `.lrc` comes before any `.txt`, so the middle take's
+    // answers on the second read.
+    expect(counted.r2Gets).toEqual([sidecar(TWINS[0] ?? ""), sidecar(TWINS[1] ?? "")]);
   });
 
   it("stays within twenty R2 reads and writes nothing for a miss", async () => {

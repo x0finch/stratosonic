@@ -5,7 +5,10 @@
  * Only the columns the answer uses are selected - the key the sidecar sits
  * beside, and the artist and title a lyric without its own tags is displayed
  * with. Nothing is joined: lyrics are not decorated with the caller's
- * annotation, so each lookup is one statement over the track table.
+ * annotation, so each lookup is one statement over the track table. The
+ * candidate query filters on `track.title`, which is not indexed, by design:
+ * a personal library is small enough to scan, the same posture search and
+ * `getTopSongs` take.
  */
 
 import { track } from "@stratosonic/db";
