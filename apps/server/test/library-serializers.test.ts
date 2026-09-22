@@ -354,7 +354,7 @@ describe("annotation decoration", () => {
     expect(xml).toContain(`genre="Ambient" played="${PLAYED.toISOString()}" userRating="4"`);
   });
 
-  it("adds an artist's starred and rating, but no play data", async () => {
+  it("adds an artist's annotation in ArtistID3's attribute order", async () => {
     const artist = {
       id: artistId(ALBUM_ARTIST),
       name: ALBUM_ARTIST,
@@ -364,9 +364,12 @@ describe("annotation decoration", () => {
     };
     const xml = await render("artist", artistElement(artist));
 
-    expect(xml).toContain(`albumCount="3" starred="${STARRED.toISOString()}" userRating="4"`);
-    expect(xml).not.toContain("playCount");
-    expect(xml).not.toContain("played");
+    // starred sits after albumCount, then the caller's play data, userRating
+    // last — the same order the album and song elements carry it in, so a
+    // scrobble's artist increment renders like its album increment.
+    expect(xml).toContain(
+      `albumCount="3" starred="${STARRED.toISOString()}" playCount="9" played="${PLAYED.toISOString()}" userRating="4"`,
+    );
   });
 
   it("renders a rating of zero and no star as no annotation attributes", async () => {

@@ -156,6 +156,12 @@ export function directoryAnnotationAttributes(item: Annotated): SubsonicNode {
 /**
  * `<artist>`, Navidrome's `ArtistID3`: id, name, coverArt, albumCount. The
  * count is not `omitempty` there, so an artist with no albums still says 0.
+ *
+ * `playCount` and `played` are the caller's, filled the same way an album's
+ * are: `scrobble` increments the artist's annotation alongside the track's and
+ * the album's (Navidrome's `PlayTracker.incPlay`), and each is omitted when the
+ * caller has never played the artist, by the same rules that omit it from an
+ * album or a song.
  */
 export function artistElement(artist: ArtistView): SubsonicNode {
   return {
@@ -164,6 +170,8 @@ export function artistElement(artist: ArtistView): SubsonicNode {
     coverArt: artist.coverAlbumId === null ? undefined : prefixedId("album", artist.coverAlbumId),
     albumCount: artist.albumCount,
     starred: starredAttribute(artist),
+    playCount: playCountAttribute(artist),
+    played: playedAttribute(artist),
     userRating: userRatingAttribute(artist),
   };
 }
