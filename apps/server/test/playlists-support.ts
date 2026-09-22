@@ -96,6 +96,25 @@ export async function importCountingWrites(
   limits: Partial<PlaylistImportLimits> = {},
 ): Promise<CountedImport> {
   const writes: RecordedWrite[] = [];
+  const env: Env = { ...testEnv, DB: recordingDatabase(writes) };
+  const run = await importPlaylists(env, now, { ...DEFAULT_PLAYLIST_IMPORT_LIMITS, ...limits });
+
+  return {
+    run,
+    writes,
+    playlistRowsWritten: rowsWrittenToPlaylists(writes),
+    statementsAgainst: (table) => against(writes, table),
+    boundAgainst: (table) => against(writes, table).map((write) => write.bound),
+  };
+}
+
+/**
+ * The test D1, wrapped so that every statement it runs is appended to
+ * `writes` with the rows D1 reports it wrote - the counting behind
+ * `importCountingWrites`, for any test that has to say what a piece of work
+ * cost the database.
+ */
+export function recordingDatabase(writes: RecordedWrite[]): D1Database {
   const statements = new WeakMap<D1PreparedStatement, { sql: string; bound: number }>();
 
   const record = (sql: string, bound: number, rowsWritten: number) => {
@@ -145,7 +164,7 @@ export async function importCountingWrites(
     return proxy;
   };
 
-  const db = new Proxy(testEnv.DB, {
+  return new Proxy(testEnv.DB, {
     get(target, property) {
       if (property === "prepare") {
         return (sql: string) => counted(target.prepare(sql), sql, 0);
@@ -169,17 +188,6 @@ export async function importCountingWrites(
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-
-  const env: Env = { ...testEnv, DB: db };
-  const run = await importPlaylists(env, now, { ...DEFAULT_PLAYLIST_IMPORT_LIMITS, ...limits });
-
-  return {
-    run,
-    writes,
-    playlistRowsWritten: rowsWrittenToPlaylists(writes),
-    statementsAgainst: (table) => against(writes, table),
-    boundAgainst: (table) => against(writes, table).map((write) => write.bound),
-  };
 }
 
 /** The statements one run ran against a table, read or write. */
