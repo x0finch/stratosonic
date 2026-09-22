@@ -27,7 +27,7 @@
  *   `scrobble` is held to the same cap and for the same reason. A client
  *   flushing an offline backlog is the one caller that really does send
  *   hundreds of ids at once, and its submission path reads them in chunks
- *   too (`findTrackAlbums`), so a thousand ids are ceil(1000 / 90) = 12
+ *   too (`findTrackParents`), so a thousand ids are ceil(1000 / 90) = 12
  *   selects and one batch.
  */
 
@@ -35,11 +35,12 @@ import { parseIdOfType, parsePrefixedId } from "@stratosonic/db";
 import {
   type AnnotatedItem,
   findMissingItems,
-  findTrackAlbums,
+  findTrackParents,
   type Play,
   recordPlays,
   setRating as saveRating,
   setStarred,
+  type TrackParents,
 } from "../annotations/repository";
 import { database } from "../db";
 import { registerNowPlaying } from "../nowplaying/repository";
@@ -72,15 +73,16 @@ export const scrobble: SubsonicHandler = async (request) => {
   const db = database(request.env);
 
   if (isSubmission(params)) {
-    // A play counts for the track and for its album, so `frequent`/`recent`
-    // album lists reflect what was played. One query answers both questions
-    // this path asks of `track` — which ids are real, and what album each one
-    // belongs to — because an id the map does not carry is precisely a track
-    // that is not in the library.
-    const albumOf = await findTrackAlbums(db, ids);
+    // A play counts for the track, for its album and for its artist, so
+    // `frequent`/`recent` album lists and `getArtist`'s play data reflect what
+    // was played (Navidrome's `PlayTracker.incPlay` increments all three). One
+    // query answers every question this path asks of `track` — which ids are
+    // real, and what album and artist each one belongs to — because an id the
+    // map does not carry is precisely a track that is not in the library.
+    const parentsOf = await findTrackParents(db, ids);
     const now = new Date();
     const played = ids.map((id, index) => ({ id, playDate: times[index] ?? now }));
-    if (played.some(({ id }) => !albumOf.has(id))) {
+    if (played.some(({ id }) => !parentsOf.has(id))) {
       throw new SubsonicError(SubsonicErrorCode.NotFound);
     }
 
@@ -88,7 +90,11 @@ export const scrobble: SubsonicHandler = async (request) => {
       item: { type: "track", id },
       playDate,
     }));
-    await recordPlays(db, request.user.id, [...trackPlays, ...albumPlays(played, albumOf)]);
+    await recordPlays(db, request.user.id, [
+      ...trackPlays,
+      ...parentPlays(played, parentsOf, "album"),
+      ...parentPlays(played, parentsOf, "artist"),
+    ]);
   } else {
     const missing = await findMissingItems(
       db,
@@ -122,33 +128,40 @@ interface PlayedTrack {
 }
 
 /**
- * The album side of a submission: one play row per album, however many of its
- * tracks the request named.
+ * The album or artist side of a submission: one play row per parent, however
+ * many of its tracks the request named.
  *
- * A client that finishes a sync sends a whole album at once, and a row per
- * track would be as many statements — each overwriting the same album row — to
- * reach a count the request already knows. Grouping makes it one upsert per
- * album, adding that many plays and carrying the latest of their instants,
- * which is the one `recent` should order by.
+ * A client that finishes a sync sends a whole album — and so a whole artist —
+ * at once, and a row per track would be as many statements, each overwriting
+ * the same parent row, to reach a count the request already knows. Grouping
+ * makes it one upsert per album and one per artist, adding that many plays and
+ * carrying the latest of their instants, which is the one `recent` and
+ * `getArtist` should order by. A track carries a single `artist_id` — its
+ * album artist — so each play adds to exactly one artist.
  */
-function albumPlays(played: readonly PlayedTrack[], albumOf: ReadonlyMap<string, string>): Play[] {
-  const byAlbum = new Map<string, { playDate: Date; count: number }>();
+function parentPlays(
+  played: readonly PlayedTrack[],
+  parentsOf: ReadonlyMap<string, TrackParents>,
+  type: "album" | "artist",
+): Play[] {
+  const byParent = new Map<string, { playDate: Date; count: number }>();
 
   for (const { id, playDate } of played) {
-    const albumId = albumOf.get(id);
-    if (albumId === undefined) {
+    const parents = parentsOf.get(id);
+    if (parents === undefined) {
       continue;
     }
 
-    const current = byAlbum.get(albumId);
-    byAlbum.set(albumId, {
+    const parentId = type === "album" ? parents.albumId : parents.artistId;
+    const current = byParent.get(parentId);
+    byParent.set(parentId, {
       playDate: current && current.playDate > playDate ? current.playDate : playDate,
       count: (current?.count ?? 0) + 1,
     });
   }
 
-  return [...byAlbum].map(([id, { playDate, count }]) => ({
-    item: { type: "album", id },
+  return [...byParent].map(([id, { playDate, count }]) => ({
+    item: { type, id },
     playDate,
     count,
   }));
