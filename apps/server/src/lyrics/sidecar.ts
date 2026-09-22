@@ -46,8 +46,7 @@ export function sidecarKey(trackKey: string, suffix: string): string {
  */
 export async function readSidecarLyrics(env: Env, trackKey: string): Promise<ParsedLyrics | null> {
   for (const suffix of SIDECAR_SUFFIXES) {
-    const text = await readSidecarText(env, sidecarKey(trackKey, suffix));
-    const lyrics = text === null ? null : parseLrc(text, UNKNOWN_LANGUAGE);
+    const lyrics = await readSidecarLyricsWithSuffix(env, trackKey, suffix);
 
     if (lyrics !== null) {
       return lyrics;
@@ -55,6 +54,24 @@ export async function readSidecarLyrics(env: Env, trackKey: string): Promise<Par
   }
 
   return null;
+}
+
+/**
+ * The lyrics in the one sidecar of this suffix beside a track, or null when
+ * it is absent, unreadable, too large or holds no line: one R2 read.
+ *
+ * `getLyrics` needs this on its own because Navidrome's
+ * `getLyricsForCandidates` tries each source across every candidate before
+ * the next source, so it walks the suffixes itself.
+ */
+export async function readSidecarLyricsWithSuffix(
+  env: Env,
+  trackKey: string,
+  suffix: string,
+): Promise<ParsedLyrics | null> {
+  const text = await readSidecarText(env, sidecarKey(trackKey, suffix));
+
+  return text === null ? null : parseLrc(text, UNKNOWN_LANGUAGE);
 }
 
 /**
