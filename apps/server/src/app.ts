@@ -9,6 +9,7 @@ import {
   getStarred2,
   getTopSongs,
 } from "./endpoints/lists";
+import { getLyricsBySongId } from "./endpoints/lyrics";
 import { download, getCoverArt, stream } from "./endpoints/media";
 import { notImplemented } from "./endpoints/not-implemented";
 import {
@@ -121,6 +122,11 @@ export function createApp(): SubsonicApp {
   registerEndpoint(app, "deleteBookmark", deleteBookmark);
   registerEndpoint(app, "getPlayQueue", getPlayQueue);
   registerEndpoint(app, "savePlayQueue", savePlayQueue);
+
+  // Lyrics, which Navidrome mounts in its media group ahead of `stream`: read
+  // from the sidecar beside the track when a client asks, so they answer with
+  // an envelope and write nothing.
+  registerEndpoint(app, "getLyricsBySongId", getLyricsBySongId);
 
   // Media: these answer with bytes rather than with an envelope, and with an
   // error envelope when there are no bytes to send.

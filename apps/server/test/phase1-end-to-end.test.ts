@@ -639,6 +639,7 @@ describe("the calls a client makes before anything else", () => {
     expect(body["subsonic-response"].openSubsonic).toBe(true);
     expect(body["subsonic-response"].openSubsonicExtensions).toEqual([
       { name: "formPost", versions: [1] },
+      { name: "songLyrics", versions: [1] },
     ]);
   });
 });

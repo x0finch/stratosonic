@@ -2,6 +2,12 @@ import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 const BASE = "https://stratosonic.test";
+/** What this server implements, in the order it lists them. */
+const EXTENSIONS = [
+  { name: "formPost", versions: [1] },
+  { name: "songLyrics", versions: [1] },
+];
+
 const AUTH_QUERY = "u=admin&t=26719a1196d2a940705a59634eb18eab&s=c19b2d&v=1.16.1&c=Substreamer";
 
 interface JsonEnvelope {
@@ -29,7 +35,8 @@ describe("getOpenSubsonicExtensions", () => {
     const xml = await response.text();
     expect(xml).toContain('<subsonic-response xmlns="http://subsonic.org/restapi" status="ok"');
     expect(xml).toContain(
-      '<openSubsonicExtensions name="formPost"><versions>1</versions></openSubsonicExtensions>',
+      '<openSubsonicExtensions name="formPost"><versions>1</versions></openSubsonicExtensions>' +
+        '<openSubsonicExtensions name="songLyrics"><versions>1</versions></openSubsonicExtensions>',
     );
   });
 
@@ -57,9 +64,7 @@ describe("getOpenSubsonicExtensions", () => {
       openSubsonic: true,
     });
     expect(body["subsonic-response"].serverVersion).toMatch(/^\d+\.\d+\.\d+$/);
-    expect(body["subsonic-response"].openSubsonicExtensions).toEqual([
-      { name: "formPost", versions: [1] },
-    ]);
+    expect(body["subsonic-response"].openSubsonicExtensions).toEqual(EXTENSIONS);
   });
 
   it("does not require authentication", async () => {
@@ -77,9 +82,7 @@ describe("getOpenSubsonicExtensions", () => {
     ).json()) as JsonEnvelope;
 
     expect(body["subsonic-response"].status).toBe("ok");
-    expect(body["subsonic-response"].openSubsonicExtensions).toEqual([
-      { name: "formPost", versions: [1] },
-    ]);
+    expect(body["subsonic-response"].openSubsonicExtensions).toEqual(EXTENSIONS);
   });
 
   it("accepts parameters from a form-encoded POST body", async () => {
@@ -92,9 +95,7 @@ describe("getOpenSubsonicExtensions", () => {
     expect(response.headers.get("Content-Type")).toBe("application/json; charset=utf-8");
 
     const body = (await response.json()) as JsonEnvelope;
-    expect(body["subsonic-response"].openSubsonicExtensions).toEqual([
-      { name: "formPost", versions: [1] },
-    ]);
+    expect(body["subsonic-response"].openSubsonicExtensions).toEqual(EXTENSIONS);
   });
 
   it("accepts a form-encoded POST body on the .view path too", async () => {
