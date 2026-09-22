@@ -6,9 +6,14 @@ import type { PublicSubsonicHandler, SubsonicHandler } from "../subsonic/router"
  * Only extensions that are actually supported belong here: clients take this
  * list as a promise. `formPost` (version 1) is the promise that every endpoint
  * accepts its parameters in a form-encoded POST body, which the route registry
- * does for all endpoints it mounts.
+ * does for all endpoints it mounts. `songLyrics` (version 1) is
+ * `getLyricsBySongId`; Navidrome also offers version 2, whose word timings and
+ * lyric kinds this server does not produce.
  */
-const OPEN_SUBSONIC_EXTENSIONS = [{ name: "formPost", versions: [1] }];
+const OPEN_SUBSONIC_EXTENSIONS = [
+  { name: "formPost", versions: [1] },
+  { name: "songLyrics", versions: [1] },
+];
 
 /**
  * `getOpenSubsonicExtensions` — unauthenticated, as the OpenSubsonic spec
