@@ -38,6 +38,7 @@ import {
 } from "@stratosonic/db";
 import { suffixOf } from "../library/audio-formats";
 import type { TrackMetadata } from "../library/metadata";
+import { SCAN_VERSION } from "./version";
 
 /** Navidrome's `consts.UnknownArtist`. */
 export const UNKNOWN_ARTIST = "[Unknown Artist]";
@@ -166,6 +167,7 @@ export function deriveRows(object: LibraryObject, metadata: TrackMetadata, now: 
       suffix: suffixOf(object.key),
       genre,
       etag: object.etag,
+      scanVersion: SCAN_VERSION,
       createdAt: object.uploaded,
       updatedAt: now,
     },

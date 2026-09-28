@@ -48,6 +48,8 @@ export interface StoredTrack {
   readonly albumId: string;
   readonly etag: string;
   readonly size: number;
+  /** The scanner version that last read it (`scanner/version.ts`). */
+  readonly scanVersion: number;
   /** Whether a `track_lyrics` row is stored for it. */
   readonly hasLyrics: boolean;
 }
@@ -85,6 +87,7 @@ export async function findTracksInRange(
       albumId: track.albumId,
       etag: track.etag,
       size: track.size,
+      scanVersion: track.scanVersion,
       lyricsOf: trackLyrics.trackId,
     })
     .from(track)
@@ -178,6 +181,7 @@ export function upsertStatements(db: Database, rows: DerivedRows, now: Date): Sc
           suffix: rows.track.suffix,
           genre: rows.track.genre,
           etag: rows.track.etag,
+          scanVersion: rows.track.scanVersion,
           createdAt: rows.track.createdAt,
           updatedAt: rows.track.updatedAt,
         },

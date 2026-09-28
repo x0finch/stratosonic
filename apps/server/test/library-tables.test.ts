@@ -116,6 +116,7 @@ describe("the library tables", () => {
       suffix: "mp3",
       genre: "Electronic",
       etag: "abc123",
+      scanVersion: 1,
       createdAt: CREATED,
       updatedAt: UPDATED,
     };

@@ -167,6 +167,13 @@ export const track = sqliteTable(
     suffix: text("suffix").notNull(),
     genre: text("genre"),
     etag: text("etag").notNull().default(""),
+    /**
+     * The scanner version that last read this track's tags. A row below the
+     * scanner's current `SCAN_VERSION` is read again even when its etag and
+     * size match, which is how a scanner that learns to read something new
+     * (embedded lyrics, #69) reaches the tracks indexed before it did.
+     */
+    scanVersion: integer("scan_version").notNull().default(0),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
   },

@@ -47,8 +47,8 @@
     {
       "idx": 6,
       "version": "6",
-      "when": 1790626599775,
-      "tag": "0006_create_track_lyrics_table",
+      "when": 1790628034865,
+      "tag": "0006_add_track_lyrics_and_scan_version",
       "breakpoints": true
     }
   ]

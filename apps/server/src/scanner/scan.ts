@@ -124,6 +124,7 @@ import {
   writeLastScanSummaryStatement,
   writeScanProgressStatement,
 } from "./state";
+import { SCAN_VERSION } from "./version";
 
 /** How much of the bucket one run gets through. See the budget above. */
 export interface ScanLimits {
@@ -173,7 +174,7 @@ interface Extracted {
 type Plan =
   /** Not music: artwork, a playlist, a stray file. */
   | { readonly work: "ignore" }
-  /** Its etag and size still match the row we hold. */
+  /** Its etag and size still match the row we hold, read by this scanner version. */
   | { readonly work: "unchanged" }
   /** Known unreadable at exactly these bytes; not worth a read. */
   | { readonly work: "known-broken" }
@@ -316,7 +317,7 @@ export async function runScan(
       extracted.push({
         rows,
         cover: read.metadata.cover,
-        changed: heldWithOtherBytes(planned.held, planned.object),
+        changed: bytesChanged(planned.held, planned.object),
         heldLyrics: planned.held?.hasLyrics ?? false,
       });
       counts.indexed++;
@@ -425,7 +426,12 @@ function planFor(object: R2Object, held: Map<string, StoredTrack>, broken: Broke
 
   const listed = asLibraryObject(object);
   const row = held.get(listed.key);
-  if (row !== undefined && row.etag === listed.etag && row.size === listed.size) {
+  if (
+    row !== undefined &&
+    row.etag === listed.etag &&
+    row.size === listed.size &&
+    row.scanVersion >= SCAN_VERSION
+  ) {
     return { work: "unchanged" };
   }
 
@@ -438,19 +444,12 @@ function planFor(object: R2Object, held: Map<string, StoredTrack>, broken: Broke
 
 /**
  * Whether the library held this track with other bytes than the object now
- * has - which is what lets a re-read replace its album's cover.
- *
- * A held row whose etag is empty has not been seen to change: migration 0006
- * clears every etag once, so that each track is read again for the lyrics in
- * its tags, and a cover rewritten for every one of those reads would be R2
- * writes for nothing. Only a different size then says the bytes moved.
+ * has - which is what lets a re-read replace its album's cover. A track read
+ * again only because its row predates `SCAN_VERSION` has the same bytes, so
+ * that re-read writes no cover.
  */
-function heldWithOtherBytes(held: StoredTrack | undefined, object: LibraryObject): boolean {
-  if (held === undefined) {
-    return false;
-  }
-
-  return held.etag !== "" || held.size !== object.size;
+function bytesChanged(held: StoredTrack | undefined, object: LibraryObject): boolean {
+  return held !== undefined && (held.etag !== object.etag || held.size !== object.size);
 }
 
 /** What came of trying to read an object, and whose fault it was. */

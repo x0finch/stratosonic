@@ -70,6 +70,7 @@ function songRow(overrides: Partial<SongView> = {}): SongView {
     suffix: "m4a",
     genre: "Ambient",
     etag: "etag-front-loaded",
+    scanVersion: 1,
     createdAt: CREATED_AT,
     updatedAt: CREATED_AT,
     albumName: album.name,

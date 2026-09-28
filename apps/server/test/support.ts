@@ -23,6 +23,7 @@ import { database } from "../src/db";
 import type { Env } from "../src/env";
 import { suffixOf } from "../src/library/audio-formats";
 import { type ByteSource, bytesSource } from "../src/library/byte-source";
+import { SCAN_VERSION } from "../src/scanner/version";
 import { insertUser } from "../src/users/repository";
 import {
   type FixtureAlbum,
@@ -200,6 +201,8 @@ export interface TrackSeed {
   readonly bitRate?: number;
   readonly size?: number;
   readonly etag?: string;
+  /** The scanner version that read it; the current one unless a test says otherwise. */
+  readonly scanVersion?: number;
   readonly createdAt?: Date;
   readonly updatedAt?: Date;
 }
@@ -232,6 +235,7 @@ export async function seedTrack(seed: TrackSeed): Promise<Track> {
     suffix: suffixOf(seed.r2Key),
     genre: seed.genre ?? null,
     etag: seed.etag ?? `etag-${trackId(seed.r2Key).slice(0, 8)}`,
+    scanVersion: seed.scanVersion ?? SCAN_VERSION,
     createdAt: seed.createdAt ?? SEED_TIME,
     updatedAt: seed.updatedAt ?? seed.createdAt ?? SEED_TIME,
   };
