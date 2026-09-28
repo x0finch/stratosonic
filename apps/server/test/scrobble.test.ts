@@ -1,12 +1,9 @@
-import { SELF } from "cloudflare:test";
 import { prefixedId, trackId } from "@stratosonic/db";
 import { beforeAll, describe, expect, it } from "vitest";
-import { database } from "../src/db";
-import { registerNowPlaying } from "../src/nowplaying/repository";
-import { findUserByUsername } from "../src/users/repository";
-import { write, writeQuery, writeXml } from "./annotations-support";
-import { ADMIN, bootstrapAdmin, browse, type SubsonicSongElement } from "./browsing-support";
-import { BASE, seedAlbum, seedArtist, seedTrack, testEnv } from "./support";
+import { write, writeXml } from "./annotations-support";
+import { bootstrapAdmin, browse } from "./browsing-support";
+import { nowPlayingFeed as nowPlaying, seedSession, storedSession } from "./now-playing-support";
+import { seedAlbum, seedArtist, seedTrack } from "./support";
 
 /**
  * `scrobble` and `getNowPlaying`: a listener's plays count, and a "now
@@ -42,48 +39,9 @@ const SONGS = {
 
 const id = (song: Song) => prefixedId("track", trackId(song.key));
 
-interface NowPlayingEntry extends SubsonicSongElement {
-  username: string;
-  minutesAgo: number;
-  playerId: number;
-  playerName?: string;
-}
-
-/** Reads getNowPlaying as the bootstrap admin. */
-async function nowPlaying(): Promise<NowPlayingEntry[]> {
-  const response = await SELF.fetch(`${BASE}/rest/getNowPlaying?${writeQuery({ f: "json" })}`);
-  const body = (await response.json()) as {
-    "subsonic-response": { nowPlaying?: { entry?: NowPlayingEntry[] } };
-  };
-
-  return body["subsonic-response"].nowPlaying?.entry ?? [];
-}
-
 /** The titles the feed currently carries. */
 async function nowPlayingTitles(): Promise<string[]> {
   return (await nowPlaying()).map((entry) => entry.title);
-}
-
-/**
- * Puts the admin's now-playing row in place at a chosen instant.
- *
- * The endpoint stamps a registration with the server's own now, so a test that
- * asks what the TTL does to an entry that started minutes ago has to write the
- * row itself rather than go through `scrobble`.
- */
-async function seedNowPlaying(song: Song, startedAt: Date): Promise<void> {
-  const admin = await findUserByUsername(database(testEnv), ADMIN);
-  if (!admin) {
-    throw new Error("the bootstrap admin is missing");
-  }
-
-  await registerNowPlaying(
-    database(testEnv),
-    admin.id,
-    trackId(song.key),
-    "Substreamer",
-    startedAt,
-  );
 }
 
 /** A song's play count, or 0 when it has none, from getSong. */
@@ -162,8 +120,11 @@ describe("a now-playing submission", () => {
     expect(entry?.username).toBe("admin");
     expect(entry?.playerName).toBe("Substreamer");
     expect(typeof entry?.minutesAgo).toBe("number");
-    // Required by the XSD; Navidrome has no player registry and renders 0.
-    expect(entry?.playerId).toBe(0);
+    // Required by the XSD; Navidrome numbers the feed's entries from 1.
+    expect(entry?.playerId).toBe(1);
+    // A now-playing is a `playing` report, from the start of the track.
+    expect(entry?.state).toBe("playing");
+    expect(entry?.playbackRate).toBe(1);
 
     expect(await playCountOf(SONGS.bravo)).toBe(before);
   });
@@ -179,30 +140,49 @@ describe("a now-playing submission", () => {
 });
 
 describe("the now-playing TTL", () => {
-  const secondsAgo = (seconds: number) => new Date(Date.now() - seconds * 1_000);
+  /** How far the stored expiry is from `expected`, in milliseconds. */
+  async function expiryDistance(expected: number): Promise<number> {
+    return Math.abs(((await storedSession())?.expiresAt.getTime() ?? 0) - expected);
+  }
 
-  it("keeps a three-minute track started two minutes ago", async () => {
-    await seedNowPlaying(SONGS.bravo, secondsAgo(120));
+  it("is the track's length plus five seconds", async () => {
+    const before = Date.now();
+    await write("scrobble", { id: id(SONGS.bravo), submission: "false" });
+
+    expect(await expiryDistance(before + 185_000)).toBeLessThan(2_000);
+  });
+
+  it("is what is left of the track after position, in seconds", async () => {
+    const before = Date.now();
+    await write("scrobble", { id: id(SONGS.bravo), submission: "false", position: "60" });
+
+    expect((await storedSession())?.positionMs).toBe(60_000);
+    expect(await expiryDistance(before + 125_000)).toBeLessThan(2_000);
+  });
+
+  it("is a minute for a track of unknown length", async () => {
+    const before = Date.now();
+    await write("scrobble", { id: id(SONGS.foxtrot), submission: "false" });
+
+    expect(await expiryDistance(before + 60_000)).toBeLessThan(2_000);
+  });
+
+  it("keeps an entry until it expires", async () => {
+    await seedSession({
+      trackId: trackId(SONGS.bravo.key),
+      expiresAt: new Date(Date.now() + 1_000),
+    });
 
     expect(await nowPlayingTitles()).toContain("Bravo");
   });
 
-  it("drops a three-minute track started four minutes ago", async () => {
-    await seedNowPlaying(SONGS.bravo, secondsAgo(240));
+  it("drops an entry once it has expired", async () => {
+    await seedSession({
+      trackId: trackId(SONGS.bravo.key),
+      expiresAt: new Date(Date.now() - 1_000),
+    });
 
     expect(await nowPlayingTitles()).not.toContain("Bravo");
-  });
-
-  it("keeps a track of unknown length started thirty seconds ago", async () => {
-    await seedNowPlaying(SONGS.foxtrot, secondsAgo(30));
-
-    expect(await nowPlayingTitles()).toContain("Foxtrot");
-  });
-
-  it("drops a track of unknown length started ninety seconds ago", async () => {
-    await seedNowPlaying(SONGS.foxtrot, secondsAgo(90));
-
-    expect(await nowPlayingTitles()).not.toContain("Foxtrot");
   });
 });
 

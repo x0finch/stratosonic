@@ -43,8 +43,9 @@ import {
   type TrackParents,
 } from "../annotations/repository";
 import { database } from "../db";
-import { registerNowPlaying } from "../nowplaying/repository";
+import { reportPlayback as applyPlaybackReport } from "../nowplaying/report";
 import {
+  integerParameterOr,
   integerParameterValue,
   requiredIntegerParameter,
   requiredParameter,
@@ -56,7 +57,8 @@ import type { AuthenticatedSubsonicRequest, SubsonicHandler } from "../subsonic/
  * `scrobble` — a client tells the server the caller played a track.
  *
  * `submission=false` (a track starting) only registers the caller's
- * now-playing entry; `submission=true` (the default, a track finished) only
+ * now-playing entry — a `playing` report, as `reportPlayback` would store it,
+ * `position` seconds in; `submission=true` (the default, a track finished) only
  * counts the play and moves its last-played instant. The two are exclusive, as
  * in Navidrome: a play does not touch now-playing, which expires by TTL, and a
  * now-playing does not count a play. `id` and `time` are repeatable and paired
@@ -96,25 +98,38 @@ export const scrobble: SubsonicHandler = async (request) => {
       ...parentPlays(played, parentsOf, "artist"),
     ]);
   } else {
-    const missing = await findMissingItems(
-      db,
-      ids.map((id) => ({ type: "track", id })),
-    );
-    if (missing.length > 0) {
-      throw new SubsonicError(SubsonicErrorCode.NotFound);
-    }
-
     // `now_playing` holds one row per user, so registering every id in turn
     // would leave only the last of them anyway — each write overwrites the row
     // the one before it made. A client that names several tracks is playing
-    // the last: that is the only one written, in one statement.
-    //
-    // Its instant is the server's now, never the client's `time`. Navidrome
-    // reads `time` for submissions alone, and a now-playing entry is measured
-    // against this server's clock as it expires.
-    const current = ids.at(-1);
-    if (current !== undefined) {
-      await registerNowPlaying(db, request.user.id, current, params.get("c") ?? "", new Date());
+    // the last: that is the only one written. The others are still checked,
+    // so that an id naming nothing is error 70 wherever it sits.
+    const current = ids.at(-1) as string;
+    const others = ids.slice(0, -1);
+    if (others.length > 0) {
+      const missing = await findMissingItems(
+        db,
+        others.map((id) => ({ type: "track", id })),
+      );
+      if (missing.length > 0) {
+        throw new SubsonicError(SubsonicErrorCode.NotFound);
+      }
+    }
+
+    // A now-playing is a `playing` report, as Navidrome's `scrobblerNowPlaying`
+    // hands it to `ReportPlayback`: `position` is seconds into the track, and
+    // absent or unreadable means the start. Its instant is the server's now,
+    // never the client's `time`, which Navidrome reads for submissions alone.
+    const found = await applyPlaybackReport(db, {
+      userId: request.user.id,
+      trackId: current,
+      state: "playing",
+      positionMs: integerParameterOr(params, "position", 0) * 1_000,
+      playbackRate: 1,
+      ignoreScrobble: false,
+      playerName: params.get("c") ?? "",
+    });
+    if (!found) {
+      throw new SubsonicError(SubsonicErrorCode.NotFound);
     }
   }
 
