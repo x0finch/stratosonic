@@ -100,7 +100,7 @@ describe("choosing the lyric to store", () => {
     expect(embeddedLyricsOf(sylt([{ text: "frame", timestamp: 40 }], 1))).toBeUndefined();
   });
 
-  it("prefers a synced lyric to an unsynced one listed before it", () => {
+  it("takes the first lyric the file lists, synced or not, as Navidrome's Main() does", () => {
     const native: NativeTags = {
       "ID3v2.3": [
         { id: "USLT", value: { language: "eng", descriptor: "", text: "plain" } },
@@ -117,7 +117,7 @@ describe("choosing the lyric to store", () => {
       ],
     };
 
-    expect(embeddedLyricsOf(native)).toEqual({ text: "[00:00.50]timed\n", lang: "fra" });
+    expect(embeddedLyricsOf(native)).toEqual({ text: "plain", lang: "eng" });
   });
 
   it("takes the first of several unsynced lyrics", () => {

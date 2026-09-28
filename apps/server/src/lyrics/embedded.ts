@@ -30,10 +30,10 @@
  * ## One lyric per track
  *
  * Navidrome keeps every lyric the tags hold and answers with all of them.
- * This server stores one per track, so it chooses the one a client would
- * show: the first that is synced, else the first there is. A lyric the parser
- * finds no line in, or larger than `MAX_EMBEDDED_LYRICS_BYTES`, is not a
- * lyric and is never chosen.
+ * This server stores one per track, and it is the one `LyricList.Main()`
+ * picks out of Navidrome's list: the first, synced or not, in the order the
+ * file lists them. A lyric the parser finds no line in, or larger than
+ * `MAX_EMBEDDED_LYRICS_BYTES`, is not a lyric and is passed over.
  */
 
 import { parseLrc, UNKNOWN_LANGUAGE } from "./lrc";
@@ -73,26 +73,17 @@ const MP4_LYRICS_ATOM = "©lyr";
 
 /** The lyric to store for a track with these tags, or undefined when it has none. */
 export function embeddedLyricsOf(native: NativeTags): EmbeddedLyrics | undefined {
-  let first: EmbeddedLyrics | undefined;
-
   for (const candidate of lyricsTags(native)) {
     if (candidate.text.trim() === "" || utf8Length(candidate.text) > MAX_EMBEDDED_LYRICS_BYTES) {
       continue;
     }
 
-    const parsed = parseLrc(candidate.text, candidate.lang);
-    if (parsed === null) {
-      continue;
-    }
-
-    if (parsed.synced) {
+    if (parseLrc(candidate.text, candidate.lang) !== null) {
       return candidate;
     }
-
-    first ??= candidate;
   }
 
-  return first;
+  return undefined;
 }
 
 /**
