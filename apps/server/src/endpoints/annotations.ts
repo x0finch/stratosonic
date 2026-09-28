@@ -102,13 +102,11 @@ export const scrobble: SubsonicHandler = async (request) => {
       ...parentPlays(played, parentsOf, "artist"),
     ]);
   } else {
-    // `now_playing` holds one row per user, so registering every id in turn
-    // would leave only the last of them anyway — each write overwrites the row
-    // the one before it made. A client that names several tracks is playing
-    // the last: that is the only one written. The others are still checked,
-    // so that an id naming nothing is error 70 wherever it sits.
-    const current = ids.at(-1) as string;
-    const others = ids.slice(0, -1);
+    // `now_playing` holds one row per user, so only one of several ids can be
+    // registered, and it is the first, as Navidrome's `Scrobble` takes
+    // `ids[0]` for a now-playing. The others are still checked, so that an id
+    // naming nothing is error 70 wherever it sits (#42).
+    const [current = "", ...others] = ids;
     if (others.length > 0) {
       const missing = await findMissingItems(
         db,
@@ -121,13 +119,13 @@ export const scrobble: SubsonicHandler = async (request) => {
 
     // A now-playing is a `playing` report, as Navidrome's `scrobblerNowPlaying`
     // hands it to `ReportPlayback`: `position` is seconds into the track, and
-    // absent or unreadable means the start. Its instant is the server's now,
+    // absent, unreadable or negative means the start. Its instant is the server's now,
     // never the client's `time`, which Navidrome reads for submissions alone.
     const found = await applyPlaybackReport(db, {
       userId: request.user.id,
       trackId: current,
       state: "playing",
-      positionMs: integerParameterOr(params, "position", 0) * 1_000,
+      positionMs: Math.max(integerParameterOr(params, "position", 0), 0) * 1_000,
       playbackRate: 1,
       ignoreScrobble: false,
       playerName: params.get("c") ?? "",

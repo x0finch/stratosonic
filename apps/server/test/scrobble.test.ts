@@ -129,13 +129,42 @@ describe("a now-playing submission", () => {
     expect(await playCountOf(SONGS.bravo)).toBe(before);
   });
 
-  it("keeps only the last of several ids, the track being played now", async () => {
+  it("registers the first of several ids, as Navidrome does", async () => {
     await write("scrobble", {
-      id: [id(SONGS.alpha), id(SONGS.bravo), id(SONGS.charlie)],
+      id: [id(SONGS.charlie), id(SONGS.bravo), id(SONGS.alpha)],
       submission: "false",
     });
 
     expect(await nowPlayingTitles()).toEqual(["Charlie"]);
+  });
+
+  it("is error 70 when any of several ids names nothing", async () => {
+    const body = await write("scrobble", {
+      id: [id(SONGS.bravo), prefixedId("track", trackId("Ghost/None/x.mp3"))],
+      submission: "false",
+    });
+
+    expect(body.error?.code).toBe(70);
+  });
+
+  it("reads a negative position as the start of the track", async () => {
+    await write("scrobble", { id: id(SONGS.delta), submission: "false", position: "-5" });
+
+    expect((await storedSession())?.positionMs).toBe(0);
+    const entry = (await nowPlaying()).find((each) => each.title === "Delta");
+    expect(entry?.minutesAgo).toBe(0);
+    expect(entry?.positionMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("answers ok for a position no track reaches", async () => {
+    const body = await write("scrobble", {
+      id: id(SONGS.echo),
+      submission: "false",
+      position: "9000000000000",
+    });
+
+    expect(body.status).toBe("ok");
+    expect((await storedSession())?.startedAt.getTime()).toBe(0);
   });
 });
 

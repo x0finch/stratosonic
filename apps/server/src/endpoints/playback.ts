@@ -77,7 +77,8 @@ function nowPlayingEntryElement(entry: NowPlayingEntry, index: number, now: numb
   return {
     ...songElement(song),
     username: entry.username,
-    minutesAgo: Math.floor((now - session.startedAt.getTime()) / 60_000),
+    // Truncated toward zero, as Go's `int32(d.Minutes())` truncates.
+    minutesAgo: Math.trunc((now - session.startedAt.getTime()) / 60_000),
     playerId: index + 1,
     playerName: session.playerName || undefined,
     state: session.state,
