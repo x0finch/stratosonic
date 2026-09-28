@@ -12,8 +12,8 @@ import { decodeLyrics, type ParsedLyrics, parseLrc, UNKNOWN_LANGUAGE } from "./l
 
 /**
  * The sidecar suffixes, in the order they are tried: Navidrome's default
- * `LyricsPriority` without its `embedded` source, which this server does not
- * read.
+ * `LyricsPriority` up to its `embedded` source, which comes after both and is
+ * read from D1 rather than the bucket (`lyrics/embedded.ts`).
  */
 export const SIDECAR_SUFFIXES: readonly string[] = [".lrc", ".txt"];
 

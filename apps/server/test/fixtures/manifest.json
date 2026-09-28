@@ -314,5 +314,276 @@
       "Silent Artist/Quiet Album/02 Hushed Interlude.flac"
     ],
     "unmatchedLineCount": 1
-  }
+  },
+  "lyricsTracks": [
+    {
+      "file": "lyrics-uslt.mp3",
+      "r2Key": "Lyric Singer/Sung Words/01 Unsynced Words.mp3",
+      "size": 3572,
+      "suffix": "mp3",
+      "contentType": "audio/mpeg",
+      "container": {
+        "tagFormat": "id3v2.3"
+      },
+      "tags": {
+        "title": "Unsynced Words",
+        "artist": "Lyric Singer",
+        "albumArtist": "Lyric Singer",
+        "album": "Sung Words",
+        "trackNumber": 1,
+        "trackCount": 5,
+        "discNumber": 1,
+        "discCount": 1,
+        "year": 2020,
+        "genre": "Folk"
+      },
+      "pathFallback": {
+        "albumArtist": "Lyric Singer",
+        "album": "Sung Words",
+        "title": "01 Unsynced Words"
+      },
+      "duration": {
+        "seconds": 0.209,
+        "toleranceSeconds": 0.05,
+        "source": "cbr-estimate"
+      },
+      "bitRate": {
+        "kbps": 128,
+        "source": "frame-header"
+      },
+      "cover": null,
+      "lyrics": {
+        "tag": "USLT",
+        "storedText": "Première ligne\nZweite Zeile\n",
+        "lang": "eng",
+        "synced": false,
+        "displayArtist": null,
+        "lines": [
+          {
+            "value": "Première ligne"
+          },
+          {
+            "value": "Zweite Zeile"
+          }
+        ]
+      }
+    },
+    {
+      "file": "lyrics-sylt.mp3",
+      "r2Key": "Lyric Singer/Sung Words/02 Timed Words.mp3",
+      "size": 3537,
+      "suffix": "mp3",
+      "contentType": "audio/mpeg",
+      "container": {
+        "tagFormat": "id3v2.4"
+      },
+      "tags": {
+        "title": "Timed Words",
+        "artist": "Lyric Singer",
+        "albumArtist": "Lyric Singer",
+        "album": "Sung Words",
+        "trackNumber": 2,
+        "trackCount": 5,
+        "discNumber": 1,
+        "discCount": 1,
+        "year": 2020,
+        "genre": "Folk"
+      },
+      "pathFallback": {
+        "albumArtist": "Lyric Singer",
+        "album": "Sung Words",
+        "title": "02 Timed Words"
+      },
+      "duration": {
+        "seconds": 0.209,
+        "toleranceSeconds": 0.05,
+        "source": "cbr-estimate"
+      },
+      "bitRate": {
+        "kbps": 128,
+        "source": "frame-header"
+      },
+      "cover": null,
+      "lyrics": {
+        "tag": "SYLT",
+        "storedText": "[00:01.00]Eins\n[00:02.50]Zwei\n[01:05.43]Drei\n",
+        "lang": "deu",
+        "synced": true,
+        "displayArtist": null,
+        "lines": [
+          {
+            "start": 1000,
+            "value": "Eins"
+          },
+          {
+            "start": 2500,
+            "value": "Zwei"
+          },
+          {
+            "start": 65430,
+            "value": "Drei"
+          }
+        ]
+      }
+    },
+    {
+      "file": "lyrics-vorbis.flac",
+      "r2Key": "Lyric Singer/Sung Words/03 Commented Words.flac",
+      "size": 2389,
+      "suffix": "flac",
+      "contentType": "audio/flac",
+      "container": {
+        "tagFormat": "vorbis-comment"
+      },
+      "tags": {
+        "title": "Commented Words",
+        "artist": "Lyric Singer",
+        "albumArtist": "Lyric Singer",
+        "album": "Sung Words",
+        "trackNumber": 3,
+        "trackCount": 5,
+        "discNumber": 1,
+        "discCount": 1,
+        "year": 2020,
+        "genre": "Folk"
+      },
+      "pathFallback": {
+        "albumArtist": "Lyric Singer",
+        "album": "Sung Words",
+        "title": "03 Commented Words"
+      },
+      "duration": {
+        "seconds": 1,
+        "toleranceSeconds": 0.01,
+        "source": "streaminfo"
+      },
+      "bitRate": {
+        "kbps": 16,
+        "source": "size-and-duration"
+      },
+      "cover": null,
+      "lyrics": {
+        "tag": "LYRICS",
+        "storedText": "[ar:Lyric Guest]\n[00:03.00]Sung in a comment\n[00:04.50]Still in time\n",
+        "lang": "xxx",
+        "synced": true,
+        "displayArtist": "Lyric Guest",
+        "lines": [
+          {
+            "start": 3000,
+            "value": "Sung in a comment"
+          },
+          {
+            "start": 4500,
+            "value": "Still in time"
+          }
+        ]
+      }
+    },
+    {
+      "file": "lyrics-ilst.m4a",
+      "r2Key": "Lyric Singer/Sung Words/04 Atom Words.m4a",
+      "size": 3127,
+      "suffix": "m4a",
+      "contentType": "audio/mp4",
+      "container": {
+        "tagFormat": "mp4-ilst",
+        "moovBeforeMdat": true
+      },
+      "tags": {
+        "title": "Atom Words",
+        "artist": "Lyric Singer",
+        "albumArtist": "Lyric Singer",
+        "album": "Sung Words",
+        "trackNumber": 4,
+        "trackCount": 5,
+        "discNumber": 1,
+        "discCount": 1,
+        "year": 2020,
+        "genre": "Folk"
+      },
+      "pathFallback": {
+        "albumArtist": "Lyric Singer",
+        "album": "Sung Words",
+        "title": "04 Atom Words"
+      },
+      "duration": {
+        "seconds": 0.743,
+        "toleranceSeconds": 0.01,
+        "source": "mvhd"
+      },
+      "bitRate": {
+        "kbps": 22,
+        "source": "size-and-duration"
+      },
+      "cover": null,
+      "lyrics": {
+        "tag": "©lyr",
+        "storedText": "Words in an atom\nAnother line in it",
+        "lang": "xxx",
+        "synced": false,
+        "displayArtist": null,
+        "lines": [
+          {
+            "value": "Words in an atom"
+          },
+          {
+            "value": "Another line in it"
+          }
+        ]
+      }
+    },
+    {
+      "file": "lyrics-ult.mp3",
+      "r2Key": "Lyric Singer/Sung Words/05 Older Words.mp3",
+      "size": 3500,
+      "suffix": "mp3",
+      "contentType": "audio/mpeg",
+      "container": {
+        "tagFormat": "id3v2.2"
+      },
+      "tags": {
+        "title": "Older Words",
+        "artist": "Lyric Singer",
+        "albumArtist": "Lyric Singer",
+        "album": "Sung Words",
+        "trackNumber": 5,
+        "trackCount": 5,
+        "discNumber": 1,
+        "discCount": 1,
+        "year": 2020,
+        "genre": "Folk"
+      },
+      "pathFallback": {
+        "albumArtist": "Lyric Singer",
+        "album": "Sung Words",
+        "title": "05 Older Words"
+      },
+      "duration": {
+        "seconds": 0.209,
+        "toleranceSeconds": 0.05,
+        "source": "cbr-estimate"
+      },
+      "bitRate": {
+        "kbps": 128,
+        "source": "frame-header"
+      },
+      "cover": null,
+      "lyrics": {
+        "tag": "ULT",
+        "storedText": "An older tag\nStill unsynced\n",
+        "lang": "ita",
+        "synced": false,
+        "displayArtist": null,
+        "lines": [
+          {
+            "value": "An older tag"
+          },
+          {
+            "value": "Still unsynced"
+          }
+        ]
+      }
+    }
+  ]
 }

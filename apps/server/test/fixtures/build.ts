@@ -6,7 +6,10 @@
  * cover, the same MP3 with no tag at all, a FLAC with a Vorbis comment block
  * and a PICTURE block, two M4As that differ only in whether `moov` comes
  * before or after `mdat`, the cover image itself, and an `.m3u` that points at
- * four of them plus a line that matches nothing.
+ * four of them plus a line that matches nothing. Four more tracks carry
+ * lyrics in their tags, one per tag the scan reads them from: an ID3v2.3
+ * `USLT`, an ID3v2.4 `SYLT`, a Vorbis `LYRICS` comment, an MP4 `©lyr` and an
+ * ID3v2.2 `ULT`.
  *
  * `pnpm --filter @stratosonic/server fixtures` writes what this module returns
  * to disk; a test calls the same functions and compares them with the committed
@@ -69,7 +72,7 @@ export interface FixtureTrack {
   readonly suffix: FixtureSuffix;
   readonly contentType: string;
   readonly container: {
-    readonly tagFormat: "id3v2.3" | "vorbis-comment" | "mp4-ilst" | "none";
+    readonly tagFormat: "id3v2.2" | "id3v2.3" | "id3v2.4" | "vorbis-comment" | "mp4-ilst" | "none";
     /** MP4 only: whether the metadata sits at the front of the file. */
     readonly moovBeforeMdat?: boolean;
   };
@@ -138,6 +141,30 @@ export interface FixturePlaylist {
   readonly unmatchedLineCount: number;
 }
 
+/** One line of a lyric, as `getLyricsBySongId` renders it. */
+export interface FixtureLyricLine {
+  readonly start?: number;
+  readonly value: string;
+}
+
+/** The lyric a fixture's tags carry, and what the scan and the endpoints make of it. */
+export interface FixtureLyrics {
+  /** The native tag it is carried in. */
+  readonly tag: "ULT" | "USLT" | "SYLT" | "LYRICS" | "\u00a9lyr";
+  /** What the scan stores: the tag's own text, or a `SYLT` written out as LRC. */
+  readonly storedText: string;
+  readonly lang: string;
+  readonly synced: boolean;
+  /** The lyric's own `[ar:]`, or null when it names none. */
+  readonly displayArtist: string | null;
+  readonly lines: readonly FixtureLyricLine[];
+}
+
+/** A track whose tags carry lyrics. It has no cover, so it touches no album art. */
+export interface FixtureLyricsTrack extends FixtureTrack {
+  readonly lyrics: FixtureLyrics;
+}
+
 export interface FixturesManifest {
   readonly generator: {
     readonly command: string;
@@ -149,6 +176,11 @@ export interface FixturesManifest {
   readonly tracks: readonly FixtureTrack[];
   readonly albums: readonly FixtureAlbum[];
   readonly playlist: FixturePlaylist;
+  /**
+   * The tracks with lyrics in their tags. They are kept apart from `tracks`,
+   * which the library tests count and group, and are one album of their own.
+   */
+  readonly lyricsTracks: readonly FixtureLyricsTrack[];
 }
 
 /** Everything under this directory, and what it means. */
@@ -236,12 +268,14 @@ export function buildFixtures(): BuiltFixtures {
     untaggedMp3Fixture(),
   ];
   const playlist = m3uFixture(tracks);
+  const lyricsTracks = lyricsFixtures();
 
   return {
     files: [
       ...tracks.map((track) => track.fixture),
       { name: COVER_FILE, bytes: cover },
       playlist.fixture,
+      ...lyricsTracks.map((track) => track.fixture),
     ],
     manifest: {
       generator: {
@@ -259,6 +293,7 @@ export function buildFixtures(): BuiltFixtures {
       tracks: tracks.map((track) => track.track),
       albums: albumsOf(tracks.map((track) => track.track)),
       playlist: playlist.playlist,
+      lyricsTracks: lyricsTracks.map((track) => track.track),
     },
   };
 }
@@ -480,20 +515,6 @@ function flacFixture(cover: Uint8Array): BuiltTrack {
     genre: "Electronic",
   };
 
-  const streamInfo = new Uint8Array(34);
-  const view = new DataView(streamInfo.buffer);
-  // Minimum and maximum block size, then minimum and maximum frame size (both
-  // zero, meaning "unknown").
-  view.setUint16(0, 4096);
-  view.setUint16(2, 4096);
-  // Bits 20 (sample rate), 3 (channels - 1), 5 (bits per sample - 1) and 36
-  // (total samples) are packed into the eight bytes from offset 10.
-  const packed =
-    (BigInt(FLAC_SAMPLE_RATE) << 44n) | (1n << 41n) | (15n << 36n) | BigInt(FLAC_TOTAL_SAMPLES);
-  view.setBigUint64(10, packed);
-  // The last 16 bytes are the MD5 of the unencoded audio, which may be zero
-  // when it is unknown.
-
   // Both totals are written: a comment block that gives TRACKNUMBER without
   // TRACKTOTAL leaves a parser reporting "2 of null", and the manifest would
   // be promising a count the bytes do not carry.
@@ -509,17 +530,6 @@ function flacFixture(cover: Uint8Array): BuiltTrack {
     `DATE=${tags.year}`,
     `GENRE=${tags.genre}`,
   ];
-  const vendor = utf8("stratosonic fixtures");
-  const vorbisComment = concat(
-    u32le(vendor.length),
-    vendor,
-    u32le(comments.length),
-    ...comments.map((comment) => {
-      const encoded = utf8(comment);
-      return concat(u32le(encoded.length), encoded);
-    }),
-  );
-
   const mimeType = latin1("image/png");
   const description = utf8("front cover");
   const picture = concat(
@@ -537,17 +547,12 @@ function flacFixture(cover: Uint8Array): BuiltTrack {
     cover,
   );
 
-  // A stub frame, so the file does not end on its metadata. It is not decodable
-  // and nothing reads it: the duration comes from STREAMINFO.
-  const frame = new Uint8Array(FLAC_STUB_FRAME_SIZE);
-  frame.set(Uint8Array.of(0xff, 0xf8, 0x69, 0x18, 0x00));
-
   const bytes = concat(
     latin1("fLaC"),
-    flacBlock(0, streamInfo, false),
-    flacBlock(4, vorbisComment, false),
+    flacBlock(0, flacStreamInfo(), false),
+    flacBlock(4, vorbisCommentBlock(comments), false),
     flacBlock(6, picture, true),
-    frame,
+    flacStubFrame(),
   );
   const seconds = FLAC_TOTAL_SAMPLES / FLAC_SAMPLE_RATE;
   const r2Key = "Silent Artist/Quiet Album/02 Hushed Interlude.flac";
@@ -582,6 +587,51 @@ function flacFixture(cover: Uint8Array): BuiltTrack {
   };
 }
 
+/** STREAMINFO: one second of 16-bit stereo at 44.1 kHz. */
+function flacStreamInfo(): Uint8Array {
+  const streamInfo = new Uint8Array(34);
+  const view = new DataView(streamInfo.buffer);
+  // Minimum and maximum block size, then minimum and maximum frame size (both
+  // zero, meaning "unknown").
+  view.setUint16(0, 4096);
+  view.setUint16(2, 4096);
+  // Bits 20 (sample rate), 3 (channels - 1), 5 (bits per sample - 1) and 36
+  // (total samples) are packed into the eight bytes from offset 10.
+  const packed =
+    (BigInt(FLAC_SAMPLE_RATE) << 44n) | (1n << 41n) | (15n << 36n) | BigInt(FLAC_TOTAL_SAMPLES);
+  view.setBigUint64(10, packed);
+  // The last 16 bytes are the MD5 of the unencoded audio, which may be zero
+  // when it is unknown.
+
+  return streamInfo;
+}
+
+/** A VORBIS_COMMENT block's body: the vendor string, then each `NAME=value`. */
+function vorbisCommentBlock(comments: readonly string[]): Uint8Array {
+  const vendor = utf8("stratosonic fixtures");
+
+  return concat(
+    u32le(vendor.length),
+    vendor,
+    u32le(comments.length),
+    ...comments.map((comment) => {
+      const encoded = utf8(comment);
+      return concat(u32le(encoded.length), encoded);
+    }),
+  );
+}
+
+/**
+ * A stub frame, so the file does not end on its metadata. It is not decodable
+ * and nothing reads it: the duration comes from STREAMINFO.
+ */
+function flacStubFrame(): Uint8Array {
+  const frame = new Uint8Array(FLAC_STUB_FRAME_SIZE);
+  frame.set(Uint8Array.of(0xff, 0xf8, 0x69, 0x18, 0x00));
+
+  return frame;
+}
+
 /** A metadata block: one byte of "last block" flag and type, then a 24-bit length. */
 function flacBlock(type: number, body: Uint8Array, last: boolean): Uint8Array {
   return concat(Uint8Array.of((last ? 0x80 : 0x00) | type), u24be(body.length), body);
@@ -594,7 +644,9 @@ interface Mp4Spec {
   readonly r2Key: string;
   readonly moovBeforeMdat: boolean;
   readonly tags: FixtureTags;
-  readonly cover: Uint8Array;
+  readonly cover: Uint8Array | null;
+  /** More `ilst` items, after the numbers and before the cover. */
+  readonly extraItems?: Uint8Array;
 }
 
 function mp4Fixture(spec: Mp4Spec): BuiltTrack {
@@ -636,8 +688,9 @@ function mp4Fixture(spec: Mp4Spec): BuiltTrack {
       itunesText("\u00a9gen", tags.genre),
       itunesNumberPair("trkn", tags.trackNumber, tags.trackCount),
       itunesNumberPair("disk", tags.discNumber, tags.discCount),
+      spec.extraItems ?? new Uint8Array(0),
       // Data type 14 says the picture is a PNG.
-      itunesItem("covr", 14, cover),
+      cover === null ? new Uint8Array(0) : itunesItem("covr", 14, cover),
     ),
   );
 
@@ -665,12 +718,15 @@ function mp4Fixture(spec: Mp4Spec): BuiltTrack {
       // The sample table and the decoder configuration agree on this, so a
       // parser reaches it either way.
       bitRate: { kbps: round(MP4_BITS_PER_SECOND / 1000), source: "size-and-duration" },
-      cover: {
-        mimeType: "image/png",
-        size: cover.length,
-        width: COVER_WIDTH,
-        height: COVER_HEIGHT,
-      },
+      cover:
+        cover === null
+          ? null
+          : {
+              mimeType: "image/png",
+              size: cover.length,
+              width: COVER_WIDTH,
+              height: COVER_HEIGHT,
+            },
     },
   };
 }
@@ -862,6 +918,291 @@ function unityMatrix(): Uint8Array {
   );
 }
 
+/* --------------------------------------------------------------- lyrics -- */
+
+interface BuiltLyricsTrack {
+  readonly fixture: FixtureFile;
+  readonly track: FixtureLyricsTrack;
+}
+
+/**
+ * The tracks with lyrics in their tags: one album, one track per tag the scan
+ * reads lyrics from. None of them has a cover, so scanning them leaves the
+ * album art of every other fixture alone.
+ */
+function lyricsFixtures(): BuiltLyricsTrack[] {
+  const unsynced = "Première ligne\nZweite Zeile\n";
+  const timed: readonly FixtureLyricLine[] = [
+    { start: 1_000, value: "Eins" },
+    { start: 2_500, value: "Zwei" },
+    { start: 65_430, value: "Drei" },
+  ];
+  const commented = "[ar:Lyric Guest]\n[00:03.00]Sung in a comment\n[00:04.50]Still in time\n";
+  const atom = "Words in an atom\nAnother line in it";
+  const old = "An older tag\nStill unsynced\n";
+
+  return [
+    lyricsMp3Fixture({
+      file: "lyrics-uslt.mp3",
+      tags: lyricsTags("Unsynced Words", 1),
+      version: 3,
+      // UTF-16 with a byte-order mark, as most taggers write ID3v2.3 text; the
+      // content descriptor is empty.
+      frame: {
+        id: "USLT",
+        body: concat(
+          Uint8Array.of(0x01),
+          latin1("eng"),
+          Uint8Array.of(0xff, 0xfe, 0x00, 0x00),
+          Uint8Array.of(0xff, 0xfe),
+          utf16le(unsynced),
+        ),
+      },
+      lyrics: {
+        tag: "USLT",
+        storedText: unsynced,
+        lang: "eng",
+        synced: false,
+        displayArtist: null,
+        lines: [{ value: "Première ligne" }, { value: "Zweite Zeile" }],
+      },
+    }),
+    lyricsMp3Fixture({
+      file: "lyrics-sylt.mp3",
+      tags: lyricsTags("Timed Words", 2),
+      version: 4,
+      // UTF-8, in German, timed in milliseconds (format 2), of lyrics (content
+      // type 1), with an empty descriptor; then each entry's text and time.
+      frame: {
+        id: "SYLT",
+        body: concat(
+          Uint8Array.of(0x03),
+          latin1("deu"),
+          Uint8Array.of(0x02, 0x01, 0x00),
+          ...timed.map((line) =>
+            concat(utf8(line.value), Uint8Array.of(0x00), u32be(line.start ?? 0)),
+          ),
+        ),
+      },
+      lyrics: {
+        tag: "SYLT",
+        storedText: "[00:01.00]Eins\n[00:02.50]Zwei\n[01:05.43]Drei\n",
+        lang: "deu",
+        synced: true,
+        displayArtist: null,
+        lines: timed,
+      },
+    }),
+    lyricsFlacFixture({
+      file: "lyrics-vorbis.flac",
+      tags: lyricsTags("Commented Words", 3),
+      text: commented,
+      lyrics: {
+        tag: "LYRICS",
+        storedText: commented,
+        lang: "xxx",
+        synced: true,
+        displayArtist: "Lyric Guest",
+        lines: [
+          { start: 3_000, value: "Sung in a comment" },
+          { start: 4_500, value: "Still in time" },
+        ],
+      },
+    }),
+    lyricsMp4Fixture({
+      file: "lyrics-ilst.m4a",
+      tags: lyricsTags("Atom Words", 4),
+      text: atom,
+      lyrics: {
+        tag: "©lyr",
+        storedText: atom,
+        lang: "xxx",
+        synced: false,
+        displayArtist: null,
+        lines: [{ value: "Words in an atom" }, { value: "Another line in it" }],
+      },
+    }),
+    lyricsMp3Fixture({
+      file: "lyrics-ult.mp3",
+      tags: lyricsTags("Older Words", 5),
+      version: 2,
+      // ID3v2.2's USLT: ISO-8859-1, in Italian, with an empty descriptor.
+      frame: {
+        id: "ULT",
+        body: concat(Uint8Array.of(0x00), latin1("ita"), Uint8Array.of(0x00), latin1(old)),
+      },
+      lyrics: {
+        tag: "ULT",
+        storedText: old,
+        lang: "ita",
+        synced: false,
+        displayArtist: null,
+        lines: [{ value: "An older tag" }, { value: "Still unsynced" }],
+      },
+    }),
+  ];
+}
+
+function lyricsTags(title: string, trackNumber: number): FixtureTags {
+  return {
+    title,
+    artist: "Lyric Singer",
+    albumArtist: "Lyric Singer",
+    album: "Sung Words",
+    trackNumber,
+    trackCount: 5,
+    discNumber: 1,
+    discCount: 1,
+    year: 2020,
+    genre: "Folk",
+  };
+}
+
+function lyricsKey(tags: FixtureTags, suffix: FixtureSuffix): string {
+  return `${tags.albumArtist}/${tags.album}/0${tags.trackNumber} ${tags.title}.${suffix}`;
+}
+
+interface LyricsMp3Spec {
+  readonly file: string;
+  readonly tags: FixtureTags;
+  /**
+   * ID3v2.2, 2.3 or 2.4: 2.2 has three-letter frame ids and three-byte sizes,
+   * and 2.4 writes a frame's size as a syncsafe integer where 2.3 does not.
+   */
+  readonly version: 2 | 3 | 4;
+  readonly frame: { readonly id: string; readonly body: Uint8Array };
+  readonly lyrics: FixtureLyrics;
+}
+
+function lyricsMp3Fixture(spec: LyricsMp3Spec): BuiltLyricsTrack {
+  const { tags, version } = spec;
+  const frame = (id: string, body: Uint8Array) =>
+    version === 2
+      ? id3v22Frame(id, body)
+      : version === 3
+        ? id3Frame(id, body)
+        : id3v24Frame(id, body);
+  // The text frames, by their ID3v2.2 and their later ids.
+  const text = (ids: readonly [string, string], value: string) =>
+    frame(version === 2 ? ids[0] : ids[1], concat(Uint8Array.of(0x00), latin1(value)));
+
+  const frames = concat(
+    text(["TT2", "TIT2"], tags.title),
+    text(["TP1", "TPE1"], tags.artist),
+    text(["TP2", "TPE2"], tags.albumArtist),
+    text(["TAL", "TALB"], tags.album),
+    text(["TRK", "TRCK"], `${tags.trackNumber}/${tags.trackCount}`),
+    text(["TPA", "TPOS"], `${tags.discNumber}/${tags.discCount}`),
+    // ID3v2.4 replaced the year frame with a recording time.
+    text(["TYE", version === 3 ? "TYER" : "TDRC"], String(tags.year)),
+    text(["TCO", "TCON"], tags.genre),
+    frame(spec.frame.id, spec.frame.body),
+  );
+
+  const header = concat(latin1("ID3"), Uint8Array.of(version, 0x00, 0x00), syncsafe(frames.length));
+  const audio = mp3Frames();
+  const bytes = concat(header, frames, audio);
+  const r2Key = lyricsKey(tags, "mp3");
+
+  return {
+    fixture: { name: spec.file, bytes },
+    track: {
+      file: spec.file,
+      r2Key,
+      size: bytes.length,
+      suffix: "mp3",
+      contentType: "audio/mpeg",
+      container: { tagFormat: `id3v2.${version}` },
+      tags,
+      pathFallback: pathFallbackOf(r2Key),
+      duration: { seconds: mp3Seconds(audio), toleranceSeconds: 0.05, source: "cbr-estimate" },
+      bitRate: { kbps: MP3_BIT_RATE, source: "frame-header" },
+      cover: null,
+      lyrics: spec.lyrics,
+    },
+  };
+}
+
+/** An ID3v2.2 frame: a three-letter id and a three-byte size, and no flags. */
+function id3v22Frame(id: string, body: Uint8Array): Uint8Array {
+  return concat(latin1(id), u24be(body.length), body);
+}
+
+/** An ID3v2.4 frame, whose size - unlike 2.3's - is a syncsafe integer. */
+function id3v24Frame(id: string, body: Uint8Array): Uint8Array {
+  return concat(latin1(id), syncsafe(body.length), Uint8Array.of(0x00, 0x00), body);
+}
+
+interface TextLyricsSpec {
+  readonly file: string;
+  readonly tags: FixtureTags;
+  /** The tag's text, exactly as it is written. */
+  readonly text: string;
+  readonly lyrics: FixtureLyrics;
+}
+
+/** A FLAC with the lyric in a `LYRICS` comment and no PICTURE block. */
+function lyricsFlacFixture(spec: TextLyricsSpec): BuiltLyricsTrack {
+  const { tags } = spec;
+  const comments = [
+    `TITLE=${tags.title}`,
+    `ARTIST=${tags.artist}`,
+    `ALBUMARTIST=${tags.albumArtist}`,
+    `ALBUM=${tags.album}`,
+    `TRACKNUMBER=${tags.trackNumber}`,
+    `TRACKTOTAL=${tags.trackCount}`,
+    `DISCNUMBER=${tags.discNumber}`,
+    `DISCTOTAL=${tags.discCount}`,
+    `DATE=${tags.year}`,
+    `GENRE=${tags.genre}`,
+    `LYRICS=${spec.text}`,
+  ];
+
+  const bytes = concat(
+    latin1("fLaC"),
+    flacBlock(0, flacStreamInfo(), false),
+    flacBlock(4, vorbisCommentBlock(comments), true),
+    flacStubFrame(),
+  );
+  const seconds = FLAC_TOTAL_SAMPLES / FLAC_SAMPLE_RATE;
+  const r2Key = lyricsKey(tags, "flac");
+
+  return {
+    fixture: { name: spec.file, bytes },
+    track: {
+      file: spec.file,
+      r2Key,
+      size: bytes.length,
+      suffix: "flac",
+      contentType: "audio/flac",
+      container: { tagFormat: "vorbis-comment" },
+      tags,
+      pathFallback: pathFallbackOf(r2Key),
+      duration: { seconds, toleranceSeconds: 0.01, source: "streaminfo" },
+      bitRate: {
+        kbps: round((FLAC_STUB_FRAME_SIZE * 8) / 1000 / seconds),
+        source: "size-and-duration",
+      },
+      cover: null,
+      lyrics: spec.lyrics,
+    },
+  };
+}
+
+/** An M4A with the lyric in a `©lyr` item and no cover. */
+function lyricsMp4Fixture(spec: TextLyricsSpec): BuiltLyricsTrack {
+  const built = mp4Fixture({
+    file: spec.file,
+    r2Key: lyricsKey(spec.tags, "m4a"),
+    moovBeforeMdat: true,
+    tags: spec.tags,
+    cover: null,
+    extraItems: itunesText("©lyr", spec.text),
+  });
+
+  return { fixture: built.fixture, track: { ...built.track, lyrics: spec.lyrics } };
+}
+
 /* ------------------------------------------------------------------ m3u -- */
 
 interface BuiltPlaylist {
@@ -1041,6 +1382,18 @@ function latin1(text: string): Uint8Array {
 
 function utf8(text: string): Uint8Array {
   return new TextEncoder().encode(text);
+}
+
+/** UTF-16, little end first, without a byte-order mark. */
+function utf16le(text: string): Uint8Array {
+  const bytes = new Uint8Array(text.length * 2);
+  for (let index = 0; index < text.length; index++) {
+    const unit = text.charCodeAt(index);
+    bytes[index * 2] = unit & 0xff;
+    bytes[index * 2 + 1] = unit >> 8;
+  }
+
+  return bytes;
 }
 
 function u16be(value: number): Uint8Array {

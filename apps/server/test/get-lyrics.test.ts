@@ -1,17 +1,21 @@
+import { trackId, trackLyrics } from "@stratosonic/db";
 import { beforeAll, describe, expect, it } from "vitest";
 import { D1_MAX_BOUND_PARAMETERS } from "../src/d1-limits";
+import { database } from "../src/db";
 import { MAX_LYRICS_CANDIDATES } from "../src/lyrics/repository";
 import { bootstrapAdmin, browseXml } from "./browsing-support";
 import { lyrics, lyricsCounting, putSidecar } from "./lyrics-support";
-import { seedTrack } from "./support";
+import { seedTrack, testEnv } from "./support";
 
 /**
  * `getLyrics`: the plain text of a song's lyrics, found by artist and title.
  *
  * The library is seeded row by row rather than scanned, because what is under
  * test is which track the lookup picks - by title, by the track's artist or
- * its album artist, newest first - and every row says exactly what it is. The
- * sidecars are put beside those tracks' keys in the bucket.
+ * its album artist, those with embedded lyrics first and newest first - and
+ * every row says exactly what it is. The sidecars are put beside those
+ * tracks' keys in the bucket, and the embedded lyrics are the rows a scan
+ * would have stored for them.
  */
 
 const SONG = "Artist A/Album A/01 Song.mp3";
@@ -29,6 +33,19 @@ const CROWD = Array.from(
   (_, index) => `Crowd/Take ${String(index).padStart(2, "0")}/01 Crowded.mp3`,
 );
 
+/** Two takes: the newest has embedded lyrics, the older only a `.txt`. */
+const TAGGED = ["Tagged/Newer/01 Tagged.mp3", "Tagged/Older/01 Tagged.mp3"];
+
+/** Two takes, both with an `.lrc`: only the older has embedded lyrics. */
+const PREFERRED = ["Preferred/Newer/01 Preferred.mp3", "Preferred/Older/01 Preferred.mp3"];
+
+/** Three takes and no sidecar at all: only the oldest has embedded lyrics. */
+const EMBEDDED = [
+  "Embedded/Newest/01 Embedded.mp3",
+  "Embedded/Middle/01 Embedded.mp3",
+  "Embedded/Oldest/01 Embedded.mp3",
+];
+
 function sidecar(trackKey: string, suffix = ".lrc"): string {
   return trackKey.replace(/\.[^./]+$/, suffix);
 }
@@ -36,6 +53,20 @@ function sidecar(trackKey: string, suffix = ".lrc"): string {
 /** An instant this many minutes after a fixed one, for ordering the takes. */
 function minutes(count: number): Date {
   return new Date(1_700_000_000_000 + count * 60_000);
+}
+
+/** The takes of one song, newest first, as seeded tracks. */
+async function seedTakes(keys: readonly string[], title: string, artist: string): Promise<void> {
+  for (const [index, key] of keys.entries()) {
+    await seedTrack({ r2Key: key, title, artist, updatedAt: minutes(-index) });
+  }
+}
+
+/** The lyrics row a scan stores for a track whose tags carry this text. */
+async function seedEmbedded(trackKey: string, text: string, lang = "xxx"): Promise<void> {
+  await database(testEnv)
+    .insert(trackLyrics)
+    .values({ trackId: trackId(trackKey), text, lang });
 }
 
 beforeAll(async () => {
@@ -63,6 +94,18 @@ beforeAll(async () => {
     await seedTrack({ r2Key: key, title: "Crowded", artist: "Crowd", updatedAt: minutes(-index) });
   }
   await putSidecar(sidecar(CROWD.at(-1) ?? ""), "[00:01.00]too far back\n");
+
+  await seedTakes(TAGGED, "Tagged", "Tagged");
+  await seedEmbedded(TAGGED[0] ?? "", "[00:01.00]from the newer take's tags\n");
+  await putSidecar(sidecar(TAGGED[1] ?? "", ".txt"), "from the older take's .txt\n");
+
+  await seedTakes(PREFERRED, "Preferred", "Preferred");
+  await seedEmbedded(PREFERRED[1] ?? "", "from the older take's tags\n");
+  await putSidecar(sidecar(PREFERRED[0] ?? ""), "[00:01.00]from the newer take's .lrc\n");
+  await putSidecar(sidecar(PREFERRED[1] ?? ""), "[00:01.00]from the older take's .lrc\n");
+
+  await seedTakes(EMBEDDED, "Embedded", "Embedded");
+  await seedEmbedded(EMBEDDED[2] ?? "", "[00:01.00]from the oldest take's tags\n", "eng");
 });
 
 describe("getLyrics", () => {
@@ -137,6 +180,46 @@ describe("getLyrics", () => {
     expect(counted.body.lyrics).toEqual({ value: "" });
     expect(counted.r2Gets).toHaveLength(2 * MAX_LYRICS_CANDIDATES);
     expect(counted.r2Gets).not.toContain(sidecar(CROWD.at(-1) ?? ""));
+  });
+});
+
+describe("getLyrics and the lyrics in a track's tags", () => {
+  it("answers with a sidecar of any take before the tags of any take", async () => {
+    const response = await lyrics("getLyrics", { artist: "Tagged", title: "Tagged" });
+
+    expect(response.lyrics?.value).toBe("from the older take's .txt\n");
+  });
+
+  it("tries the takes with embedded lyrics first, for the sidecars too", async () => {
+    const counted = await lyricsCounting("getLyrics", {
+      artist: "Preferred",
+      title: "Preferred",
+    });
+
+    // The older take has lyrics in its tags, so its `.lrc` is read - and
+    // answers - before the newer take's.
+    expect(counted.body.lyrics?.value).toBe("from the older take's .lrc\n");
+    expect(counted.r2Gets).toEqual([sidecar(PREFERRED[1] ?? "")]);
+  });
+
+  it("falls back to the tags when no take has a sidecar", async () => {
+    const counted = await lyricsCounting("getLyrics", { artist: "Embedded", title: "Embedded" });
+    const xml = await browseXml("/rest/getLyrics", { artist: "Embedded", title: "Embedded" });
+
+    expect(counted.body.lyrics).toEqual({
+      artist: "Embedded",
+      title: "Embedded",
+      value: "from the oldest take's tags\n",
+    });
+    expect(xml).toContain(
+      `<lyrics artist="Embedded" title="Embedded">from the oldest take's tags\n</lyrics>`,
+    );
+    // Every take's two sidecars first, the take with lyrics leading; the
+    // tags themselves came with the lookup.
+    expect(counted.r2Gets).toHaveLength(2 * EMBEDDED.length);
+    expect(counted.r2Gets[0]).toBe(sidecar(EMBEDDED[2] ?? ""));
+    expect(counted.statements).toHaveLength(2);
+    expect(counted.rowsWritten).toBe(0);
   });
 });
 

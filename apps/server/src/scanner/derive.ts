@@ -1,9 +1,10 @@
 /**
- * What an R2 object becomes in the library: one artist, one album, one track.
+ * What an R2 object becomes in the library: one artist, one album, one track,
+ * and the track's lyrics when its tags carry them.
  *
  * Nothing here reads R2 or D1. It is handed an object's listing entry and what
- * the metadata extractor made of its bytes, and answers with the three rows a
- * scan writes. Keeping it pure is what lets the naming rules below be read and
+ * the metadata extractor made of its bytes, and answers with the rows a scan
+ * writes. Keeping it pure is what lets the naming rules below be read and
  * tested on their own, because they are the part of a scan that is easiest to
  * get subtly wrong.
  *
@@ -32,10 +33,12 @@ import {
   type NewAlbum,
   type NewArtist,
   type NewTrack,
+  type NewTrackLyrics,
   trackId,
 } from "@stratosonic/db";
 import { suffixOf } from "../library/audio-formats";
 import type { TrackMetadata } from "../library/metadata";
+import { SCAN_VERSION } from "./version";
 
 /** Navidrome's `consts.UnknownArtist`. */
 export const UNKNOWN_ARTIST = "[Unknown Artist]";
@@ -57,11 +60,16 @@ export interface LibraryObject {
   readonly uploaded: Date;
 }
 
-/** The three rows one track contributes to the library. */
+/**
+ * The rows one track contributes to the library: an artist, an album and the
+ * track, and its lyrics row when its tags carry lyrics.
+ */
 export interface DerivedRows {
   readonly artist: NewArtist;
   readonly album: NewAlbum;
   readonly track: NewTrack;
+  /** Null for a track whose tags hold no lyrics - most of them. */
+  readonly lyrics: NewTrackLyrics | null;
 }
 
 /**
@@ -159,9 +167,14 @@ export function deriveRows(object: LibraryObject, metadata: TrackMetadata, now: 
       suffix: suffixOf(object.key),
       genre,
       etag: object.etag,
+      scanVersion: SCAN_VERSION,
       createdAt: object.uploaded,
       updatedAt: now,
     },
+    lyrics:
+      metadata.lyrics === undefined
+        ? null
+        : { trackId: trackId(object.key), text: metadata.lyrics.text, lang: metadata.lyrics.lang },
   };
 }
 

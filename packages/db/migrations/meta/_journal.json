@@ -43,6 +43,13 @@
       "when": 1789987731732,
       "tag": "0005_create_bookmark_table",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1790628034865,
+      "tag": "0006_add_track_lyrics_and_scan_version",
+      "breakpoints": true
     }
   ]
 }
