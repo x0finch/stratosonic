@@ -7,6 +7,7 @@ import {
   SubsonicError,
   SubsonicErrorCode,
   type SubsonicNode,
+  TextElement,
 } from "../src/subsonic/response";
 
 async function renderOk(body: SubsonicNode, format: "xml" | "json" = "xml"): Promise<string> {
@@ -130,6 +131,21 @@ describe("XML rendering", () => {
     expect(xml).toContain("<note>a &amp; b &lt; c &gt; d</note>");
   });
 
+  it("renders a text element as a child holding its escaped text, in order", async () => {
+    const xml = await renderOk({
+      artistInfo: {
+        biography: new TextElement("Tom & <Jerry>"),
+        smallImageUrl: new TextElement("https://h/rest/getCoverArt?id=al-1&size=300"),
+      },
+    });
+
+    expect(xml).toContain(
+      "<artistInfo><biography>Tom &amp; &lt;Jerry&gt;</biography>" +
+        "<smallImageUrl>https://h/rest/getCoverArt?id=al-1&amp;size=300</smallImageUrl>" +
+        "</artistInfo>",
+    );
+  });
+
   it("renders a failure as status=failed with an error child", async () => {
     const xml = await renderFailed(
       new SubsonicError(SubsonicErrorCode.AuthenticationFailed, 'Wrong "password"'),
@@ -175,6 +191,14 @@ describe("JSON rendering", () => {
     expect(json["subsonic-response"].openSubsonicExtensions).toEqual([
       { name: "form&Post", versions: [1] },
     ]);
+  });
+
+  it("renders a text element as a bare string", async () => {
+    const json = JSON.parse(
+      await renderOk({ albumInfo: { notes: new TextElement("a & <b>") } }, "json"),
+    );
+
+    expect(json["subsonic-response"].albumInfo).toEqual({ notes: "a & <b>" });
   });
 
   it("renders a failure as an error object", async () => {
