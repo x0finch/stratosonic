@@ -3,7 +3,7 @@ import { albumId, artistId, prefixedId, trackId } from "@stratosonic/db";
 import { beforeAll, describe, expect, it } from "vitest";
 import { sniffImageType } from "../src/media/images";
 import { bootstrapAdmin, browseXml } from "./browsing-support";
-import { info, infoCounting, infoPost } from "./info-support";
+import { imagesOf, info, infoCounting, infoPost, publicImageToken } from "./info-support";
 import { BASE, seedFixtureLibrary, seedFixtureObjects, seedPlaylist } from "./support";
 
 /**
@@ -19,15 +19,6 @@ import { BASE, seedFixtureLibrary, seedFixtureObjects, seedPlaylist } from "./su
 const QUIET = prefixedId("album", albumId("Silent Artist", "Quiet Album", 2001));
 const FALLBACK = prefixedId("album", albumId("Fallback Artist", "Fallback Album", null));
 const HUSHED = prefixedId("track", trackId("Silent Artist/Quiet Album/02 Hushed Interlude.flac"));
-const CREDENTIALS = "u=admin&p=sesame&v=1.16.1&c=Substreamer";
-
-function imagesOf(coverArtId: string): Record<string, string> {
-  const url = (size: number) =>
-    `${BASE}/rest/getCoverArt?id=${coverArtId}&size=${size}&${CREDENTIALS}`;
-
-  return { smallImageUrl: url(300), mediumImageUrl: url(600), largeImageUrl: url(1200) };
-}
-
 let playlistId = "";
 
 beforeAll(async () => {
@@ -44,7 +35,7 @@ describe.each(["getAlbumInfo", "getAlbumInfo2"])("%s", (endpoint) => {
 
     expect(xml).toContain('status="ok"');
     expect(xml).toContain(
-      `<albumInfo><smallImageUrl>${BASE}/rest/getCoverArt?id=${QUIET}&amp;size=300&amp;`,
+      `<albumInfo><smallImageUrl>${BASE}/share/img/${await publicImageToken(QUIET)}?size=300<`,
     );
     expect(xml).toContain("</largeImageUrl></albumInfo>");
   });
@@ -53,7 +44,7 @@ describe.each(["getAlbumInfo", "getAlbumInfo2"])("%s", (endpoint) => {
     const body = await info(endpoint, { id: QUIET });
 
     expect(body.status).toBe("ok");
-    expect(body.albumInfo).toEqual(imagesOf(QUIET));
+    expect(body.albumInfo).toEqual(await imagesOf(QUIET));
   });
 
   it("answers an empty element for an album with no cover", async () => {
@@ -66,17 +57,18 @@ describe.each(["getAlbumInfo", "getAlbumInfo2"])("%s", (endpoint) => {
   it("follows a song to its album, as Navidrome's getAlbum does", async () => {
     const body = await info(endpoint, { id: HUSHED });
 
-    expect(body.albumInfo).toEqual(imagesOf(QUIET));
+    expect(body.albumInfo).toEqual(await imagesOf(QUIET));
   });
 
   it("answers a form POST", async () => {
     const xml = await infoPost(`/rest/${endpoint}`, { id: QUIET });
 
     expect(xml).toContain('status="ok"');
-    expect(xml).toContain(`?id=${QUIET}&amp;size=1200&amp;u=admin&amp;p=sesame&amp;`);
+    expect(xml).toContain(`/share/img/${await publicImageToken(QUIET)}?size=1200<`);
+    expect(xml).not.toContain("sesame");
   });
 
-  it("points at a getCoverArt URL that serves the cover", async () => {
+  it("points at a public URL that serves the cover with no credentials", async () => {
     const body = await info(endpoint, { id: QUIET });
     const response = await SELF.fetch(body.albumInfo?.smallImageUrl ?? "");
 
@@ -109,7 +101,7 @@ describe.each(["getAlbumInfo", "getAlbumInfo2"])("%s", (endpoint) => {
   it("runs one statement beyond authentication and writes nothing", async () => {
     const counted = await infoCounting(endpoint, { id: HUSHED });
 
-    expect(counted.body.albumInfo).toEqual(imagesOf(QUIET));
+    expect(counted.body.albumInfo).toEqual(await imagesOf(QUIET));
     expect(counted.statements).toHaveLength(2);
     expect(counted.rowsWritten).toBe(0);
   });

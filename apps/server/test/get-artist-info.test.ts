@@ -4,7 +4,14 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { subsonicToken } from "../src/auth/crypto";
 import { sniffImageType } from "../src/media/images";
 import { bootstrapAdmin, browseXml } from "./browsing-support";
-import { type InfoResponse, info, infoCounting, infoPost } from "./info-support";
+import {
+  type InfoResponse,
+  imagesOf,
+  info,
+  infoCounting,
+  infoPost,
+  publicImageToken,
+} from "./info-support";
 import { BASE, seedFixtureLibrary, seedFixtureObjects, seedPlaylist } from "./support";
 
 /**
@@ -29,21 +36,6 @@ const TAIL_LOADED = prefixedId(
   trackId("Mute Ensemble/Trailing Sessions/01 Tail Loaded.m4a"),
 );
 
-/** The credentials `query()` sends, in the order a cover URL carries them. */
-const CREDENTIALS = "u=admin&p=sesame&v=1.16.1&c=Substreamer";
-
-/** What Navidrome's no-agent answer holds for an artist whose cover is this album's. */
-function imagesOf(coverArtId: string, base = BASE): Record<string, string> {
-  const url = (size: number) =>
-    `${base}/rest/getCoverArt?id=${coverArtId}&size=${size}&${CREDENTIALS}`;
-
-  return {
-    smallImageUrl: url(300),
-    mediumImageUrl: url(600),
-    largeImageUrl: url(1200),
-  };
-}
-
 let playlistId = "";
 
 beforeAll(async () => {
@@ -62,9 +54,10 @@ describe.each([
     const xml = await browseXml(path, { id: SILENT });
 
     expect(xml).toContain('status="ok"');
+    const token = await publicImageToken(QUIET);
     expect(xml).toContain(
-      `<${element}><smallImageUrl>${BASE}/rest/getCoverArt?id=${QUIET}&amp;size=300&amp;` +
-        "u=admin&amp;p=sesame&amp;v=1.16.1&amp;c=Substreamer</smallImageUrl><mediumImageUrl>",
+      `<${element}><smallImageUrl>${BASE}/share/img/${token}?size=300</smallImageUrl>` +
+        `<mediumImageUrl>${BASE}/share/img/${token}?size=600</mediumImageUrl>`,
     );
     expect(xml).toContain(`</largeImageUrl></${element}>`);
   });
@@ -73,13 +66,13 @@ describe.each([
     const body = await info(endpoint, { id: SILENT });
 
     expect(body.status).toBe("ok");
-    expect(body[element]).toEqual(imagesOf(QUIET));
+    expect(body[element]).toEqual(await imagesOf(QUIET));
   });
 
   it("uses the cover the artist element carries, the first album's", async () => {
     const body = await info(endpoint, { id: MUTE });
 
-    expect(body[element]).toEqual(imagesOf(FASTSTART));
+    expect(body[element]).toEqual(await imagesOf(FASTSTART));
   });
 
   it("answers an empty element for an artist with no artwork", async () => {
@@ -92,26 +85,26 @@ describe.each([
   it("names no similar artist, whatever count and includeNotPresent ask for", async () => {
     const body = await info(endpoint, { id: SILENT, count: "5", includeNotPresent: "true" });
 
-    expect(body[element]).toEqual(imagesOf(QUIET));
+    expect(body[element]).toEqual(await imagesOf(QUIET));
   });
 
   it("follows an album to its artist, as Navidrome's getArtist does", async () => {
     const body = await info(endpoint, { id: TRAILING });
 
-    expect(body[element]).toEqual(imagesOf(FASTSTART));
+    expect(body[element]).toEqual(await imagesOf(FASTSTART));
   });
 
   it("follows a song to its artist", async () => {
     const body = await info(endpoint, { id: TAIL_LOADED });
 
-    expect(body[element]).toEqual(imagesOf(FASTSTART));
+    expect(body[element]).toEqual(await imagesOf(FASTSTART));
   });
 
-  it("answers a form POST, carrying the credentials the body sent", async () => {
+  it("answers a form POST", async () => {
     const xml = await infoPost(`/rest/${endpoint}.view`, { id: SILENT });
 
     expect(xml).toContain('status="ok"');
-    expect(xml).toContain(`?id=${QUIET}&amp;size=600&amp;u=admin&amp;p=sesame&amp;`);
+    expect(xml).toContain(`/share/img/${await publicImageToken(QUIET)}?size=600<`);
   });
 
   it("builds the address from X-Forwarded-Host and X-Forwarded-Proto", async () => {
@@ -122,36 +115,33 @@ describe.each([
     );
     const body = JSON.parse(json)["subsonic-response"];
 
-    expect(body[element]).toEqual(imagesOf(QUIET, "http://music.example.org"));
+    expect(body[element]).toEqual(await imagesOf(QUIET, "http://music.example.org"));
   });
 
-  it("carries a token and salt rather than a password when the client sent those", async () => {
-    const salt = "c19b2d";
-    const token = await subsonicToken("sesame", salt);
+  it.each([
+    ["a password", async () => ({ p: "sesame" })],
+    ["a token and salt", async () => ({ t: await subsonicToken("sesame", "c19b2d"), s: "c19b2d" })],
+  ])("carries no credential of the caller's when it sent %s", async (_label, credentials) => {
     const params = new URLSearchParams({
       u: "admin",
-      t: token,
-      s: salt,
+      ...(await credentials()),
       v: "1.16.1",
       c: "Amperfy",
+      f: "json",
+      id: SILENT,
     });
-    const response = await SELF.fetch(`${BASE}/rest/${endpoint}?${params}&f=json&id=${SILENT}`);
+    const response = await SELF.fetch(`${BASE}/rest/${endpoint}?${params}`);
     const body = (await response.json()) as { "subsonic-response": InfoResponse };
-    const url = new URL(body["subsonic-response"][element]?.smallImageUrl ?? "");
+    const urls = Object.values(body["subsonic-response"][element] ?? {}) as string[];
 
-    expect([...url.searchParams]).toEqual([
-      ["id", QUIET],
-      ["size", "300"],
-      ["u", "admin"],
-      ["t", token],
-      ["s", salt],
-      ["v", "1.16.1"],
-      ["c", "Amperfy"],
-    ]);
-    expect((await SELF.fetch(url)).status).toBe(200);
+    expect(urls).toHaveLength(3);
+    for (const url of urls) {
+      expect([...new URL(url).searchParams.keys()]).toEqual(["size"]);
+      expect(url).not.toMatch(/sesame|c19b2d|admin/);
+    }
   });
 
-  it("points at a getCoverArt URL that serves the cover", async () => {
+  it("points at a public URL that serves the cover with no credentials at all", async () => {
     const body = await info(endpoint, { id: SILENT });
     const response = await SELF.fetch(body[element]?.largeImageUrl ?? "");
 
@@ -181,7 +171,7 @@ describe.each([
   it("runs one statement beyond authentication and writes nothing", async () => {
     const counted = await infoCounting(endpoint, { id: TAIL_LOADED });
 
-    expect(counted.body[element]).toEqual(imagesOf(FASTSTART));
+    expect(counted.body[element]).toEqual(await imagesOf(FASTSTART));
     expect(counted.statements).toHaveLength(2);
     expect(counted.rowsWritten).toBe(0);
   });

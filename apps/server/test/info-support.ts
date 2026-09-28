@@ -1,9 +1,10 @@
 import { SELF } from "cloudflare:test";
 import { createApp } from "../src/app";
+import { signPublicImageToken } from "../src/auth/public-token";
 import type { Env } from "../src/env";
 import { query, type SubsonicSongElement } from "./browsing-support";
 import { type RecordedWrite, recordingDatabase } from "./playlists-support";
-import { BASE, testEnv } from "./support";
+import { BASE, encryptionKey, testEnv } from "./support";
 
 /**
  * What the info and similar-songs tests send and read back, and what one of
@@ -105,4 +106,21 @@ export async function infoCounting(
 /** The titles of a song list, in order, for a test to state what came back. */
 export function titles(songs: readonly SubsonicSongElement[] | undefined): string[] {
   return (songs ?? []).map((song) => song.title);
+}
+
+/** The token the public image URL of this cover-art id carries. */
+export function publicImageToken(coverArtId: string): Promise<string> {
+  return signPublicImageToken(encryptionKey(), coverArtId);
+}
+
+/**
+ * What Navidrome's no-agent answer holds for an entity whose artwork is this
+ * cover-art id: the public image URL at the three sizes `publicurl.ImageURL`
+ * is asked for, and no credential in any of them.
+ */
+export async function imagesOf(coverArtId: string, base = BASE): Promise<Record<string, string>> {
+  const token = await publicImageToken(coverArtId);
+  const url = (size: number) => `${base}/share/img/${token}?size=${size}`;
+
+  return { smallImageUrl: url(300), mediumImageUrl: url(600), largeImageUrl: url(1200) };
 }

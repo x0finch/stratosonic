@@ -25,10 +25,11 @@
  *   data; Stratosonic does not store MBIDs, so it is always left out.
  * - The three image URLs are *not* the agents': they are built for the
  *   entity's own artwork, at 300, 600 and 1200 pixels, whenever the entity
- *   has any (`if !artist.ImageAbsent`). Navidrome points them at its public
- *   image endpoint with a signed token (`publicurl.ImageURL`, core/publicurl/
- *   publicurl.go). Stratosonic serves artwork only through `getCoverArt`, so
- *   they point there instead — see `coverArtUrl` for how.
+ *   has any (`if !artist.ImageAbsent`). They point, as Navidrome's do, at a
+ *   public image endpoint with a token signed for that one artwork id
+ *   (`publicurl.ImageURL`, core/publicurl/publicurl.go) — `/share/img/
+ *   <token>?size=N`, served by `servePublicImage` — and carry no credential
+ *   of the caller's; see `publicImageUrl`.
  * - `getAlbumInfo2` is the same handler as `getAlbumInfo` in Navidrome's
  *   router (server/subsonic/api.go), and both answer `<albumInfo>`, as the
  *   Subsonic spec has it.
@@ -59,6 +60,7 @@
  */
 
 import { type EntityId, parsePrefixedId, prefixedId } from "@stratosonic/db";
+import { signPublicImageToken } from "../auth/public-token";
 import { database } from "../db";
 import { findAlbumFor, findArtistFor } from "../library/info";
 import { omitWhenEmpty, type SongView, songElement } from "../library/serializers";
@@ -81,12 +83,6 @@ const DATA_NOT_FOUND = "data not found";
 
 /** The sizes of the small, medium and large image, as `publicurl.ImageURL` is asked for them. */
 const IMAGE_SIZES = { smallImageUrl: 300, mediumImageUrl: 600, largeImageUrl: 1200 } as const;
-
-/**
- * The parameters a `getCoverArt` URL carries so that it authenticates as the
- * caller: the ones `authenticate` and the required-parameter check read.
- */
-const CREDENTIAL_PARAMETERS = ["u", "t", "s", "p", "v", "c"] as const;
 
 /** The entity the `id` names: error 10 when it is missing, 70 when it is not an id. */
 function requestedEntity(request: AuthenticatedSubsonicRequest): EntityId {
@@ -144,7 +140,10 @@ export const getAlbumInfo: SubsonicHandler = async (request) => {
   }
 
   return {
-    albumInfo: imageUrls(request, album.coverKey === null ? null : prefixedId("album", album.id)),
+    albumInfo: await imageUrls(
+      request,
+      album.coverKey === null ? null : prefixedId("album", album.id),
+    ),
   };
 };
 
@@ -186,21 +185,34 @@ async function similarSongsOf(request: AuthenticatedSubsonicRequest): Promise<So
  * `ArtistInfoBase`'s and `AlbumInfo`'s order, or none of them when the
  * entity has no artwork — Navidrome's `if !ImageAbsent`.
  */
-function imageUrls(request: AuthenticatedSubsonicRequest, coverArtId: string | null): SubsonicNode {
-  if (coverArtId === null) {
+async function imageUrls(
+  request: AuthenticatedSubsonicRequest,
+  coverArtId: string | null,
+): Promise<SubsonicNode> {
+  const passphrase = request.env.PASSWORD_ENCRYPTION_KEY;
+  // Without the secret no token can be signed, and a URL nobody can open is
+  // worse than none: a client falls back to the `coverArt` it already has.
+  if (coverArtId === null || !passphrase) {
     return {};
   }
+
+  const token = await signPublicImageToken(passphrase, coverArtId);
 
   return Object.fromEntries(
     Object.entries(IMAGE_SIZES).map(([element, size]) => [
       element,
-      new TextElement(coverArtUrl(request, coverArtId, size)),
+      new TextElement(publicImageUrl(request.raw, token, size)),
     ]),
   );
 }
 
 /**
- * An absolute `getCoverArt` URL for this cover at this size.
+ * An absolute public image URL, `/share/img/<token>?size=N`, as Navidrome's
+ * `publicurl.ImageURL` builds it (core/publicurl/publicurl.go).
+ *
+ * It carries no credential: the token authorizes this one cover and nothing
+ * else, so the URL can be handed to a lock screen or a cast receiver without
+ * handing over the account (auth/public-token.ts).
  *
  * The address is the one the client reached this server at, worked out as
  * Navidrome's `ServerAddress` (server/middlewares.go) works it out for
@@ -208,26 +220,10 @@ function imageUrls(request: AuthenticatedSubsonicRequest, coverArtId: string | n
  * own host, and `X-Forwarded-Proto`, else `X-Forwarded-Scheme`, else the
  * request's own scheme. On Workers the request URL already carries the public
  * host and scheme, so the headers matter only behind a further proxy.
- *
- * Navidrome's URL needs no credentials: it names a public endpoint and a
- * token signed for that one image. `getCoverArt` is authenticated like every
- * other endpoint, so this URL carries the caller's own credential parameters
- * instead — what gonic does for the same URLs (`genArtistCoverURL`,
- * server/ctrlsubsonic/handlers_by_tags.go), minus the parameters that are
- * not credentials. They are the caller's, handed back to the caller, from the
- * query or the form body alike.
  */
-function coverArtUrl(request: AuthenticatedSubsonicRequest, coverArtId: string, size: number) {
-  const url = new URL("/rest/getCoverArt", serverOrigin(request.raw));
-  url.searchParams.set("id", coverArtId);
+function publicImageUrl(raw: Request, token: string, size: number): string {
+  const url = new URL(`/share/img/${token}`, serverOrigin(raw));
   url.searchParams.set("size", String(size));
-
-  for (const name of CREDENTIAL_PARAMETERS) {
-    const value = request.params.get(name);
-    if (value !== null) {
-      url.searchParams.set(name, value);
-    }
-  }
 
   return url.toString();
 }

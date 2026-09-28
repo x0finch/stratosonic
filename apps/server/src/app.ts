@@ -17,7 +17,7 @@ import {
   getTopSongs,
 } from "./endpoints/lists";
 import { getLyrics, getLyricsBySongId } from "./endpoints/lyrics";
-import { download, getCoverArt, stream } from "./endpoints/media";
+import { download, getCoverArt, servePublicImage, stream } from "./endpoints/media";
 import { notImplemented } from "./endpoints/not-implemented";
 import {
   createBookmark,
@@ -167,6 +167,12 @@ export function createApp(): SubsonicApp {
   // it: a scan is server-wide, not one listener's business.
   registerEndpoint(app, "getScanStatus", getScanStatus, { adminOnly: true });
   registerEndpoint(app, "startScan", startScan, { adminOnly: true });
+
+  // The public image URLs the info endpoints hand out, outside `/rest/` and
+  // without Subsonic credentials: the signed token in the path is the
+  // authorization. Navidrome mounts the same path whether or not sharing is
+  // enabled (server/public/public.go). HEAD is routed here by Hono.
+  app.get("/share/img/:token", (c) => servePublicImage(c.env, c.req.param("token"), c.req.raw));
 
   registerUnknownEndpointHandler(app);
 
