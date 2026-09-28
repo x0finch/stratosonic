@@ -6,6 +6,7 @@ const BASE = "https://stratosonic.test";
 const EXTENSIONS = [
   { name: "formPost", versions: [1] },
   { name: "songLyrics", versions: [1] },
+  { name: "playbackReport", versions: [1] },
 ];
 
 const AUTH_QUERY = "u=admin&t=26719a1196d2a940705a59634eb18eab&s=c19b2d&v=1.16.1&c=Substreamer";
@@ -36,7 +37,8 @@ describe("getOpenSubsonicExtensions", () => {
     expect(xml).toContain('<subsonic-response xmlns="http://subsonic.org/restapi" status="ok"');
     expect(xml).toContain(
       '<openSubsonicExtensions name="formPost"><versions>1</versions></openSubsonicExtensions>' +
-        '<openSubsonicExtensions name="songLyrics"><versions>1</versions></openSubsonicExtensions>',
+        '<openSubsonicExtensions name="songLyrics"><versions>1</versions></openSubsonicExtensions>' +
+        '<openSubsonicExtensions name="playbackReport"><versions>1</versions></openSubsonicExtensions>',
     );
   });
 

@@ -8,11 +8,14 @@ import type { PublicSubsonicHandler, SubsonicHandler } from "../subsonic/router"
  * accepts its parameters in a form-encoded POST body, which the route registry
  * does for all endpoints it mounts. `songLyrics` (version 1) is
  * `getLyricsBySongId`; Navidrome also offers version 2, whose word timings and
- * lyric kinds this server does not produce.
+ * lyric kinds this server does not produce. `playbackReport` (version 1) is
+ * `reportPlayback`, and the `state`, `positionMs` and `playbackRate` that
+ * `getNowPlaying` carries with it.
  */
 const OPEN_SUBSONIC_EXTENSIONS = [
   { name: "formPost", versions: [1] },
   { name: "songLyrics", versions: [1] },
+  { name: "playbackReport", versions: [1] },
 ];
 
 /**
