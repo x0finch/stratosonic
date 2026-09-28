@@ -120,6 +120,10 @@ function requestedSearch(request: AuthenticatedSubsonicRequest): SearchQuery {
  * clients send `query=beat*` to mean a prefix search, and since every match is
  * already a substring the `*` carries no meaning — kept, it would be matched
  * literally and find nothing.
+ *
+ * The split is on `\s`, which includes the ideographic space U+3000, so a CJK
+ * query typed with a full-width space splits as an ASCII-spaced one does. An
+ * unspaced CJK query stays one word (library/search.ts).
  */
 function searchWords(params: URLSearchParams): string[] {
   if (!params.has("query")) {
