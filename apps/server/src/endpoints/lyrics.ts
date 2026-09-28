@@ -1,10 +1,13 @@
 /**
  * Lyrics: what a client shows beside the playing track.
  *
- * They come from the sidecar file beside the track in the bucket, read when
- * the client asks (`lyrics/sidecar.ts`); nothing about them is stored, so an
- * answer costs one track lookup and at most two R2 reads per track it looks
- * at, and writes nothing.
+ * They come from one of three sources, tried in Navidrome's default
+ * `LyricsPriority` order, `.lrc,.txt,embedded`: the `.lrc` sidecar beside the
+ * track in the bucket, then the `.txt`, both read when the client asks
+ * (`lyrics/sidecar.ts`), and last the lyric the track's own tags carry, which
+ * the scan stored (`lyrics/embedded.ts`) and the track lookup joins in. All
+ * three go through the one LRC parser. An answer costs one track lookup and
+ * at most two R2 reads per track it looks at, and writes nothing.
  *
  * A track without lyrics is an empty answer, never an error: every track a
  * client plays is asked about, and most have none.
@@ -12,7 +15,7 @@
 
 import { parseIdOfType } from "@stratosonic/db";
 import { database } from "../db";
-import type { ParsedLyrics } from "../lyrics/lrc";
+import { type ParsedLyrics, parseLrc } from "../lyrics/lrc";
 import { findLyricsCandidates, findLyricsTrack, type LyricsTrack } from "../lyrics/repository";
 import {
   readSidecarLyrics,
@@ -41,10 +44,11 @@ const NO_LYRICS: SubsonicNode = { lyrics: { value: "" } };
  * `getLyricsBySongId`.
  *
  * Without both an artist and a title there is nothing to match, so the answer
- * is the empty element and nothing is looked up. Otherwise the newest tracks
- * with that title by that artist (`findLyricsCandidates`) are tried, every
- * candidate's `.lrc` before any candidate's `.txt`, and the first sidecar
- * with a line answers. Its lines are sent as Navidrome's
+ * is the empty element and nothing is looked up. Otherwise the tracks with
+ * that title by that artist (`findLyricsCandidates`, those with embedded
+ * lyrics first) are tried source by source - every candidate's `.lrc`, then
+ * every candidate's `.txt`, then every candidate's embedded lyric - and the
+ * first that yields a line answers. Its lines are sent as Navidrome's
  * `GetLyrics` writes them: each line's text followed by a newline, with the
  * timestamps of a synced file left out, and with the artist and title the
  * client sent - not the track's - on the element.
@@ -60,16 +64,23 @@ export const getLyrics: SubsonicHandler = async (request) => {
   const candidates = await findLyricsCandidates(database(request.env), artist, title);
 
   // Source first, then candidate, as Navidrome's `getLyricsForCandidates`
-  // nests them: an older take's `.lrc` beats the newest take's `.txt`.
+  // nests them: an older take's `.lrc` beats the newest take's `.txt`, and
+  // any sidecar beats a lyric in the tags.
   for (const suffix of SIDECAR_SUFFIXES) {
     for (const candidate of candidates) {
       const lyrics = await readSidecarLyricsWithSuffix(request.env, candidate.r2Key, suffix);
 
       if (lyrics !== null) {
-        return {
-          lyrics: { artist, title, value: lyrics.lines.map((line) => `${line.value}\n`).join("") },
-        };
+        return plainLyricsElement(artist, title, lyrics);
       }
+    }
+  }
+
+  for (const candidate of candidates) {
+    const lyrics = embeddedLyrics(candidate);
+
+    if (lyrics !== null) {
+      return plainLyricsElement(artist, title, lyrics);
     }
   }
 
@@ -95,13 +106,32 @@ export const getLyricsBySongId: SubsonicHandler = async (request) => {
     throw new SubsonicError(SubsonicErrorCode.NotFound, TRACK_NOT_FOUND);
   }
 
-  const lyrics = await readSidecarLyrics(request.env, song.r2Key);
+  const lyrics = (await readSidecarLyrics(request.env, song.r2Key)) ?? embeddedLyrics(song);
 
   return {
     lyricsList:
       lyrics === null ? {} : { structuredLyrics: [structuredLyricsElement(song, lyrics)] },
   };
 };
+
+/**
+ * The lyric the track's tags carry, parsed as a sidecar is, or null when the
+ * scan stored none. Its language is the tag's, unless the text sets one.
+ */
+function embeddedLyrics(song: LyricsTrack): ParsedLyrics | null {
+  return song.embedded === null ? null : parseLrc(song.embedded.text, song.embedded.lang);
+}
+
+/**
+ * `<lyrics>` as Navidrome's `GetLyrics` writes it: each line's text followed
+ * by a newline, the timestamps of a synced lyric left out, and the artist and
+ * title the client sent rather than the track's.
+ */
+function plainLyricsElement(artist: string, title: string, lyrics: ParsedLyrics): SubsonicNode {
+  return {
+    lyrics: { artist, title, value: lyrics.lines.map((line) => `${line.value}\n`).join("") },
+  };
+}
 
 /**
  * `<structuredLyrics>`, in Navidrome's field order (`responses.StructuredLyric`):
