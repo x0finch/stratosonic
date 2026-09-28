@@ -2,7 +2,13 @@ import { Hono } from "hono";
 import { scrobble, setRating, star, unstar } from "./endpoints/annotations";
 import { getAlbum, getArtist, getArtists, getGenres, getSong } from "./endpoints/browsing";
 import { getIndexes, getMusicDirectory, getMusicFolders } from "./endpoints/folders";
-import { getAlbumInfo, getArtistInfo, getArtistInfo2 } from "./endpoints/info";
+import {
+  getAlbumInfo,
+  getArtistInfo,
+  getArtistInfo2,
+  getSimilarSongs,
+  getSimilarSongs2,
+} from "./endpoints/info";
 import {
   getAlbumList2,
   getRandomSongs,
@@ -85,6 +91,11 @@ export function createApp(): SubsonicApp {
   // it answers one artist's page rather than a home screen; the handler lives
   // in the Lists module with the other song lists.
   registerEndpoint(app, "getTopSongs", getTopSongs);
+
+  // The "more like this" mix, which Navidrome mounts right after
+  // `getTopSongs`, answered from local data as its local agent answers it.
+  registerEndpoint(app, "getSimilarSongs", getSimilarSongs);
+  registerEndpoint(app, "getSimilarSongs2", getSimilarSongs2);
 
   // Browsing (folders): the same library as one music folder of directories.
   registerEndpoint(app, "getMusicFolders", getMusicFolders);
