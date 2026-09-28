@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { scrobble, setRating, star, unstar } from "./endpoints/annotations";
 import { getAlbum, getArtist, getArtists, getGenres, getSong } from "./endpoints/browsing";
 import { getIndexes, getMusicDirectory, getMusicFolders } from "./endpoints/folders";
+import { getAlbumInfo, getArtistInfo, getArtistInfo2 } from "./endpoints/info";
 import {
   getAlbumList2,
   getRandomSongs,
@@ -71,6 +72,14 @@ export function createApp(): SubsonicApp {
   registerEndpoint(app, "getAlbum", getAlbum);
   registerEndpoint(app, "getSong", getSong);
   registerEndpoint(app, "getGenres", getGenres);
+
+  // What a client shows beside an artist's or an album's page, which
+  // Navidrome mounts right after `getSong`, in this order. `getAlbumInfo2` is
+  // the very handler `getAlbumInfo` is there, answering `<albumInfo>` too.
+  registerEndpoint(app, "getAlbumInfo", getAlbumInfo);
+  registerEndpoint(app, "getAlbumInfo2", getAlbumInfo);
+  registerEndpoint(app, "getArtistInfo", getArtistInfo);
+  registerEndpoint(app, "getArtistInfo2", getArtistInfo2);
 
   // Navidrome mounts `getTopSongs` here, with the browsing endpoints, because
   // it answers one artist's page rather than a home screen; the handler lives
