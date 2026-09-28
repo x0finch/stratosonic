@@ -52,6 +52,7 @@ describe("the fixture manifest", () => {
       "lyrics-sylt.mp3",
       "lyrics-vorbis.flac",
       "lyrics-ilst.m4a",
+      "lyrics-ult.mp3",
     ]);
   });
 

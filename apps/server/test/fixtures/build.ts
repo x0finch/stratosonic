@@ -8,7 +8,8 @@
  * before or after `mdat`, the cover image itself, and an `.m3u` that points at
  * four of them plus a line that matches nothing. Four more tracks carry
  * lyrics in their tags, one per tag the scan reads them from: an ID3v2.3
- * `USLT`, an ID3v2.4 `SYLT`, a Vorbis `LYRICS` comment and an MP4 `©lyr`.
+ * `USLT`, an ID3v2.4 `SYLT`, a Vorbis `LYRICS` comment, an MP4 `©lyr` and an
+ * ID3v2.2 `ULT`.
  *
  * `pnpm --filter @stratosonic/server fixtures` writes what this module returns
  * to disk; a test calls the same functions and compares them with the committed
@@ -71,7 +72,7 @@ export interface FixtureTrack {
   readonly suffix: FixtureSuffix;
   readonly contentType: string;
   readonly container: {
-    readonly tagFormat: "id3v2.3" | "id3v2.4" | "vorbis-comment" | "mp4-ilst" | "none";
+    readonly tagFormat: "id3v2.2" | "id3v2.3" | "id3v2.4" | "vorbis-comment" | "mp4-ilst" | "none";
     /** MP4 only: whether the metadata sits at the front of the file. */
     readonly moovBeforeMdat?: boolean;
   };
@@ -149,7 +150,7 @@ export interface FixtureLyricLine {
 /** The lyric a fixture's tags carry, and what the scan and the endpoints make of it. */
 export interface FixtureLyrics {
   /** The native tag it is carried in. */
-  readonly tag: "USLT" | "SYLT" | "LYRICS" | "\u00a9lyr";
+  readonly tag: "ULT" | "USLT" | "SYLT" | "LYRICS" | "\u00a9lyr";
   /** What the scan stores: the tag's own text, or a `SYLT` written out as LRC. */
   readonly storedText: string;
   readonly lang: string;
@@ -938,6 +939,7 @@ function lyricsFixtures(): BuiltLyricsTrack[] {
   ];
   const commented = "[ar:Lyric Guest]\n[00:03.00]Sung in a comment\n[00:04.50]Still in time\n";
   const atom = "Words in an atom\nAnother line in it";
+  const old = "An older tag\nStill unsynced\n";
 
   return [
     lyricsMp3Fixture({
@@ -1020,6 +1022,24 @@ function lyricsFixtures(): BuiltLyricsTrack[] {
         lines: [{ value: "Words in an atom" }, { value: "Another line in it" }],
       },
     }),
+    lyricsMp3Fixture({
+      file: "lyrics-ult.mp3",
+      tags: lyricsTags("Older Words", 5),
+      version: 2,
+      // ID3v2.2's USLT: ISO-8859-1, in Italian, with an empty descriptor.
+      frame: {
+        id: "ULT",
+        body: concat(Uint8Array.of(0x00), latin1("ita"), Uint8Array.of(0x00), latin1(old)),
+      },
+      lyrics: {
+        tag: "ULT",
+        storedText: old,
+        lang: "ita",
+        synced: false,
+        displayArtist: null,
+        lines: [{ value: "An older tag" }, { value: "Still unsynced" }],
+      },
+    }),
   ];
 }
 
@@ -1030,7 +1050,7 @@ function lyricsTags(title: string, trackNumber: number): FixtureTags {
     albumArtist: "Lyric Singer",
     album: "Sung Words",
     trackNumber,
-    trackCount: 4,
+    trackCount: 5,
     discNumber: 1,
     discCount: 1,
     year: 2020,
@@ -1045,8 +1065,11 @@ function lyricsKey(tags: FixtureTags, suffix: FixtureSuffix): string {
 interface LyricsMp3Spec {
   readonly file: string;
   readonly tags: FixtureTags;
-  /** ID3v2.3 or ID3v2.4, which differ in how a frame's size is written. */
-  readonly version: 3 | 4;
+  /**
+   * ID3v2.2, 2.3 or 2.4: 2.2 has three-letter frame ids and three-byte sizes,
+   * and 2.4 writes a frame's size as a syncsafe integer where 2.3 does not.
+   */
+  readonly version: 2 | 3 | 4;
   readonly frame: { readonly id: string; readonly body: Uint8Array };
   readonly lyrics: FixtureLyrics;
 }
@@ -1054,19 +1077,25 @@ interface LyricsMp3Spec {
 function lyricsMp3Fixture(spec: LyricsMp3Spec): BuiltLyricsTrack {
   const { tags, version } = spec;
   const frame = (id: string, body: Uint8Array) =>
-    version === 3 ? id3Frame(id, body) : id3v24Frame(id, body);
-  const text = (id: string, value: string) => frame(id, concat(Uint8Array.of(0x00), latin1(value)));
+    version === 2
+      ? id3v22Frame(id, body)
+      : version === 3
+        ? id3Frame(id, body)
+        : id3v24Frame(id, body);
+  // The text frames, by their ID3v2.2 and their later ids.
+  const text = (ids: readonly [string, string], value: string) =>
+    frame(version === 2 ? ids[0] : ids[1], concat(Uint8Array.of(0x00), latin1(value)));
 
   const frames = concat(
-    text("TIT2", tags.title),
-    text("TPE1", tags.artist),
-    text("TPE2", tags.albumArtist),
-    text("TALB", tags.album),
-    text("TRCK", `${tags.trackNumber}/${tags.trackCount}`),
-    text("TPOS", `${tags.discNumber}/${tags.discCount}`),
+    text(["TT2", "TIT2"], tags.title),
+    text(["TP1", "TPE1"], tags.artist),
+    text(["TP2", "TPE2"], tags.albumArtist),
+    text(["TAL", "TALB"], tags.album),
+    text(["TRK", "TRCK"], `${tags.trackNumber}/${tags.trackCount}`),
+    text(["TPA", "TPOS"], `${tags.discNumber}/${tags.discCount}`),
     // ID3v2.4 replaced the year frame with a recording time.
-    text(version === 3 ? "TYER" : "TDRC", String(tags.year)),
-    text("TCON", tags.genre),
+    text(["TYE", version === 3 ? "TYER" : "TDRC"], String(tags.year)),
+    text(["TCO", "TCON"], tags.genre),
     frame(spec.frame.id, spec.frame.body),
   );
 
@@ -1083,7 +1112,7 @@ function lyricsMp3Fixture(spec: LyricsMp3Spec): BuiltLyricsTrack {
       size: bytes.length,
       suffix: "mp3",
       contentType: "audio/mpeg",
-      container: { tagFormat: version === 3 ? "id3v2.3" : "id3v2.4" },
+      container: { tagFormat: `id3v2.${version}` },
       tags,
       pathFallback: pathFallbackOf(r2Key),
       duration: { seconds: mp3Seconds(audio), toleranceSeconds: 0.05, source: "cbr-estimate" },
@@ -1092,6 +1121,11 @@ function lyricsMp3Fixture(spec: LyricsMp3Spec): BuiltLyricsTrack {
       lyrics: spec.lyrics,
     },
   };
+}
+
+/** An ID3v2.2 frame: a three-letter id and a three-byte size, and no flags. */
+function id3v22Frame(id: string, body: Uint8Array): Uint8Array {
+  return concat(latin1(id), u24be(body.length), body);
 }
 
 /** An ID3v2.4 frame, whose size - unlike 2.3's - is a syncsafe integer. */

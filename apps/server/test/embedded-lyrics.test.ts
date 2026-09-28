@@ -120,6 +120,46 @@ describe("choosing the lyric to store", () => {
     expect(embeddedLyricsOf(native)).toEqual({ text: "plain", lang: "eng" });
   });
 
+  it("passes over a first lyric with no line in it for the next", () => {
+    const native: NativeTags = {
+      "ID3v2.3": [
+        { id: "USLT", value: { language: "eng", descriptor: "", text: "\n\n" } },
+        { id: "USLT", value: { language: "deu", descriptor: "", text: "words" } },
+      ],
+    };
+
+    expect(embeddedLyricsOf(native)).toEqual({ text: "words", lang: "deu" });
+  });
+
+  it("reads ID3v2.2's ULT and SLT as USLT and SYLT", () => {
+    expect(embeddedLyricsOf(uslt("older words", "ita", "ID3v2.2"))).toBeUndefined();
+    expect(
+      embeddedLyricsOf({
+        "ID3v2.2": [{ id: "ULT", value: { language: "ita", descriptor: "", text: "older" } }],
+      }),
+    ).toEqual({ text: "older", lang: "ita" });
+    expect(
+      embeddedLyricsOf({
+        "ID3v2.2": [
+          {
+            id: "SLT",
+            value: {
+              language: "ita",
+              descriptor: "",
+              contentType: 1,
+              timeStampFormat: 2,
+              syncText: [{ text: "timed", timestamp: 1_000 }],
+            },
+          },
+        ],
+      }),
+    ).toEqual({ text: "[00:01.00]timed\n", lang: "ita" });
+  });
+
+  it("passes over an SLT that music-metadata left undecoded", () => {
+    expect(embeddedLyricsOf({ "ID3v2.2": [{ id: "SLT", value: [] }] })).toBeUndefined();
+  });
+
   it("takes the first of several unsynced lyrics", () => {
     const native: NativeTags = {
       vorbis: [

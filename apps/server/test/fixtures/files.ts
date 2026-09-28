@@ -14,6 +14,7 @@ import frontLoaded from "./front-loaded.m4a?inline";
 import hushedInterlude from "./hushed-interlude.flac?inline";
 import lyricsIlst from "./lyrics-ilst.m4a?inline";
 import lyricsSylt from "./lyrics-sylt.mp3?inline";
+import lyricsUlt from "./lyrics-ult.mp3?inline";
 import lyricsUslt from "./lyrics-uslt.mp3?inline";
 import lyricsVorbis from "./lyrics-vorbis.flac?inline";
 import manifestJson from "./manifest.json";
@@ -48,6 +49,7 @@ const BINARY: Readonly<Record<string, string>> = {
   "lyrics-sylt.mp3": lyricsSylt,
   "lyrics-vorbis.flac": lyricsVorbis,
   "lyrics-ilst.m4a": lyricsIlst,
+  "lyrics-ult.mp3": lyricsUlt,
 };
 
 /** The text of the `.m3u` fixture, exactly as committed. */

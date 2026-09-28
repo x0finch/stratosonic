@@ -331,7 +331,7 @@
         "albumArtist": "Lyric Singer",
         "album": "Sung Words",
         "trackNumber": 1,
-        "trackCount": 4,
+        "trackCount": 5,
         "discNumber": 1,
         "discCount": 1,
         "year": 2020,
@@ -383,7 +383,7 @@
         "albumArtist": "Lyric Singer",
         "album": "Sung Words",
         "trackNumber": 2,
-        "trackCount": 4,
+        "trackCount": 5,
         "discNumber": 1,
         "discCount": 1,
         "year": 2020,
@@ -441,7 +441,7 @@
         "albumArtist": "Lyric Singer",
         "album": "Sung Words",
         "trackNumber": 3,
-        "trackCount": 4,
+        "trackCount": 5,
         "discNumber": 1,
         "discCount": 1,
         "year": 2020,
@@ -496,7 +496,7 @@
         "albumArtist": "Lyric Singer",
         "album": "Sung Words",
         "trackNumber": 4,
-        "trackCount": 4,
+        "trackCount": 5,
         "discNumber": 1,
         "discCount": 1,
         "year": 2020,
@@ -529,6 +529,58 @@
           },
           {
             "value": "Another line in it"
+          }
+        ]
+      }
+    },
+    {
+      "file": "lyrics-ult.mp3",
+      "r2Key": "Lyric Singer/Sung Words/05 Older Words.mp3",
+      "size": 3500,
+      "suffix": "mp3",
+      "contentType": "audio/mpeg",
+      "container": {
+        "tagFormat": "id3v2.2"
+      },
+      "tags": {
+        "title": "Older Words",
+        "artist": "Lyric Singer",
+        "albumArtist": "Lyric Singer",
+        "album": "Sung Words",
+        "trackNumber": 5,
+        "trackCount": 5,
+        "discNumber": 1,
+        "discCount": 1,
+        "year": 2020,
+        "genre": "Folk"
+      },
+      "pathFallback": {
+        "albumArtist": "Lyric Singer",
+        "album": "Sung Words",
+        "title": "05 Older Words"
+      },
+      "duration": {
+        "seconds": 0.209,
+        "toleranceSeconds": 0.05,
+        "source": "cbr-estimate"
+      },
+      "bitRate": {
+        "kbps": 128,
+        "source": "frame-header"
+      },
+      "cover": null,
+      "lyrics": {
+        "tag": "ULT",
+        "storedText": "An older tag\nStill unsynced\n",
+        "lang": "ita",
+        "synced": false,
+        "displayArtist": null,
+        "lines": [
+          {
+            "value": "An older tag"
+          },
+          {
+            "value": "Still unsynced"
           }
         ]
       }

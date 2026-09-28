@@ -18,6 +18,11 @@
  *   line each - so one parser serves both. A `SYLT` timed in MPEG frames
  *   rather than milliseconds cannot be placed without decoding the audio, so
  *   it is passed over.
+ * - **ID3v2.2** (`mp3`): the same two frames under their three-letter ids,
+ *   `ULT` and `SLT`, which TagLib reads as well. music-metadata 11 decodes
+ *   `ULT` as it does `USLT` but hands `SLT` over undecoded, so in practice an
+ *   ID3v2.2 file gives its unsynced lyric only; an `SLT` that does arrive
+ *   decoded is read as a `SYLT` would be.
  * - **Vorbis comments** (`flac`): `LYRICS` and `UNSYNCEDLYRICS`, as text.
  * - **MP4** (`m4a`): `©lyr`, as text.
  *
@@ -64,7 +69,15 @@ export type NativeTags = Readonly<Record<string, readonly NativeTag[]>>;
 /** ID3v2's `SYLT` timestamp format for absolute milliseconds. */
 const SYLT_MILLISECONDS = 2;
 
-const ID3V2_TAG_TYPES = new Set(["ID3v2.3", "ID3v2.4"]);
+/**
+ * The ID3v2 lyrics frames, by the id each version gives them: ID3v2.2's
+ * three-letter ids name the same frames as 2.3 and 2.4's four-letter ones.
+ */
+const ID3V2_LYRICS_FRAMES: Readonly<Record<string, Readonly<Record<string, "USLT" | "SYLT">>>> = {
+  "ID3v2.2": { ULT: "USLT", SLT: "SYLT" },
+  "ID3v2.3": { USLT: "USLT", SYLT: "SYLT" },
+  "ID3v2.4": { USLT: "USLT", SYLT: "SYLT" },
+};
 
 /** Vorbis field names, which music-metadata upper-cases. */
 const VORBIS_LYRICS_FIELDS = new Set(["LYRICS", "UNSYNCEDLYRICS"]);
@@ -114,13 +127,16 @@ function* lyricsTags(native: NativeTags): Generator<EmbeddedLyrics> {
 }
 
 function lyricsOfTag(tagType: string, tag: NativeTag): EmbeddedLyrics | undefined {
-  if (ID3V2_TAG_TYPES.has(tagType)) {
-    if (tag.id === "USLT" && isRecord(tag.value) && typeof tag.value.text === "string") {
+  const frames = ID3V2_LYRICS_FRAMES[tagType];
+  if (frames !== undefined) {
+    const frame = Object.hasOwn(frames, tag.id) ? frames[tag.id] : undefined;
+
+    if (frame === "USLT" && isRecord(tag.value) && typeof tag.value.text === "string") {
       return { text: tag.value.text, lang: language(tag.value.language) };
     }
 
     if (
-      tag.id === "SYLT" &&
+      frame === "SYLT" &&
       isRecord(tag.value) &&
       tag.value.timeStampFormat === SYLT_MILLISECONDS &&
       Array.isArray(tag.value.syncText)
