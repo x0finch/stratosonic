@@ -101,6 +101,27 @@ describe("GET /share/img/<token>", () => {
     expect(statements).toHaveLength(0);
   });
 
+  // Regression guards for the one unauthenticated route: malformed shapes a
+  // client could send are refused before anything reaches D1, over the real
+  // Worker as well as through a counting database.
+  it.each([
+    ["an extra dot", async () => `${await publicImageToken(QUIET)}.c`],
+    ["an empty id", async () => `.${(await publicImageToken(QUIET)).split(".")[1]}`],
+    ["an oversized token", async () => `${"A".repeat(10_000)}.${"A".repeat(10_000)}`],
+  ])("answers 400 plain text for %s, without a D1 statement", async (_label, token) => {
+    const path = `/share/img/${await token()}`;
+
+    const response = await SELF.fetch(`${BASE}${path}`);
+    expect(response.status).toBe(400);
+    expect(response.headers.get("Content-Type")).toBe("text/plain; charset=utf-8");
+    expect(await response.text()).toBe("invalid request\n");
+
+    const { response: recorded, statements } = await counted(path);
+    expect(recorded.status).toBe(400);
+    expect(await recorded.text()).toBe("invalid request\n");
+    expect(statements).toHaveLength(0);
+  });
+
   it("answers 404 for a valid token whose entity has no cover", async () => {
     const { response, statements } = await counted(
       `/share/img/${await publicImageToken(FALLBACK)}`,
