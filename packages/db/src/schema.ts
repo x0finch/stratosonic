@@ -78,10 +78,11 @@ export type NewUser = typeof user.$inferInsert;
  * - Artists, albums and tracks carry no foreign keys. D1 enforces them, and
  *   the scanner writes a track before the album row it belongs to is complete
  *   and deletes in the opposite order; Navidrome likewise keeps that integrity
- *   in the application. The two rows that belong to something rather than
- *   merely refer to it - a playlist's entries and a user's annotations - do
- *   have one, cascading: an orphan there is not a passing state during a scan
- *   but a row nothing can reach and `getStarred2` would still count.
+ *   in the application. The rows that belong to something rather than merely
+ *   refer to it - a playlist's entries, a user's annotations and a track's
+ *   embedded lyrics - do have one, cascading: an orphan there is not a
+ *   passing state during a scan but a row nothing can reach and `getStarred2`
+ *   would still count.
  * - A column is nullable exactly when "absent" is a value the protocol has to
  *   render differently from zero (a missing year is omitted, not `0`).
  */
@@ -179,6 +180,35 @@ export const track = sqliteTable(
 
 export type Track = typeof track.$inferSelect;
 export type NewTrack = typeof track.$inferInsert;
+
+/**
+ * The lyrics a track carries in its own tags - ID3v2 `USLT`/`SYLT`, a Vorbis
+ * comment's `LYRICS`/`UNSYNCEDLYRICS`, MP4's `©lyr` - which Navidrome keeps
+ * in `media_file.lyrics`, filled from the same tags at scan time.
+ *
+ * A table of its own rather than a column on `track`, because most tracks
+ * have none and many queries select whole track rows: a column would carry
+ * lyrics into every browse, list and search response path. A row exists only
+ * for a track whose tags hold lyrics, so the common case costs nothing, and
+ * it belongs to its track: the sweep deleting the track takes it along.
+ *
+ * `text` is the lyric as the tag holds it - a `SYLT` frame's timed entries
+ * written out as LRC - and is parsed when a client asks, by the parser a
+ * sidecar goes through, so an LRC-formatted `USLT` is synced exactly as an
+ * `.lrc` is. Navidrome parses at scan time and stores the result; storing the
+ * source keeps one parser for both. `lang` is the tag's language, `xxx` when
+ * it names none, which a `[lang:]` in the text still overrides.
+ */
+export const trackLyrics = sqliteTable("track_lyrics", {
+  trackId: text("track_id")
+    .primaryKey()
+    .references(() => track.id, { onDelete: "cascade" }),
+  text: text("text").notNull(),
+  lang: text("lang").notNull().default("xxx"),
+});
+
+export type TrackLyrics = typeof trackLyrics.$inferSelect;
+export type NewTrackLyrics = typeof trackLyrics.$inferInsert;
 
 /**
  * A user-ordered list of tracks, imported from an `.m3u` object in R2.
