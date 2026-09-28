@@ -37,6 +37,7 @@ describe("the fixture manifest", () => {
       ...fixtures.tracks.map((track) => track.file),
       fixtures.cover.file,
       fixtures.playlist.file,
+      ...fixtures.lyricsTracks.map((track) => track.file),
     ];
 
     expect(named).toEqual([
@@ -47,11 +48,20 @@ describe("the fixture manifest", () => {
       "untagged.mp3",
       "cover.png",
       "favourites.m3u",
+      "lyrics-uslt.mp3",
+      "lyrics-sylt.mp3",
+      "lyrics-vorbis.flac",
+      "lyrics-ilst.m4a",
     ]);
   });
 
   it("records each file's real size, and each file stays small", () => {
-    for (const { file, size } of [...fixtures.tracks, fixtures.cover, fixtures.playlist]) {
+    for (const { file, size } of [
+      ...fixtures.tracks,
+      fixtures.cover,
+      fixtures.playlist,
+      ...fixtures.lyricsTracks,
+    ]) {
       const bytes = fixtureBytes(file);
 
       expect(bytes.length, file).toBe(size);
@@ -120,6 +130,7 @@ describe("the generator", () => {
         ...fixtures.tracks.map((track) => track.file),
         fixtures.cover.file,
         fixtures.playlist.file,
+        ...fixtures.lyricsTracks.map((track) => track.file),
       ].sort(),
     );
 

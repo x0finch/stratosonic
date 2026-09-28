@@ -3,8 +3,8 @@
  *
  * The scan never downloads a track. It hands this module a `ByteSource` over
  * the object and the suffix the key ends in, and gets back the Track fields
- * the library stores: the tags, the numbers a duration is derived from, and
- * the first embedded picture. Nothing here touches R2, D1 or the Worker's
+ * the library stores: the tags, the numbers a duration is derived from, the
+ * first embedded picture, and the lyric the tags carry. Nothing here touches R2, D1 or the Worker's
  * environment - the scanner does the reading, this decides what to read.
  *
  * Parsing is `music-metadata` driven through `ByteSourceTokenizer`, so the
@@ -22,6 +22,7 @@
  */
 
 import { parseFromTokenizer } from "music-metadata";
+import { type EmbeddedLyrics, embeddedLyricsOf } from "../lyrics/embedded";
 import { AUDIO_CONTENT_TYPES, type AudioSuffix, isAudioSuffix } from "./audio-formats";
 import { type ByteSource, chunkedSource } from "./byte-source";
 import { ByteSourceTokenizer } from "./source-tokenizer";
@@ -59,6 +60,8 @@ export interface TrackMetadata {
   readonly sampleRate?: number;
   /** The first picture embedded in the track, if it carries one. */
   readonly cover?: EmbeddedCover;
+  /** The lyric its tags carry, if any (`lyrics/embedded.ts`). */
+  readonly lyrics?: EmbeddedLyrics;
 }
 
 export type MetadataErrorCode =
@@ -139,7 +142,7 @@ export async function extractMetadata(
   );
 
   try {
-    const { common, format } = await parseFromTokenizer(tokenizer, {
+    const { common, format, native } = await parseFromTokenizer(tokenizer, {
       // Never walk the whole file to measure a duration: derive it, or do
       // without. This is the option that keeps a scan inside its budget.
       duration: false,
@@ -159,6 +162,7 @@ export async function extractMetadata(
       bitRate: Math.round((finite(format.bitrate) ?? 0) / 1000),
       ...defined("sampleRate", finite(format.sampleRate)),
       ...defined("cover", firstCover(common.picture)),
+      ...defined("lyrics", embeddedLyricsOf(native)),
     };
 
     // A parser handed bytes that are not the format their suffix promised

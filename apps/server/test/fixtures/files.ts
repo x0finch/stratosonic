@@ -7,11 +7,15 @@
  * each one contains; nothing else should restate those expectations.
  */
 
-import type { FixturesManifest, FixtureTrack } from "./build";
+import type { FixtureLyricsTrack, FixturesManifest, FixtureTrack } from "./build";
 import coverPng from "./cover.png?inline";
 import playlistText from "./favourites.m3u?raw";
 import frontLoaded from "./front-loaded.m4a?inline";
 import hushedInterlude from "./hushed-interlude.flac?inline";
+import lyricsIlst from "./lyrics-ilst.m4a?inline";
+import lyricsSylt from "./lyrics-sylt.mp3?inline";
+import lyricsUslt from "./lyrics-uslt.mp3?inline";
+import lyricsVorbis from "./lyrics-vorbis.flac?inline";
 import manifestJson from "./manifest.json";
 import silentTrack from "./silent-track.mp3?inline";
 import tailLoaded from "./tail-loaded.m4a?inline";
@@ -20,6 +24,9 @@ import untagged from "./untagged.mp3?inline";
 export type {
   FixtureAlbum,
   FixtureCover,
+  FixtureLyricLine,
+  FixtureLyrics,
+  FixtureLyricsTrack,
   FixturePlaylist,
   FixturePlaylistLine,
   FixturesManifest,
@@ -37,6 +44,10 @@ const BINARY: Readonly<Record<string, string>> = {
   "tail-loaded.m4a": tailLoaded,
   "untagged.mp3": untagged,
   "cover.png": coverPng,
+  "lyrics-uslt.mp3": lyricsUslt,
+  "lyrics-sylt.mp3": lyricsSylt,
+  "lyrics-vorbis.flac": lyricsVorbis,
+  "lyrics-ilst.m4a": lyricsIlst,
 };
 
 /** The text of the `.m3u` fixture, exactly as committed. */
@@ -68,6 +79,18 @@ export function fixtureTrack(fileOrKey: string): FixtureTrack {
   );
   if (!track) {
     throw new Error(`no track fixture named ${fileOrKey}`);
+  }
+
+  return track;
+}
+
+/** The fixture with lyrics in its tags, by file name or R2 key. */
+export function fixtureLyricsTrack(fileOrKey: string): FixtureLyricsTrack {
+  const track = fixtures.lyricsTracks.find(
+    (candidate) => candidate.file === fileOrKey || candidate.r2Key === fileOrKey,
+  );
+  if (!track) {
+    throw new Error(`no lyrics fixture named ${fileOrKey}`);
   }
 
   return track;
