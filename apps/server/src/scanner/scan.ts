@@ -102,6 +102,7 @@ import {
   deleteTracksStatements,
   findAlbumCovers,
   findTracksInRange,
+  lyricsStatement,
   pruneEmptyAlbums,
   pruneEmptyArtists,
   pruneOrphanPlaylistEntries,
@@ -164,6 +165,8 @@ interface Extracted {
   readonly cover: EmbeddedCover | undefined;
   /** Whether the library already held this track with different bytes. */
   readonly changed: boolean;
+  /** Whether the library holds a lyrics row for it, which tags without lyrics remove. */
+  readonly heldLyrics: boolean;
 }
 
 /** What one listed object turns out to need. */
@@ -310,7 +313,12 @@ export async function runScan(
       }
 
       const rows = deriveRows(planned.object, read.metadata, now);
-      extracted.push({ rows, cover: read.metadata.cover, changed: planned.held !== undefined });
+      extracted.push({
+        rows,
+        cover: read.metadata.cover,
+        changed: heldWithOtherBytes(planned.held, planned.object),
+        heldLyrics: planned.held?.hasLyrics ?? false,
+      });
       counts.indexed++;
       if (planned.held === undefined) {
         counts.added++;
@@ -326,6 +334,10 @@ export async function runScan(
     const writes: ScanStatement[] = [];
     for (const item of extracted) {
       writes.push(...upsertStatements(db, item.rows, now));
+      const lyrics = lyricsStatement(db, item.rows, item.heldLyrics);
+      if (lyrics !== null) {
+        writes.push(lyrics);
+      }
     }
     for (const [albumId, coverKey] of await storeCovers(env, db, extracted, counts)) {
       writes.push(setAlbumCoverStatement(db, albumId, coverKey, now));
@@ -422,6 +434,23 @@ function planFor(object: R2Object, held: Map<string, StoredTrack>, broken: Broke
   }
 
   return { work: "read", object: listed, held: row };
+}
+
+/**
+ * Whether the library held this track with other bytes than the object now
+ * has - which is what lets a re-read replace its album's cover.
+ *
+ * A held row whose etag is empty has not been seen to change: migration 0006
+ * clears every etag once, so that each track is read again for the lyrics in
+ * its tags, and a cover rewritten for every one of those reads would be R2
+ * writes for nothing. Only a different size then says the bytes moved.
+ */
+function heldWithOtherBytes(held: StoredTrack | undefined, object: LibraryObject): boolean {
+  if (held === undefined) {
+    return false;
+  }
+
+  return held.etag !== "" || held.size !== object.size;
 }
 
 /** What came of trying to read an object, and whose fault it was. */

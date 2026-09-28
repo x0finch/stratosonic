@@ -28,7 +28,7 @@
  * what `KEYS_PER_STATEMENT` is for.
  */
 
-import { type Album, album, artist, playlistTrack, track } from "@stratosonic/db";
+import { type Album, album, artist, playlistTrack, track, trackLyrics } from "@stratosonic/db";
 import { and, eq, gt, inArray, lte, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { D1_MAX_BOUND_PARAMETERS } from "../d1-limits";
@@ -48,6 +48,8 @@ export interface StoredTrack {
   readonly albumId: string;
   readonly etag: string;
   readonly size: number;
+  /** Whether a `track_lyrics` row is stored for it. */
+  readonly hasLyrics: boolean;
 }
 
 /**
@@ -64,6 +66,11 @@ export interface StoredTrack {
  * key space. The `limit` is what keeps an interval holding a huge deletion
  * from returning the whole table; the caller notices a full result and deals
  * with the backlog before indexing anything.
+ *
+ * Each row also says whether the track has a lyrics row, by a join on that
+ * table's key, so a re-read that finds no lyrics in the tags deletes one only
+ * where there is one to delete - and writes nothing for the many tracks that
+ * never had any.
  */
 export async function findTracksInRange(
   db: Database,
@@ -71,18 +78,22 @@ export async function findTracksInRange(
   through: string | null,
   limit: number,
 ): Promise<StoredTrack[]> {
-  return db
+  const rows = await db
     .select({
       id: track.id,
       r2Key: track.r2Key,
       albumId: track.albumId,
       etag: track.etag,
       size: track.size,
+      lyricsOf: trackLyrics.trackId,
     })
     .from(track)
+    .leftJoin(trackLyrics, eq(trackLyrics.trackId, track.id))
     .where(and(gt(track.r2Key, after), through === null ? undefined : lte(track.r2Key, through)))
     .orderBy(track.r2Key)
     .limit(limit);
+
+  return rows.map(({ lyricsOf, ...row }) => ({ ...row, hasLyrics: lyricsOf !== null }));
 }
 
 /**
@@ -174,6 +185,33 @@ export function upsertStatements(db: Database, rows: DerivedRows, now: Date): Sc
   ];
 }
 
+/**
+ * The statement that brings a track's lyrics row in line with the tags just
+ * read, or null when there is nothing to change.
+ *
+ * Tags with lyrics upsert the row. Tags without them delete it, but only when
+ * `held` says there is one: the common track has no lyrics and never had any,
+ * so it costs no statement and no write. It goes after the track's own upsert
+ * in the batch, since the row's foreign key needs the track to exist.
+ */
+export function lyricsStatement(
+  db: Database,
+  rows: DerivedRows,
+  held: boolean,
+): ScanStatement | null {
+  if (rows.lyrics !== null) {
+    return db
+      .insert(trackLyrics)
+      .values(rows.lyrics)
+      .onConflictDoUpdate({
+        target: trackLyrics.trackId,
+        set: { text: rows.lyrics.text, lang: rows.lyrics.lang },
+      });
+  }
+
+  return held ? db.delete(trackLyrics).where(eq(trackLyrics.trackId, rows.track.id)) : null;
+}
+
 /** Points an album at the cover object the scan has just written. */
 export function setAlbumCoverStatement(
   db: Database,
@@ -187,6 +225,8 @@ export function setAlbumCoverStatement(
 /**
  * Removes the tracks the sweep found missing, in statements that bind at most
  * `KEYS_PER_STATEMENT` ids each.
+ *
+ * A track's lyrics row goes with it, by its foreign key's cascade.
  *
  * They are statements rather than a call so they can go in the page's batch:
  * a deletion that commits without the cursor that covered it would be redone
