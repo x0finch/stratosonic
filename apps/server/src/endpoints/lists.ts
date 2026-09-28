@@ -129,8 +129,12 @@ function requestedPage(params: URLSearchParams, sizeParameter: string): Page {
  * not positive, so `size=0` there means *the whole library*. On D1 that is a
  * request the free tier cannot afford to serve, and no client means it, so 0
  * means zero rows here.
+ *
+ * `getSimilarSongs` caps its `count` here too; Navidrome's own cap there is
+ * the same 500 (`maxSimilarSongs`), and a count that is not positive is no
+ * songs there as well.
  */
-function boundedCount(
+export function boundedCount(
   params: URLSearchParams,
   name: string,
   fallback: number = DEFAULT_SIZE,

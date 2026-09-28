@@ -1,5 +1,7 @@
-import { parseIdOfType, parsePrefixedId } from "@stratosonic/db";
+import { type EntityId, parseIdOfType, parsePrefixedId } from "@stratosonic/db";
+import { verifyPublicImageToken } from "../auth/public-token";
 import { database } from "../db";
+import type { Env } from "../env";
 import { NO_USER } from "../library/annotations";
 import { audioContentType } from "../library/audio-formats";
 import { findTrack } from "../library/repository";
@@ -77,25 +79,73 @@ export const getCoverArt: SubsonicHandler = async (request) => {
   const id = requiredParameter(request.params, "id");
   const entity = parsePrefixedId(id);
 
-  const key = entity === null ? null : await findCoverKey(database(request.env), entity);
-  if (key === null) {
+  const served = entity === null ? null : await serveCover(request.env, entity, request.raw);
+  if (served === null) {
     throw new SubsonicError(SubsonicErrorCode.NotFound, ARTWORK_NOT_FOUND);
+  }
+
+  return served;
+};
+
+/**
+ * `GET /share/img/<token>` — the public image URL Navidrome's
+ * `publicurl.ImageURL` builds and its `handleImages` serves
+ * (server/public/handle_images.go): no Subsonic credentials, because the
+ * token is the authorization, and it authorizes this one cover only.
+ *
+ * Answers in plain HTTP, as Navidrome does, not in an envelope: a token that
+ * does not verify is 400 `invalid request` — before any D1 statement, so a
+ * forged URL costs the database nothing — and a valid one whose entity has no
+ * cover (any more) is 404 `Artwork not found`. `size` is ignored, as
+ * `getCoverArt` ignores it.
+ */
+export async function servePublicImage(env: Env, token: string, raw: Request): Promise<Response> {
+  const id = env.PASSWORD_ENCRYPTION_KEY
+    ? await verifyPublicImageToken(env.PASSWORD_ENCRYPTION_KEY, token)
+    : null;
+  const entity = id === null ? null : parsePrefixedId(id);
+  if (entity === null) {
+    return new Response("invalid request\n", {
+      status: 400,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  return (
+    (await serveCover(env, entity, raw)) ??
+    new Response(`${ARTWORK_NOT_FOUND}\n`, {
+      status: 404,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    })
+  );
+}
+
+/**
+ * The cover an entity resolves to, as a response, or null when it has none —
+ * shared by `getCoverArt` and the public image URL so both serve the same
+ * bytes the same way.
+ */
+async function serveCover(env: Env, entity: EntityId, raw: Request): Promise<Response | null> {
+  const key = await findCoverKey(database(env), entity);
+  if (key === null) {
+    return null;
   }
 
   // An album can name a cover the bucket no longer holds, which is the same
   // "no artwork" to a client as an album that never had one.
-  const head = await headStoredObject(request.env, key, ARTWORK_NOT_FOUND);
+  const head = await env.MUSIC.head(key);
+  if (head === null) {
+    return null;
+  }
 
   // A HEAD is answered from the head() alone, as it is for a track: reading
   // the image's signature would spend a second R2 operation on a response
   // that carries no image. Such a request is told what the object says it is.
   const contentType =
-    request.raw.method === "HEAD"
-      ? declaredCoverContentType(head)
-      : await coverContentType(request.env, key, head);
+    raw.method === "HEAD" ? declaredCoverContentType(head) : await coverContentType(env, key, head);
 
-  return serveStoredObject(request.env, key, head, request.raw, { contentType });
-};
+  return serveStoredObject(env, key, head, raw, { contentType });
+}
 
 /**
  * The track a request names, or error 70.

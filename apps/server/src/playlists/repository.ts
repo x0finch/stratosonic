@@ -482,9 +482,11 @@ const playlistColumns = {
 /**
  * What a viewer is allowed to see, as Navidrome's `playlistRepository.
  * userFilter` decides it: everything for an admin, and otherwise the public
- * playlists and the viewer's own.
+ * playlists and the viewer's own. Exported for the reads outside this module
+ * that start from a playlist (`getSimilarSongs`), which Navidrome filters the
+ * same way, through the same repository's `Get`.
  */
-function visibleTo(viewer: PlaylistViewer) {
+export function visibleTo(viewer: PlaylistViewer) {
   return viewer.isAdmin
     ? undefined
     : or(eq(playlist.public, true), eq(playlist.ownerId, viewer.id));
