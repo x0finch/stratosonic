@@ -17,6 +17,15 @@
  *   word is required, as Navidrome's full-text filter requires each term, so
  *   "beatles help" finds the one track and not every Beatles song. A word may
  *   match any of the columns a kind carries (OR within the word).
+ * - **CJK matches as an exact run of characters.** `LIKE` compares code
+ *   points, so any contiguous substring of a Chinese, Japanese or Korean name
+ *   finds it ("父之" finds 以父之名, "ヒカ" 宇多田ヒカル, "이유" 아이유), and
+ *   a CJK word ANDs with an ASCII one like any other ("晨光 live"). There is
+ *   no tokenisation beyond the whitespace split: CJK is written unspaced, so
+ *   an unspaced CJK query is one word and must occur whole — "以名" does not
+ *   find 以父之名, "以 名" does. The split is on JavaScript's `\s`, which
+ *   includes the ideographic space U+3000 an input method types. The tests
+ *   in test/search-cjk.test.ts pin each of these (#73).
  * - **An empty query matches everything**, paged — some clients enumerate the
  *   whole library that way, per the Phase 2 spec (#37); Navidrome treats an
  *   empty query as missing.
@@ -26,7 +35,11 @@
  * rules and strips accents, so "bjork" finds Björk and "ÉCOUTE" finds écoute
  * there. SQLite's `LIKE` folds the ASCII letters only and folds no accent, so
  * here a query has to carry the accents and the case of a non-ASCII letter as
- * the tag spells them. Closing that gap means storing a folded column — the
+ * the tag spells them. Nor is anything Unicode-normalised (no NFKC):
+ * full-width Latin is not its ASCII form — "First" does not find
+ * "Ｆｉｒｓｔ Ｌｏｖｅ", "ＹＯＡＳＯＢＩ" does not find YOASOBI, and
+ * full-width letters fold no case — and half-width katakana is not full-width
+ * katakana. Closing that gap means storing a folded column — the
  * state #37 decided against — so it waits for a library that needs it.
  *
  * Each kind is ordered by its name and then its id, so paging one kind with
