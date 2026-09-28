@@ -323,13 +323,22 @@ export type Annotation = typeof annotation.$inferSelect;
 export type NewAnnotation = typeof annotation.$inferInsert;
 
 /**
- * Who a user is listening to right now, one row per user — as Navidrome keeps
- * one now-playing entry per user (`core/playback`/`ffmpeg` aside, its
- * `NowPlaying` map is keyed by user). `scrobble` with `submission=false`
- * writes it at the start of a track; `getNowPlaying` returns only the rows
- * whose `startedAt` is within a TTL window, and a stale one is left to be
- * overwritten in place by the next track rather than swept, so the free tier
+ * Who a user is listening to right now, one row per user: the playback
+ * session Navidrome keeps in its play tracker's in-memory cache
+ * (`core/scrobbler/play_tracker.go`), stored here because a Worker keeps
+ * nothing between requests.
+ *
+ * `reportPlayback` writes it on `starting`, `playing` and `paused` and deletes
+ * it on `stopped`; `scrobble` with `submission=false` writes it as `playing`.
+ * `expiresAt` is the instant Navidrome's cache would drop the session - the
+ * track's end plus five seconds while playing, half an hour while paused - and
+ * `getNowPlaying` reads only the rows before it. A stale row is left to be
+ * overwritten in place by the next report rather than swept, so the free tier
  * runs no cleaner.
+ *
+ * `positionMs` is where the client said it was at `reportedAt`, playing at
+ * `playbackRate`; a reader extrapolates the current position from the three.
+ * `startedAt` is when the session began, which `minutesAgo` counts from.
  */
 export const nowPlaying = sqliteTable("now_playing", {
   userId: text("user_id")
@@ -339,6 +348,14 @@ export const nowPlaying = sqliteTable("now_playing", {
   /** The client's `c` parameter, shown in the now-playing feed. */
   playerName: text("player_name").notNull().default(""),
   startedAt: integer("started_at", { mode: "timestamp_ms" }).notNull(),
+  /** `starting`, `playing` or `paused`: a stopped session has no row. */
+  state: text("state").notNull().default("playing"),
+  positionMs: integer("position_ms").notNull().default(0),
+  playbackRate: real("playback_rate").notNull().default(1),
+  /** When the last report was stored; 0 on a row from before the column. */
+  reportedAt: integer("reported_at", { mode: "timestamp_ms" }).notNull().default(sql`0`),
+  /** When the session stops being current; 0 on a row from before the column. */
+  expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull().default(sql`0`),
 });
 
 export type NowPlaying = typeof nowPlaying.$inferSelect;

@@ -61,6 +61,12 @@ export interface RecordedWrite {
   readonly rowsWritten: number;
   /** How many parameters it bound, which D1 allows a hundred of. */
   readonly bound: number;
+  /**
+   * Which `batch` call ran it, counted from 0 in the order they were made, or
+   * `null` for a statement run on its own. A batch is one subrequest however
+   * many statements it carries.
+   */
+  readonly batch: number | null;
 }
 
 /** One run of the import, with what it cost D1. */
@@ -117,8 +123,9 @@ export async function importCountingWrites(
 export function recordingDatabase(writes: RecordedWrite[]): D1Database {
   const statements = new WeakMap<D1PreparedStatement, { sql: string; bound: number }>();
 
-  const record = (sql: string, bound: number, rowsWritten: number) => {
-    writes.push({ sql, bound, rowsWritten });
+  let batches = 0;
+  const record = (sql: string, bound: number, rowsWritten: number, batch: number | null = null) => {
+    writes.push({ sql, bound, rowsWritten, batch });
   };
 
   const counted = (
@@ -173,10 +180,11 @@ export function recordingDatabase(writes: RecordedWrite[]): D1Database {
       if (property === "batch") {
         return async (batched: D1PreparedStatement[]) => {
           const results = await target.batch(batched);
+          const batch = batches++;
           for (const [index, result] of results.entries()) {
             const statement = batched[index];
             const known = statement === undefined ? undefined : statements.get(statement);
-            record(known?.sql ?? "", known?.bound ?? 0, result.meta.rows_written);
+            record(known?.sql ?? "", known?.bound ?? 0, result.meta.rows_written, batch);
           }
 
           return results;

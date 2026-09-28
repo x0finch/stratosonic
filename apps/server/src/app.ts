@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { scrobble, setRating, star, unstar } from "./endpoints/annotations";
+import { reportPlayback, scrobble, setRating, star, unstar } from "./endpoints/annotations";
 import { getAlbum, getArtist, getArtists, getGenres, getSong } from "./endpoints/browsing";
 import { getIndexes, getMusicDirectory, getMusicFolders } from "./endpoints/folders";
 import {
@@ -130,6 +130,7 @@ export function createApp(): SubsonicApp {
   registerEndpoint(app, "unstar", unstar);
   registerEndpoint(app, "setRating", setRating);
   registerEndpoint(app, "scrobble", scrobble);
+  registerEndpoint(app, "reportPlayback", reportPlayback);
 
   registerEndpoint(app, "getUser", getUser);
   registerEndpoint(app, "getUsers", getUsers, { adminOnly: true });

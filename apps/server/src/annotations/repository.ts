@@ -183,7 +183,25 @@ export async function recordPlays(
   userId: string,
   plays: readonly Play[],
 ): Promise<void> {
-  const statements = plays.map((play) => {
+  const [first, ...rest] = playStatements(db, userId, plays);
+  if (first === undefined) {
+    return;
+  }
+
+  await db.batch([first, ...rest]);
+}
+
+/**
+ * The statements `recordPlays` runs, one upsert per play, for a caller that
+ * has to run them in a batch of its own: `reportPlayback`'s `stopped` ends
+ * the session and counts the play in one batch.
+ */
+export function playStatements(
+  db: Database,
+  userId: string,
+  plays: readonly Play[],
+): BatchItem<"sqlite">[] {
+  return plays.map((play) => {
     const count = play.count ?? 1;
 
     return db
@@ -206,13 +224,6 @@ export async function recordPlays(
         },
       });
   });
-
-  const [first, ...rest] = statements;
-  if (first === undefined) {
-    return;
-  }
-
-  await db.batch([first, ...rest]);
 }
 
 /** The album and artist a track is attributed to. */

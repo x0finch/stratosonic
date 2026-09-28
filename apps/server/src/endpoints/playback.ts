@@ -20,6 +20,7 @@ import {
   subsonicTimestamp,
 } from "../library/serializers";
 import { listNowPlaying, type NowPlayingEntry } from "../nowplaying/repository";
+import { estimatedPositionMs } from "../nowplaying/session";
 import {
   clearPlayQueue,
   findPlayQueue,
@@ -35,71 +36,54 @@ import { SubsonicError, SubsonicErrorCode } from "../subsonic/response";
 import type { SubsonicHandler } from "../subsonic/router";
 
 /**
- * The outer bound on a now-playing entry, and the near edge of the window the
- * read asks SQL for. Navidrome never keeps an entry longer than an hour, so a
- * row older than this is stale whatever its track's length, and filtering it
- * out in the query keeps the rows the feed reads bounded.
- */
-const NOW_PLAYING_MAX_TTL_MS = 60 * 60_000;
-
-/**
- * What Navidrome adds to the track's own length: its `playTracker.NowPlaying`
- * stores the entry with a TTL of `duration + 5s`, so an entry leaves the feed
- * about when the track it names would have finished.
- */
-const NOW_PLAYING_GRACE_MS = 5_000;
-
-/**
- * The floor under that TTL, for a track whose `duration` is 0 — never read
- * from the file, or genuinely unknown. Five seconds would drop such an entry
- * almost as soon as it was registered, so it lives a minute instead.
- */
-const NOW_PLAYING_MIN_TTL_MS = 60_000;
-
-/**
  * `getNowPlaying` — who is currently listening, across every account.
  *
- * Only entries still inside their own TTL come back, so a track a listener
- * stopped drops out on its own: the query prefilters on the hour that bounds
- * every entry, and each remaining row is then measured against the length of
- * the track it names. Each entry is the `<song>` plus the listener's
- * `username`, how long ago they started (`minutesAgo`), the `playerId`
- * Navidrome always renders as 0, and the `playerName` the client sent.
+ * Only sessions whose expiry has not passed come back, so a track a listener
+ * stopped hearing drops out on its own; the expiry is stored with the
+ * session (`nowplaying/session.ts`). Each entry is the `<song>` plus
+ * Navidrome's `NowPlayingEntry` attributes: the listener's `username`, how
+ * long ago the session began (`minutesAgo`), a `playerId`, the `playerName`
+ * the client sent, and the `playbackReport` extension's `state`, `positionMs`
+ * and `playbackRate`.
  */
 export const getNowPlaying: SubsonicHandler = async (request) => {
   const now = Date.now();
-  const since = new Date(now - NOW_PLAYING_MAX_TTL_MS);
-
-  const entries = await listNowPlaying(database(request.env), request.user.id, since);
-  const current = entries.filter((entry) => now <= expiryOf(entry));
+  const entries = await listNowPlaying(database(request.env), request.user.id, new Date(now));
 
   return {
     nowPlaying: {
-      entry: omitWhenEmpty(current.map((entry) => nowPlayingEntryElement(entry, now))),
+      entry: omitWhenEmpty(
+        entries.map((entry, index) => nowPlayingEntryElement(entry, index, now)),
+      ),
     },
   };
 };
 
-/** The instant an entry stops being current: its start plus its own TTL. */
-function expiryOf(entry: NowPlayingEntry): number {
-  const trackTtl = entry.song.duration * 1_000 + NOW_PLAYING_GRACE_MS;
-
-  return entry.startedAt.getTime() + Math.max(trackTtl, NOW_PLAYING_MIN_TTL_MS);
-}
-
 /**
  * `<entry>`, Navidrome's `NowPlayingEntry`: the `Child` (the song) with
- * `username`, `minutesAgo`, `playerId` and `playerName` after it, in that
- * order. `playerId` is required by the XSD and Navidrome renders it as 0 —
- * it has no player registry to name — so this does the same.
+ * `username`, `minutesAgo`, `playerId`, `playerName`, `state`, `positionMs`
+ * and `playbackRate` after it, in that order.
+ *
+ * `playerId` is required by the XSD and Navidrome numbers the entries of the
+ * feed from 1, in the order it lists them — it has no player registry to
+ * name — so this does the same. `positionMs` is where a playing session is by
+ * now, moved on from its last report at its rate and capped at the track's
+ * end, as Navidrome's `GetNowPlaying` estimates it; a starting or paused one
+ * is where it was reported.
  */
-function nowPlayingEntryElement(entry: NowPlayingEntry, now: number): SubsonicNode {
+function nowPlayingEntryElement(entry: NowPlayingEntry, index: number, now: number): SubsonicNode {
+  const { session, song } = entry;
+
   return {
-    ...songElement(entry.song),
+    ...songElement(song),
     username: entry.username,
-    minutesAgo: Math.floor((now - entry.startedAt.getTime()) / 60_000),
-    playerId: 0,
-    playerName: entry.playerName || undefined,
+    // Truncated toward zero, as Go's `int32(d.Minutes())` truncates.
+    minutesAgo: Math.trunc((now - session.startedAt.getTime()) / 60_000),
+    playerId: index + 1,
+    playerName: session.playerName || undefined,
+    state: session.state,
+    positionMs: estimatedPositionMs(session, song.duration, now),
+    playbackRate: session.playbackRate,
   };
 }
 

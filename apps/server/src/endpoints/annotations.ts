@@ -1,6 +1,7 @@
 /**
  * The Annotation module, write side: what a client saves about an item —
- * `star` and `unstar` here, `setRating` and `scrobble` alongside them.
+ * `star` and `unstar` here, `setRating`, `scrobble` and `reportPlayback`
+ * alongside them, as Navidrome files them in `media_annotation.go`.
  *
  * Every write is the caller's own (`annotations/repository.ts`), so a library
  * two accounts share keeps their stars apart. Each answers with an empty ok
@@ -43,8 +44,12 @@ import {
   type TrackParents,
 } from "../annotations/repository";
 import { database } from "../db";
-import { registerNowPlaying } from "../nowplaying/repository";
+import { reportPlayback as applyPlaybackReport } from "../nowplaying/report";
+import { isPlaybackState } from "../nowplaying/session";
 import {
+  booleanParameterOr,
+  floatParameterOr,
+  integerParameterOr,
   integerParameterValue,
   requiredIntegerParameter,
   requiredParameter,
@@ -56,7 +61,8 @@ import type { AuthenticatedSubsonicRequest, SubsonicHandler } from "../subsonic/
  * `scrobble` — a client tells the server the caller played a track.
  *
  * `submission=false` (a track starting) only registers the caller's
- * now-playing entry; `submission=true` (the default, a track finished) only
+ * now-playing entry — a `playing` report, as `reportPlayback` would store it,
+ * `position` seconds in; `submission=true` (the default, a track finished) only
  * counts the play and moves its last-played instant. The two are exclusive, as
  * in Navidrome: a play does not touch now-playing, which expires by TTL, and a
  * now-playing does not count a play. `id` and `time` are repeatable and paired
@@ -96,26 +102,103 @@ export const scrobble: SubsonicHandler = async (request) => {
       ...parentPlays(played, parentsOf, "artist"),
     ]);
   } else {
-    const missing = await findMissingItems(
-      db,
-      ids.map((id) => ({ type: "track", id })),
-    );
-    if (missing.length > 0) {
-      throw new SubsonicError(SubsonicErrorCode.NotFound);
+    // `now_playing` holds one row per user, so only one of several ids can be
+    // registered, and it is the first, as Navidrome's `Scrobble` takes
+    // `ids[0]` for a now-playing. The others are still checked, so that an id
+    // naming nothing is error 70 wherever it sits (#42).
+    const [current = "", ...others] = ids;
+    if (others.length > 0) {
+      const missing = await findMissingItems(
+        db,
+        others.map((id) => ({ type: "track", id })),
+      );
+      if (missing.length > 0) {
+        throw new SubsonicError(SubsonicErrorCode.NotFound);
+      }
     }
 
-    // `now_playing` holds one row per user, so registering every id in turn
-    // would leave only the last of them anyway — each write overwrites the row
-    // the one before it made. A client that names several tracks is playing
-    // the last: that is the only one written, in one statement.
-    //
-    // Its instant is the server's now, never the client's `time`. Navidrome
-    // reads `time` for submissions alone, and a now-playing entry is measured
-    // against this server's clock as it expires.
-    const current = ids.at(-1);
-    if (current !== undefined) {
-      await registerNowPlaying(db, request.user.id, current, params.get("c") ?? "", new Date());
+    // A now-playing is a `playing` report, as Navidrome's `scrobblerNowPlaying`
+    // hands it to `ReportPlayback`: `position` is seconds into the track, and
+    // absent, unreadable or negative means the start. Its instant is the server's now,
+    // never the client's `time`, which Navidrome reads for submissions alone.
+    const found = await applyPlaybackReport(db, {
+      userId: request.user.id,
+      trackId: current,
+      state: "playing",
+      positionMs: Math.max(integerParameterOr(params, "position", 0), 0) * 1_000,
+      playbackRate: 1,
+      ignoreScrobble: false,
+      playerName: params.get("c") ?? "",
+    });
+    if (!found) {
+      throw new SubsonicError(SubsonicErrorCode.NotFound);
     }
+  }
+
+  return {};
+};
+
+/**
+ * `reportPlayback` — the OpenSubsonic `playbackReport` extension: a client
+ * reports where it is in a track, and whether it is starting, playing, paused
+ * or stopped.
+ *
+ * `starting`, `playing` and `paused` store the caller's now-playing session,
+ * which `getNowPlaying` shows with its state, its position moved on to now,
+ * and its rate. `stopped` ends the session and — unless `ignoreScrobble` —
+ * counts a play when the stop came at least half-way through the track or
+ * four minutes in, whichever is first: a client that sees the extension may
+ * stop sending `scrobble`, so this is where its plays are counted. The rules
+ * are Navidrome's play tracker's (`nowplaying/report.ts`).
+ *
+ * The parameters are read in Navidrome's order and refused as it refuses
+ * them: `mediaId`, `mediaType`, `positionMs` and `state` are required (error
+ * 10); a `positionMs` that is not a whole number or is negative, a `state`
+ * the extension does not define, and a `playbackRate` that is not a finite
+ * positive number are error 0. A `playbackRate` that is not a number at all
+ * is the default of 1, as Navidrome's `Float64Or` reads it. `mediaType` is
+ * not checked beyond being there — Navidrome logs one that is not `song` and
+ * goes on — so a `podcast` is answered as its id deserves: this server has no
+ * podcasts, and an id that names no track is error 70.
+ */
+export const reportPlayback: SubsonicHandler = async (request) => {
+  const { params } = request;
+  const mediaId = requiredParameter(params, "mediaId");
+  requiredParameter(params, "mediaType");
+  const positionMs = requiredIntegerParameter(params, "positionMs");
+  if (positionMs < 0) {
+    throw new SubsonicError(SubsonicErrorCode.Generic, "positionMs must be non-negative");
+  }
+
+  const state = requiredParameter(params, "state");
+  if (!isPlaybackState(state)) {
+    throw new SubsonicError(SubsonicErrorCode.Generic, `Invalid state: ${state}`);
+  }
+
+  const playbackRate = floatParameterOr(params, "playbackRate", 1);
+  if (!Number.isFinite(playbackRate) || playbackRate <= 0) {
+    throw new SubsonicError(
+      SubsonicErrorCode.Generic,
+      "playbackRate must be a finite positive number",
+    );
+  }
+
+  const trackId = parseIdOfType("track", mediaId);
+  if (trackId === null) {
+    throw new SubsonicError(SubsonicErrorCode.NotFound);
+  }
+
+  const found = await applyPlaybackReport(database(request.env), {
+    userId: request.user.id,
+    trackId,
+    state,
+    positionMs,
+    playbackRate,
+    ignoreScrobble: booleanParameterOr(params, "ignoreScrobble", false),
+    playerName: params.get("c") ?? "",
+  });
+  if (!found) {
+    throw new SubsonicError(SubsonicErrorCode.NotFound);
   }
 
   return {};
