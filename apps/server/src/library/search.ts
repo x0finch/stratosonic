@@ -2,13 +2,18 @@
  * The read behind the Search module: matching artists, albums and tracks by
  * name for `search2` and `search3`.
  *
- * Navidrome answers these from a maintained `full_text` column, which it also
- * matches with `LIKE '%term%'` — the column is a precomputed haystack, not an
- * FTS index. Stratosonic runs the same `LIKE` over the name/title columns
- * directly, because the library is personal-scale (~1000 tracks) and a
- * `full_text` column would be new state the scanner has to compute and keep
- * current for no user-visible gain at this size (ADR/issue #37). The behaviour
- * a client notices is preserved:
+ * Navidrome sends a query holding Han, kana or hangul to `likeSearchExpr`
+ * (persistence/sql_search_like.go): split with `strings.Fields`, each word a
+ * `LIKE '%word%'` ORed across title, album, artist and album artist. Any other
+ * query goes to an FTS5 index (unicode61 tokenizer), which matches word
+ * prefixes and folds case by Unicode rules; its legacy backend matched a
+ * `full_text` column with `LIKE '% term%'`. Stratosonic runs substring `LIKE`
+ * over the name/title columns for every query, so it matches Navidrome's CJK
+ * path exactly and differs from its FTS5 path in finding mid-word substrings
+ * and folding only ASCII case. No index is kept because the library is
+ * personal-scale (~1000 tracks) and one would be new state the scanner has to
+ * compute and keep current for no user-visible gain at this size (ADR/issue
+ * #37). The behaviour a client notices is preserved:
  *
  * - **Case-insensitive substring.** SQLite's `LIKE` folds ASCII case, so
  *   "beat" finds "The Beatles" and "Heartbeat"; a CJK query has no case to
