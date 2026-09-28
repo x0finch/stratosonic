@@ -42,6 +42,10 @@ const ALPHA = "Chorus/Voices/01 Alpha.mp3";
 const BETA = "Chorus/Voices/02 Beta.mp3";
 const GAMMA = "Chorus/Voices/03 Gamma.mp3";
 
+/** Five-star tracks of the two artists Navidrome's agents skip. */
+const UNKNOWN = ["[Unknown Artist]/Loose/01 One.mp3", "[Unknown Artist]/Loose/02 Two.mp3"];
+const VARIOUS = ["Various Artists/Hits/01 Three.mp3", "Various Artists/Hits/02 Four.mp3"];
+
 const LISTENER = { user: "listener", password: "hunter2" };
 
 const song = (key: string) => prefixedId("track", trackId(key));
@@ -99,6 +103,18 @@ beforeAll(async () => {
     rating: 4,
     playCount: 9,
   });
+
+  for (const [name, albumName, keys] of [
+    ["[Unknown Artist]", "Loose", UNKNOWN],
+    ["Various Artists", "Hits", VARIOUS],
+  ] as const) {
+    await seedArtist({ name });
+    await seedAlbum({ name: albumName, albumArtist: name, songCount: keys.length });
+    for (const key of keys) {
+      await seedTrack({ r2Key: key });
+      await seedAnnotation({ userId: admin, itemId: trackId(key), itemType: "track", rating: 5 });
+    }
+  }
 
   const owner = await seedUser("owner", "secret");
   await seedUser(LISTENER.user, LISTENER.password);
@@ -191,6 +207,15 @@ describe("getSimilarSongs for a song", () => {
 
     expect(titles(body.similarSongs?.song)).toHaveLength(1);
     expect(["Hushed Interlude", "Shout"]).toContain(titles(body.similarSongs?.song)[0]);
+  });
+
+  it.each([
+    ["[Unknown Artist]", UNKNOWN],
+    ["Various Artists", VARIOUS],
+  ])("draws no top songs for %s, as Navidrome's agents skip it", async (_name, keys) => {
+    // Both tracks are starred and rated five, and share no genre: any other
+    // artist's song would get both back as its artist's top songs.
+    expect(await mixOf(song(keys[0] ?? ""))).toEqual([]);
   });
 
   it("gives nobody else's top songs to another caller", async () => {

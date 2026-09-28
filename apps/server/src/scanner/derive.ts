@@ -40,6 +40,13 @@ import type { TrackMetadata } from "../library/metadata";
 /** Navidrome's `consts.UnknownArtist`. */
 export const UNKNOWN_ARTIST = "[Unknown Artist]";
 
+/**
+ * Navidrome's `consts.VariousArtists`: the album artist compilations are
+ * tagged with. The scan gives it no special treatment — it is an artist like
+ * any other here — but the agents skip it, as they skip `UNKNOWN_ARTIST`.
+ */
+export const VARIOUS_ARTISTS = "Various Artists";
+
 /** Navidrome's `consts.UnknownAlbum`. */
 export const UNKNOWN_ALBUM = "[Unknown Album]";
 

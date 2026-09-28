@@ -47,6 +47,7 @@ import {
   album,
   annotation,
   artist,
+  artistId,
   type EntityId,
   playlist,
   playlistTrack,
@@ -56,6 +57,7 @@ import {
 import { and, eq, type SQL, sql } from "drizzle-orm";
 import type { Database } from "../db";
 import { type PlaylistViewer, visibleTo } from "../playlists/repository";
+import { UNKNOWN_ARTIST, VARIOUS_ARTISTS } from "../scanner/derive";
 import { type AnnotationRow, annotationColumns, annotationJoin } from "./annotations";
 import { findTrack, toSongView } from "./repository";
 import type { SongView } from "./serializers";
@@ -77,6 +79,19 @@ const MIN_TOP_SONGS = 20;
 const OWN_ARTIST_WEIGHT = 10;
 
 /**
+ * The artists whose top songs are never asked for: Navidrome's
+ * `GetArtistTopSongs` answers `ErrNotFound` for `UnknownArtistID` and nothing
+ * for `VariousArtistsID` before any agent runs (core/agents/agents.go), so
+ * neither has top songs, however the caller starred its tracks.
+ */
+const NO_TOP_SONGS = new Set([artistId(UNKNOWN_ARTIST), artistId(VARIOUS_ARTISTS)]);
+
+/** The artist whose top songs a mix draws on, or null for one that has none. */
+function topSongsArtist(id: string): string | null {
+  return NO_TOP_SONGS.has(id) ? null : id;
+}
+
+/**
  * The songs similar to what this id names, at most `count` of them; `null`
  * when the id names nothing the caller may see, or a kind that has no
  * similar songs. The caller's annotations decide the top songs, and their
@@ -95,7 +110,13 @@ export async function similarSongs(
         return null;
       }
 
-      const candidates = await readCandidates(db, caller.id, count, [seed], seed.artistId);
+      const candidates = await readCandidates(
+        db,
+        caller.id,
+        count,
+        [seed],
+        topSongsArtist(seed.artistId),
+      );
 
       return topUp(shuffled(candidates.genre), count, [
         () => weightedTopSongs(candidates.top, count),
@@ -107,7 +128,13 @@ export async function similarSongs(
         return null;
       }
 
-      const candidates = await readCandidates(db, caller.id, count, seeds, entity.id);
+      const candidates = await readCandidates(
+        db,
+        caller.id,
+        count,
+        seeds,
+        topSongsArtist(entity.id),
+      );
 
       return topUp([], count, [
         () => weightedTopSongs(candidates.top, count),
@@ -284,7 +311,7 @@ async function readAlbumSeeds(
 async function readArtistSeeds(
   db: Database,
   userId: string,
-  artistId: string,
+  id: string,
 ): Promise<SongView[] | null> {
   const rows = await db
     .select({ track, albumName: album.name, albumCoverKey: album.coverKey, ...annotationColumns })
@@ -292,7 +319,7 @@ async function readArtistSeeds(
     .leftJoin(track, eq(track.artistId, artist.id))
     .leftJoin(album, eq(album.id, track.albumId))
     .leftJoin(annotation, annotationJoin(userId, "track", track.id))
-    .where(eq(artist.id, artistId))
+    .where(eq(artist.id, id))
     .orderBy(sql`random()`)
     .limit(MAX_SEEDS);
 
