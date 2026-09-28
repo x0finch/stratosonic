@@ -53,15 +53,24 @@ const GRACE_MS = 5_000;
 const MIN_TTL_MS = 60_000;
 
 /**
+ * The ceiling over it. Navidrome has none either, and needs none: a Go
+ * duration saturates. Here a rate of `1e-300` would put the expiry past the
+ * last instant a `Date` can hold, and the report would fail rather than be
+ * stored; no track plays for a day.
+ */
+const MAX_TTL_MS = 24 * 60 * 60_000;
+
+/**
  * How long a `starting` or `playing` session lives: the time the track has
  * left at this rate, in whole seconds, plus the grace — Navidrome's
- * `remainingTTL`, truncations and all — and at least `MIN_TTL_MS`.
+ * `remainingTTL`, truncations and all — and between `MIN_TTL_MS` and
+ * `MAX_TTL_MS`.
  */
 export function playingTtlMs(durationSec: number, positionMs: number, rate: number): number {
   const remainingMs = (durationMs(durationSec) - positionMs) / rate;
   const remainingSec = Math.max(Math.trunc(remainingMs / 1_000), 0);
 
-  return Math.max(remainingSec * 1_000 + GRACE_MS, MIN_TTL_MS);
+  return Math.min(Math.max(remainingSec * 1_000 + GRACE_MS, MIN_TTL_MS), MAX_TTL_MS);
 }
 
 /** The instant a session reported now in this state stops being current. */
@@ -134,6 +143,13 @@ const POSITION_TOLERANCE_MS = 2_000;
  */
 const PAUSED_REFRESH_MS = 5 * 60_000;
 
+/**
+ * How much later than the stored expiry a playing report may put it and
+ * still be skipped. A track with a known length expires where the estimate
+ * ends it, within the position tolerance; only a floored TTL drifts.
+ */
+const EXPIRY_SLACK_MS = 30_000;
+
 /** A report, as far as the session's throttle needs to know it. */
 export interface ReportedPosition {
   readonly trackId: string;
@@ -150,6 +166,10 @@ export interface ReportedPosition {
  * `POSITION_TOLERANCE_MS` of where the session already puts it. A paused
  * session is still written once `PAUSED_REFRESH_MS` has passed since its last
  * write, so that it does not expire while the client is still paused.
+ * Likewise a starting or playing session is written once storing the report
+ * would move its expiry on by more than `EXPIRY_SLACK_MS`: that is a session
+ * living on its `MIN_TTL_MS` floor — a track whose length was never read —
+ * which would otherwise expire a minute in while the client plays on.
  *
  * Navidrome stores every report, in memory; a write per report is a row per
  * user every few seconds of listening against D1's daily hundred thousand.
@@ -159,6 +179,7 @@ export interface ReportedPosition {
 export function isRedundant(
   session: StoredSession,
   report: ReportedPosition,
+  durationSec: number,
   now: number,
 ): boolean {
   if (
@@ -171,8 +192,15 @@ export function isRedundant(
     return false;
   }
 
-  if (report.state === "paused" && now - session.reportedAt.getTime() >= PAUSED_REFRESH_MS) {
-    return false;
+  if (report.state === "paused") {
+    if (now - session.reportedAt.getTime() >= PAUSED_REFRESH_MS) {
+      return false;
+    }
+  } else {
+    const expiry = expiryOf(report.state, durationSec, report.positionMs, report.playbackRate, now);
+    if (expiry - session.expiresAt.getTime() > EXPIRY_SLACK_MS) {
+      return false;
+    }
   }
 
   // Measured against the position uncapped by the track's length, so that a

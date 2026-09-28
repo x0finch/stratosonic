@@ -8,6 +8,11 @@
  * for `starting`, `playing` and `paused`, or one batch for `stopped` that
  * ends the session and counts the play. A report the stored session already
  * accounts for writes nothing (`isRedundant`).
+ *
+ * A client that reports a play both ways — a `stopped` here and a legacy
+ * `scrobble` with `submission=true` — has it counted twice, as Navidrome
+ * counts it: the extension's `ignoreScrobble` is how a client says a stop is
+ * not a play, so the server does not try to tell the two apart.
  */
 
 import { playStatements } from "../annotations/repository";
@@ -91,11 +96,13 @@ async function store(
   }
 
   const reported = { ...report, state };
-  if (current !== null && isRedundant(current, reported, at)) {
+  if (current !== null && isRedundant(current, reported, track.duration, at)) {
     return;
   }
 
-  let startedAt = new Date(at - report.positionMs);
+  // Never before the epoch: a position no track reaches would otherwise put
+  // the start before the first instant a `Date` can hold.
+  let startedAt = new Date(Math.max(at - report.positionMs, 0));
   if (state === "starting") {
     startedAt = now;
   } else if (sameTrack) {

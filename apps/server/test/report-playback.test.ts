@@ -42,6 +42,8 @@ const SONGS = {
   short: { key: `${ARTIST}/${ALBUM}/02 Short.mp3`, title: "Short", duration: 180 },
   other: { key: `${ARTIST}/${ALBUM}/03 Other.mp3`, title: "Other", duration: 200 },
   fourth: { key: `${ARTIST}/${ALBUM}/04 Fourth.mp3`, title: "Fourth", duration: 300 },
+  /** A track whose length was never read: its TTL is the one-minute floor. */
+  unknown: { key: `${ARTIST}/${ALBUM}/05 Unknown.mp3`, title: "Unknown", duration: 0 },
 } satisfies Record<string, Song>;
 
 const id = (song: Song) => prefixedId("track", trackId(song.key));
@@ -81,7 +83,7 @@ function distance(instant: Date | undefined, expected: number): number {
 beforeAll(async () => {
   await bootstrapAdmin();
   await seedArtist({ name: ARTIST });
-  await seedAlbum({ name: ALBUM, albumArtist: ARTIST, year: YEAR, songCount: 4 });
+  await seedAlbum({ name: ALBUM, albumArtist: ARTIST, year: YEAR, songCount: 5 });
   for (const song of Object.values(SONGS)) {
     await seedTrack({
       r2Key: song.key,
@@ -133,6 +135,14 @@ describe("a request it refuses", () => {
     const body = await write("reportPlayback", { ...reportOf(SONGS.long), mediaId: ALBUM_ID });
 
     expect(body.error?.code).toBe(70);
+  });
+
+  it.each([
+    ["a position no track reaches", { positionMs: "9000000000000000000" }],
+    ["a rate that barely moves", { playbackRate: "1e-300" }],
+  ])("answers ok for %s, as Navidrome does", async (_label, overrides) => {
+    expect((await report(SONGS.long, overrides)).status).toBe("ok");
+    expect(await storedSession()).not.toBeNull();
   });
 
   it("reads a playbackRate that is not a number as the default, as Navidrome does", async () => {
@@ -206,6 +216,15 @@ describe("a session's expiry", () => {
     await report(SONGS.long, { positionMs: "599000" });
 
     expect(distance((await storedSession())?.expiresAt, before + 60_000)).toBeLessThan(2_000);
+  });
+
+  it("is never over a day", async () => {
+    const before = Date.now();
+    await report(SONGS.long, { playbackRate: "1e-300" });
+
+    expect(distance((await storedSession())?.expiresAt, before + 24 * 60 * 60_000)).toBeLessThan(
+      2_000,
+    );
   });
 
   it("is half an hour while paused", async () => {
@@ -504,6 +523,42 @@ describe("what a report costs D1", () => {
 
     expect(counted.rowsWritten).toBeGreaterThan(0);
     expect(distance((await storedSession())?.expiresAt, before + 30 * 60_000)).toBeLessThan(2_000);
+  });
+
+  it("moves on the floored expiry of a track of unknown length", async () => {
+    // Forty seconds into a session that the one-minute floor ends at 60 s:
+    // skipping the report would drop the session while the client plays on.
+    await seedSession({
+      trackId: trackId(SONGS.unknown.key),
+      positionMs: 0,
+      reportedAt: new Date(Date.now() - 40_000),
+      expiresAt: new Date(Date.now() + 20_000),
+    });
+    const before = Date.now();
+
+    const counted = await callCounting(
+      "reportPlayback",
+      reportOf(SONGS.unknown, { positionMs: "40000" }),
+    );
+
+    expect(counted.rowsWritten).toBeGreaterThan(0);
+    expect(distance((await storedSession())?.expiresAt, before + 60_000)).toBeLessThan(2_000);
+  });
+
+  it("still skips a report on such a track while its expiry is fresh", async () => {
+    await seedSession({
+      trackId: trackId(SONGS.unknown.key),
+      positionMs: 0,
+      reportedAt: new Date(Date.now() - 10_000),
+      expiresAt: new Date(Date.now() + 50_000),
+    });
+
+    const counted = await callCounting(
+      "reportPlayback",
+      reportOf(SONGS.unknown, { positionMs: "10000" }),
+    );
+
+    expect(counted.rowsWritten).toBe(0);
   });
 
   it("writes an expired session's report, whatever it repeats", async () => {
