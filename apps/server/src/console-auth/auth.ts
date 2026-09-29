@@ -23,7 +23,7 @@ import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH } from "./credentials";
  * of CPU. What `/rest/*`, `/share/*`, the cron and the scan driver's alarm
  * never pay is an instance: one is built on the first `/api` request for an
  * origin (`consoleAuth` below), and nothing else touches the auth tables but
- * the credential writer.
+ * the credential writer and the cron's prune of expired rows (prune.ts).
  */
 
 /** Where the Better Auth routes are mounted, on the `/api` sub-app. */
