@@ -113,6 +113,15 @@ export function countingD1(inner: D1Database): CountingD1 {
   };
 }
 
+/** The one row a query must have returned. */
+export function only<T>(rows: readonly T[]): T {
+  const [row] = rows;
+  if (rows.length !== 1 || row === undefined) {
+    throw new Error(`expected exactly one row, got ${rows.length}`);
+  }
+  return row;
+}
+
 /** The totals the budget table reports. */
 export function totals(queries: readonly RecordedQuery[]) {
   return {
@@ -151,7 +160,7 @@ export class CookieJar {
 
   absorb(response: Response): void {
     for (const header of response.headers.getSetCookie()) {
-      const [pair, ...attributes] = header.split(";");
+      const [pair = "", ...attributes] = header.split(";");
       const index = pair.indexOf("=");
       const name = pair.slice(0, index).trim();
       const value = pair.slice(index + 1).trim();

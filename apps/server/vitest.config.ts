@@ -1,6 +1,14 @@
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
+// SPIKE #86: `import.meta.url` is typed only by Node's types, which this
+// project does not load; the config loader substitutes it literally.
+declare global {
+  interface ImportMeta {
+    readonly url: string;
+  }
+}
+
 // Resolved against this project directory, which is Vitest's working directory.
 const migrationsDir = "../../packages/db/migrations";
 

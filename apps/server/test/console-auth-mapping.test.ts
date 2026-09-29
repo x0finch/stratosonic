@@ -11,7 +11,7 @@ import { subsonicToken } from "../src/auth/crypto";
 import type { ConsoleAuth } from "../src/console-auth/auth";
 import { database } from "../src/db";
 import { findUserByUsername } from "../src/users/repository";
-import { authRequest, CookieJar, countedAuth, createUser } from "./console-auth-support";
+import { authRequest, CookieJar, countedAuth, createUser, only } from "./console-auth-support";
 import { BASE, type JsonEnvelope, testEnv } from "./support";
 
 let auth: ConsoleAuth;
@@ -65,10 +65,12 @@ describe("question 1: the user table mapping", () => {
   });
 
   it("derives the username and placeholder email from user_name", async () => {
-    const [row] = await database(testEnv)
-      .select({ username: user.username, authEmail: user.authEmail, userName: user.userName })
-      .from(user)
-      .where(eq(user.userName, "Alice"));
+    const row = only(
+      await database(testEnv)
+        .select({ username: user.username, authEmail: user.authEmail, userName: user.userName })
+        .from(user)
+        .where(eq(user.userName, "Alice")),
+    );
 
     expect(row).toEqual({
       userName: "Alice",
@@ -80,10 +82,12 @@ describe("question 1: the user table mapping", () => {
   it("follows a rename without a second write", async () => {
     const db = database(testEnv);
     await db.update(user).set({ userName: "Jo" }).where(eq(user.userName, "jo"));
-    const [row] = await db
-      .select({ username: user.username, authEmail: user.authEmail })
-      .from(user)
-      .where(eq(user.userName, "Jo"));
+    const row = only(
+      await db
+        .select({ username: user.username, authEmail: user.authEmail })
+        .from(user)
+        .where(eq(user.userName, "Jo")),
+    );
     await db.update(user).set({ userName: "jo" }).where(eq(user.userName, "Jo"));
 
     expect(row).toEqual({ username: "jo", authEmail: "jo@users.invalid" });
@@ -119,10 +123,12 @@ describe("question 1: the user table mapping", () => {
 
   it("never puts the stored password in a response or in the cookie cache", async () => {
     const { response, jar } = await signIn("Alice", "wonderland");
-    const [row] = await database(testEnv)
-      .select({ password: user.password })
-      .from(user)
-      .where(eq(user.userName, "Alice"));
+    const row = only(
+      await database(testEnv)
+        .select({ password: user.password })
+        .from(user)
+        .where(eq(user.userName, "Alice")),
+    );
     const signInBody = await response.text();
 
     const session = await auth.handler(authRequest("/get-session", { jar }));

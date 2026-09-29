@@ -11,7 +11,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { decryptPassword, subsonicToken } from "../src/auth/crypto";
 import { setPasswordAndRevokeSessions } from "../src/console-auth/credentials";
 import { database } from "../src/db";
-import { authRequest, CookieJar, countedAuth, createUser } from "./console-auth-support";
+import { authRequest, CookieJar, countedAuth, createUser, only } from "./console-auth-support";
 import { scryptProbe } from "./scrypt-probe";
 import { BASE, encryptionKey, type JsonEnvelope, testEnv } from "./support";
 
@@ -103,10 +103,12 @@ describe("question 3: password hooks", () => {
     await signIn(auth, "alice", "wonderland");
     context.password.verify = original;
 
-    const [row] = await database(testEnv)
-      .select({ password: account.password })
-      .from(account)
-      .where(eq(account.userId, aliceId));
+    const row = only(
+      await database(testEnv)
+        .select({ password: account.password })
+        .from(account)
+        .where(eq(account.userId, aliceId)),
+    );
     // No user id, no user row: a verify that wanted `user.password` instead
     // would have to smuggle the id through `account.password`.
     expect(seen).toEqual([{ hash: row.password, password: "wonderland" }]);
@@ -116,14 +118,18 @@ describe("question 3: password hooks", () => {
     const db = database(testEnv);
     await setPasswordAndRevokeSessions(db, encryptionKey(), aliceId, "looking-glass");
 
-    const [userRow] = await db
-      .select({ password: user.password, tokenEpoch: user.tokenEpoch })
-      .from(user)
-      .where(eq(user.id, aliceId));
-    const [accountRow] = await db
-      .select({ password: account.password })
-      .from(account)
-      .where(eq(account.userId, aliceId));
+    const userRow = only(
+      await db
+        .select({ password: user.password, tokenEpoch: user.tokenEpoch })
+        .from(user)
+        .where(eq(user.id, aliceId)),
+    );
+    const accountRow = only(
+      await db
+        .select({ password: account.password })
+        .from(account)
+        .where(eq(account.userId, aliceId)),
+    );
 
     expect(accountRow.password).toBe(userRow.password);
     expect(await decryptPassword(encryptionKey(), userRow.password)).toBe("looking-glass");
