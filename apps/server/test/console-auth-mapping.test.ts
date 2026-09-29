@@ -207,6 +207,25 @@ describe("question 2: username sign-in", () => {
     expect(response.status).toBe(404);
   });
 
+  it("the alternative - signing in by placeholder email - breaks on names that are not email-safe", async () => {
+    // `disabledPaths` guards the HTTP router only; a server-side call still
+    // reaches the endpoint, which is how a thin `/api` route would use it.
+    const alice = await auth.api.signInEmail({
+      body: { email: "alice@users.invalid", password: "wonderland" },
+      headers: new Headers({ "cf-connecting-ip": "198.51.100.200" }),
+    });
+    expect(alice.user).toMatchObject({ displayUsername: "Alice" });
+
+    // z.email() refuses a local part with a space, so this user could only
+    // sign in if the placeholder were built from something else (the id).
+    await expect(
+      auth.api.signInEmail({
+        body: { email: "dj shadow-7@users.invalid", password: "endtroducing" },
+        headers: new Headers({ "cf-connecting-ip": "198.51.100.201" }),
+      }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+  });
+
   it("stores nothing through the plugin: user_name keeps its case", async () => {
     const rows = await database(testEnv)
       .select({ userName: user.userName })

@@ -4,8 +4,10 @@
  */
 
 import { SELF } from "cloudflare:test";
+import { env as workersEnv } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { consoleAuth, createConsoleAuth, deriveAuthSecret } from "../src/console-auth/auth";
+import type { Env } from "../src/env";
 import {
   AUTH_ORIGIN,
   authRequest,
@@ -84,6 +86,19 @@ describe("question 6: wiring", () => {
     const [token] = response.headers.getSetCookie();
     expect(token).toMatch(/^better-auth\.session_token=/);
     expect(token).not.toMatch(/; Secure/);
+  });
+
+  it("builds as well from the module-scope env of cloudflare:workers", async () => {
+    await createUser("Scoped", "module");
+    const auth = createConsoleAuth(workersEnv as Env, {
+      secret: await deriveAuthSecret(encryptionKey()),
+      baseURL: AUTH_ORIGIN,
+    });
+
+    const response = await auth.handler(
+      authRequest("/sign-in/username", { body: { username: "scoped", password: "module" } }),
+    );
+    expect(response.status).toBe(200);
   });
 
   it("keeps one instance per isolate", async () => {

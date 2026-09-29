@@ -54,6 +54,8 @@ export interface ConsoleAuthOptions {
   readonly baseURL?: string;
   /** Overrides for measuring the defaults Better Auth would otherwise use. */
   readonly usePasswordHooks?: boolean;
+  /** The benchmark silences Better Auth's per-failure warnings. */
+  readonly quiet?: boolean;
 }
 
 /** Builds the Better Auth instance. Pure: no I/O until a request arrives. */
@@ -63,6 +65,7 @@ export function createConsoleAuth(env: Env, options: ConsoleAuthOptions) {
 
   return betterAuth({
     appName: "Stratosonic",
+    ...(options.quiet ? { logger: { disabled: true } } : {}),
     baseURL: options.baseURL ?? "https://stratosonic.test",
     basePath: AUTH_BASE_PATH,
     secret: options.secret,
