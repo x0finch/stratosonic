@@ -95,5 +95,21 @@ describe.each([
       expect(response.status).toBe(404);
       expect(await response.json()).toEqual({ error: "not_found" });
     });
+
+    // `/rest/*` and `/api/*` do not match the bare prefixes, which are listed
+    // on their own so they reach the Worker rather than the console.
+    it("keep a bare /rest reaching the Worker", async () => {
+      const response = await server.fetch("/rest", NAVIGATION);
+
+      expect(response.status).toBe(404);
+      expect(await response.text()).toBe("Not Found");
+    });
+
+    it("keep a bare /api answering in JSON", async () => {
+      const response = await server.fetch("/api", NAVIGATION);
+
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ error: "not_found" });
+    });
   });
 });
