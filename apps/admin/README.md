@@ -50,7 +50,12 @@ pnpm --filter @stratosonic/admin dev
 Open the URL Vite prints (<http://localhost:5173> by default). Vite serves the
 console and proxies `/api`, `/rest` and `/share` to `wrangler dev`
 (`server.proxy` in `vite.config.ts`), so the console talks to the local Worker
-exactly as it does in production.
+exactly as it does in production. The proxy keeps the browser's `Host`
+header, from which `wrangler dev` builds the request URL: the Worker then sees
+Vite's origin, the one the browser names in `Origin`, and takes the console's
+POSTs (sign-in, sign-out, setup, the password change), which it refuses from
+any other origin. For a Worker on another port, set `WORKER_ORIGIN`, e.g.
+`WORKER_ORIGIN=http://localhost:8791 pnpm --filter @stratosonic/admin dev`.
 
 **`wrangler dev` alone** (the production layout). `pnpm --filter
 @stratosonic/server dev` builds the console first, and `wrangler dev` serves
