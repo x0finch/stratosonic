@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useRouter } from "@tanstack/react-router";
 import { CircleUserRoundIcon, EllipsisVerticalIcon, LogOutIcon } from "lucide-react";
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -33,12 +33,17 @@ function initials(name: string): string {
 export function NavUser({ user }: { user: Me }) {
   const { isMobile } = useSidebar();
   const queryClient = useQueryClient();
+  const router = useRouter();
 
   const logOut = useMutation({
     mutationFn: signOut,
-    // The shell then shows the sign-in screen (routes/_shell.tsx).
-    onSuccess: () => {
+    // Nothing the user signing out has read stays in the cache for whoever
+    // signs in next. Reloading the route then runs the shell's guard, which finds
+    // nobody signed in and shows the sign-in screen (routes/_shell.tsx).
+    onSuccess: async () => {
+      queryClient.clear();
       queryClient.setQueryData(meQuery.queryKey, null);
+      await router.invalidate();
     },
     // Never shown as signed out while the session may live on: ask the server
     // who is signed in instead.
