@@ -1,11 +1,12 @@
-import { type NewUser, type User, user } from "@stratosonic/db";
+import { type User, user } from "@stratosonic/db";
 import { asc, eq, sql } from "drizzle-orm";
 import type { Database } from "../db";
 
 /**
  * Reads and writes of the `user` table. Everything that touches users goes
  * through here, so the case-insensitive lookup and the column names live in one
- * place.
+ * place — except a password, and the user row created with one, which only
+ * console-auth/credentials.ts writes, together with the console's copy.
  */
 
 /**
@@ -54,13 +55,13 @@ export function userNamesMatch(left: string, right: string): boolean {
   return foldAsciiCase(left) === foldAsciiCase(right);
 }
 
-function foldAsciiCase(value: string): string {
+/**
+ * A username folded the way SQLite's `lower()` folds it, ASCII letters only.
+ * The console's sign-in looks names up under this key as well
+ * (console-auth/auth.ts), against the generated `username` column.
+ */
+export function foldAsciiCase(value: string): string {
   return value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
-}
-
-/** Inserts a user. Fails if the name is taken, whatever its case. */
-export async function insertUser(db: Database, values: NewUser): Promise<void> {
-  await db.insert(user).values(values);
 }
 
 /** Counts every user, which is how the first-run bootstrap knows it is first. */
