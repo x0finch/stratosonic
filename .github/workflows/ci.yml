@@ -1,0 +1,43 @@
+name: CI
+
+# Runs the same gate the deploy runs (lint, typecheck, tests) on every pull
+# request and on every push to main, so a change is checked before it merges
+# rather than only when a release is cut. The deploy workflow keeps its own
+# copy of the gate, so a release is never shipped from a red tree either.
+#
+# No secrets are needed: `wrangler types` only reads wrangler.jsonc, and the
+# tests run against Miniflare's local D1, R2 and Durable Objects.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A newer push to the same pull request supersedes the run in flight.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
