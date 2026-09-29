@@ -13,6 +13,10 @@
 export interface Env extends Cloudflare.Env {
   /** Password of the admin user created on first run. */
   readonly INITIAL_PASSWORD?: string;
-  /** Passphrase the AES-GCM password-encryption key is derived from. */
+  /**
+   * Passphrase the AES-GCM password-encryption key is derived from, and the
+   * admin console's session secret too (console-auth/auth.ts). Without it
+   * Subsonic logins fail and every `/api` route answers 503.
+   */
   readonly PASSWORD_ENCRYPTION_KEY?: string;
 }
