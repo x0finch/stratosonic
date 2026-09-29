@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useRouter } from "@tanstack/react-router";
 import { CircleUserRoundIcon, EllipsisVerticalIcon, LogOutIcon } from "lucide-react";
 
+import { ErrorAlert } from "@/components/error-alert";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
   DropdownMenu,
@@ -46,7 +47,7 @@ export function NavUser({ user }: { user: Me }) {
       await router.invalidate();
     },
     // Never shown as signed out while the session may live on: ask the server
-    // who is signed in instead.
+    // who is signed in instead, and say above the menu that it failed.
     onError: () => queryClient.invalidateQueries({ queryKey: meQuery.queryKey }),
   });
 
@@ -54,6 +55,11 @@ export function NavUser({ user }: { user: Me }) {
 
   return (
     <SidebarMenu>
+      {logOut.error && (
+        <SidebarMenuItem>
+          <ErrorAlert error={logOut.error} title="Sign-out failed" />
+        </SidebarMenuItem>
+      )}
       <SidebarMenuItem>
         <DropdownMenu>
           <DropdownMenuTrigger
