@@ -26,6 +26,8 @@ or from this directory with `pnpm <script>`:
 - `build` builds the console into `dist/`.
 - `typecheck` type-checks the sources and `vite.config.ts`.
 - `dev` starts the Vite dev server with hot reload.
+- `walkthrough` drives the auth screens in headless Chromium against a
+  running Worker (see below). It is not part of the test suite or CI.
 
 Lint and formatting are the repository's Biome (`pnpm lint` at the root).
 
@@ -80,3 +82,22 @@ pnpm exec shadcn add <component>   # in apps/admin
 The shell layout (`app-sidebar.tsx`, `nav-main.tsx`, `nav-secondary.tsx`,
 `site-header.tsx`) is adapted from the `dashboard-01` block, and
 `mode-toggle.tsx` is the one from shadcn/ui's Vite dark-mode guide.
+
+## The walkthrough
+
+`scripts/walkthrough.mjs` creates the first admin, signs out and back in,
+refuses a wrong password, changes the password (and checks that Subsonic's
+`ping` takes the new one), resets it with a second setup token, and checks
+dark mode, a phone-sized viewport and the browser console. It needs Chromium
+in Playwright's browser cache (`PLAYWRIGHT_BROWSERS_PATH`, or `pnpm exec
+playwright-core install chromium`). Start the Worker on an empty database with
+a `SETUP_TOKEN`, then:
+
+```sh
+BASE_URL=http://localhost:8787 SETUP_TOKEN=… RESET_TOKEN=… \
+  pnpm --filter @stratosonic/admin walkthrough
+```
+
+When it reaches the reset it waits for you to put `RESET_TOKEN` in
+`SETUP_TOKEN` and restart `wrangler dev`. The script's header lists the rest
+of its options.
