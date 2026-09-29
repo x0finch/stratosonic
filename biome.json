@@ -14,7 +14,14 @@
       "!.claude",
       "!**/migrations/meta",
       "!**/test/fixtures/manifest.json",
-      "!**/worker-configuration.d.ts"
+      "!**/worker-configuration.d.ts",
+      "!apps/admin/components.json",
+      "!apps/admin/src/index.css",
+      "!apps/admin/src/components/ui",
+      "!apps/admin/src/components/theme-provider.tsx",
+      "!apps/admin/src/hooks",
+      "!apps/admin/src/lib",
+      "!apps/admin/src/routeTree.gen.ts"
     ]
   },
   "formatter": {
