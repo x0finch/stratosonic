@@ -144,3 +144,95 @@ export async function expectPasswordInvariant(userId: string, plaintext: string)
     plaintext,
   );
 }
+
+/** The session cookies Better Auth sets for an `https` origin. */
+export const SESSION_TOKEN_COOKIE = "__Secure-better-auth.session_token";
+export const SESSION_DATA_COOKIE = "__Secure-better-auth.session_data";
+
+/** Folds `Set-Cookie` headers into a `Cookie` header, as a browser would. */
+export class CookieJar {
+  private readonly cookies = new Map<string, string>();
+
+  absorb(response: Response): void {
+    for (const header of response.headers.getSetCookie()) {
+      const [pair = "", ...attributes] = header.split(";");
+      const separator = pair.indexOf("=");
+      const name = pair.slice(0, separator).trim();
+      const value = pair.slice(separator + 1).trim();
+      const expired = attributes.some((attribute) => /^\s*max-age=0\s*$/i.test(attribute));
+      if (expired || value === "") {
+        this.cookies.delete(name);
+      } else {
+        this.cookies.set(name, value);
+      }
+    }
+  }
+
+  get(name: string): string | undefined {
+    return this.cookies.get(name);
+  }
+
+  delete(name: string): void {
+    this.cookies.delete(name);
+  }
+
+  names(): string[] {
+    return [...this.cookies.keys()].sort();
+  }
+
+  header(): string {
+    return [...this.cookies].map(([name, value]) => `${name}=${value}`).join("; ");
+  }
+}
+
+let nextAddress = 0;
+
+/**
+ * A request the console would send: same-origin, with the client address
+ * Cloudflare adds. Each gets an address of its own unless it names one, so
+ * only a test about the rate limiter ever meets it.
+ */
+export function consoleRequest(
+  origin: string,
+  path: string,
+  init: { method?: string; body?: unknown; jar?: CookieJar; headers?: Record<string, string> } = {},
+): Request {
+  const headers = new Headers({
+    origin,
+    "cf-connecting-ip": `198.51.100.${(nextAddress++ % 250) + 1}`,
+    ...init.headers,
+  });
+  if (init.body !== undefined) {
+    headers.set("content-type", "application/json");
+  }
+  if (init.jar) {
+    headers.set("cookie", init.jar.header());
+  }
+
+  return new Request(`${origin}${path}`, {
+    method: init.method ?? (init.body === undefined ? "GET" : "POST"),
+    headers,
+    body: init.body === undefined ? undefined : JSON.stringify(init.body),
+  });
+}
+
+/** Sends a request to the Worker, or to an app built for one test. */
+export type Send = (request: Request) => Response | Promise<Response>;
+
+/** Signs in with a username and password, keeping the cookies in a jar. */
+export async function signIn(
+  send: Send,
+  origin: string,
+  userName: string,
+  password: string,
+  jar = new CookieJar(),
+): Promise<{ response: Response; jar: CookieJar }> {
+  const response = await send(
+    consoleRequest(origin, "/api/auth/sign-in/username", {
+      body: { username: userName, password },
+    }),
+  );
+  jar.absorb(response);
+
+  return { response, jar };
+}

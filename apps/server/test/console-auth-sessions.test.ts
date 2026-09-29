@@ -1,0 +1,301 @@
+import { SELF } from "cloudflare:test";
+import { session, user } from "@stratosonic/db";
+import { eq } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/d1";
+import { Hono } from "hono";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { createApp } from "../src/app";
+import { subsonicToken } from "../src/auth/crypto";
+import { setPassword } from "../src/console-auth/credentials";
+import {
+  type ConsoleEnv,
+  loadConsoleAuth,
+  requireAdmin,
+  requireFreshSession,
+  requireSession,
+} from "../src/console-auth/middleware";
+import { database } from "../src/db";
+import type { Env } from "../src/env";
+import {
+  type CookieJar,
+  consoleRequest,
+  cost,
+  countingD1,
+  expectPasswordInvariant,
+  type RecordedStatement,
+  SESSION_DATA_COOKIE,
+  shape,
+  signIn,
+} from "./console-auth-support";
+import { BASE, encryptionKey, type JsonEnvelope, seedUser, testEnv } from "./support";
+
+/**
+ * Console sessions against D1 (#81, #89): what each check costs with the
+ * compact cookie cache on, and which checks see a revocation at once.
+ *
+ * Requests go to the Worker's app over a D1 binding that counts every
+ * statement. The origin is this file's own, so the isolate's Better Auth
+ * instance for it is built over that binding.
+ */
+
+const ORIGIN = "https://sessions.stratosonic.test";
+const d1 = countingD1(testEnv.DB);
+const env: Env = { ...testEnv, DB: d1.binding };
+const app = createApp();
+const send = (request: Request) => app.request(request, undefined, env);
+
+/**
+ * The guards later tickets put on their routes, on a route of their own: a
+ * read behind the cache, and a write behind a fresh read and the admin check.
+ */
+const guarded = new Hono<ConsoleEnv>()
+  .use(loadConsoleAuth)
+  .get("/read", requireSession, (c) => c.json(c.var.session))
+  .get("/admin-read", requireSession, requireAdmin, (c) => c.json(c.var.session))
+  .post("/write", requireFreshSession, (c) => c.json(c.var.session))
+  .post("/admin-write", requireFreshSession, requireAdmin, (c) => c.json(c.var.session));
+const sendGuarded = (request: Request) => guarded.request(request, undefined, env);
+
+let aliceId: string;
+
+beforeAll(async () => {
+  aliceId = await seedUser("Alice", "wonderland", true);
+  await seedUser("Bob", "builder");
+  // The first /api request loads Better Auth; under Vitest, seconds.
+  await send(consoleRequest(ORIGIN, "/api/me"));
+}, 30_000);
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+/** Runs `action`, and answers the statements it sent to D1. */
+async function measured(action: () => unknown): Promise<RecordedStatement[]> {
+  d1.reset();
+  await action();
+  return [...d1.statements];
+}
+
+async function me(jar: CookieJar) {
+  const response = await send(consoleRequest(ORIGIN, "/api/me", { jar }));
+  jar.absorb(response);
+  return response;
+}
+
+/** Moves the clock past the cookie cache's 5 minutes. */
+function afterCookieCacheExpiry(minutes = 6) {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(Date.now() + minutes * 60 * 1000);
+}
+
+async function aliceSessions(): Promise<number> {
+  const rows = await database(testEnv).select().from(session).where(eq(session.userId, aliceId));
+  return rows.length;
+}
+
+describe("the D1 cost of a session", () => {
+  it("sign-in reads the limiter, the user and the account, and writes one session", async () => {
+    let jar: CookieJar | undefined;
+    const statements = await measured(async () => {
+      ({ jar } = await signIn(send, ORIGIN, "alice", "wonderland"));
+    });
+
+    expect(jar?.names()).toContain(SESSION_DATA_COOKIE);
+    expect(statements.map(shape)).toEqual([
+      "select rate_limit", // this address's counter for /sign-in/username
+      "insert rate_limit", // its first attempt; later ones update the row
+      "select user", // by the generated `username` column
+      "select account", // the credential account
+      "insert session",
+    ]);
+  });
+
+  it("a cached session check makes no D1 query at all", async () => {
+    const { jar } = await signIn(send, ORIGIN, "alice", "wonderland");
+
+    const statements = await measured(async () => {
+      for (let check = 0; check < 5; check++) {
+        expect((await me(jar)).status).toBe(200);
+      }
+    });
+
+    expect(statements).toEqual([]);
+  });
+
+  it("past the cache's 5 minutes it reads the session and user, then caches again", async () => {
+    const { jar } = await signIn(send, ORIGIN, "alice", "wonderland");
+    afterCookieCacheExpiry();
+
+    let response: Response | undefined;
+    const expired = await measured(async () => {
+      response = await me(jar);
+    });
+    const recached = await measured(() => me(jar));
+
+    expect(response?.status).toBe(200);
+    expect(expired.map(shape)).toEqual(["select session", "select user"]);
+    expect(cost(expired).rowsWritten).toBe(0);
+    // The middleware passes Better Auth's re-cached cookie on to the browser,
+    // or every later check would read D1 again.
+    expect(response?.headers.getSetCookie().join("\n")).toMatch(
+      /^__Secure-better-auth\.session_data=/m,
+    );
+    expect(recached).toEqual([]);
+  });
+
+  it("a day on (updateAge), a check also extends the session row", async () => {
+    const { jar } = await signIn(send, ORIGIN, "alice", "wonderland");
+    afterCookieCacheExpiry(24 * 60 + 1);
+
+    const statements = await measured(() => me(jar));
+
+    expect(statements.map(shape)).toEqual(["select session", "select user", "update session"]);
+  });
+
+  it("sign-out reads the session twice and deletes it", async () => {
+    const { jar } = await signIn(send, ORIGIN, "alice", "wonderland");
+
+    const statements = await measured(() =>
+      send(consoleRequest(ORIGIN, "/api/auth/sign-out", { body: {}, jar })),
+    );
+
+    expect(statements.map(shape)).toEqual([
+      "select session", // the session by token...
+      "select user", // ...and its user
+      "select session", // deleteSession reads the row it deletes
+      "delete session",
+      "select account", // the accounts, for social providers' sign-out URLs
+    ]);
+  });
+
+  it("setPassword revokes the sessions in the same single round trip", async () => {
+    await signIn(send, ORIGIN, "alice", "wonderland");
+    await signIn(send, ORIGIN, "alice", "wonderland");
+
+    const statements = await measured(() =>
+      setPassword(drizzle(d1.binding), encryptionKey(), aliceId, "wonderland"),
+    );
+
+    expect(cost(statements).roundTrips).toBe(1);
+    expect(statements.map(shape)).toEqual(["update user", "insert account", "delete session"]);
+    expect(await aliceSessions()).toBe(0);
+  });
+});
+
+describe("requireSession and requireFreshSession", () => {
+  it("answer who is signed in, the first from the cache", async () => {
+    const { jar } = await signIn(send, ORIGIN, "alice", "wonderland");
+
+    const read = await measured(async () => {
+      const response = await sendGuarded(consoleRequest(ORIGIN, "/read", { jar }));
+      expect(await response.json()).toMatchObject({
+        userId: aliceId,
+        userName: "Alice",
+        isAdmin: true,
+      });
+    });
+    const write = await measured(async () => {
+      const response = await sendGuarded(consoleRequest(ORIGIN, "/write", { body: {}, jar }));
+      expect(await response.json()).toMatchObject({ userId: aliceId, isAdmin: true });
+    });
+
+    expect(read).toEqual([]);
+    expect(write.map(shape)).toEqual(["select session", "select user"]);
+  });
+
+  it("see a deleted session: the fresh check at once, the cached one after 5 minutes", async () => {
+    const { jar } = await signIn(send, ORIGIN, "alice", "wonderland");
+    await database(testEnv).delete(session).where(eq(session.userId, aliceId));
+
+    const read = await sendGuarded(consoleRequest(ORIGIN, "/read", { jar }));
+    const write = await sendGuarded(consoleRequest(ORIGIN, "/write", { body: {}, jar }));
+
+    expect(read.status).toBe(200);
+    expect(write.status).toBe(401);
+    expect(await write.json()).toEqual({ error: "unauthenticated" });
+
+    afterCookieCacheExpiry();
+    expect((await sendGuarded(consoleRequest(ORIGIN, "/read", { jar }))).status).toBe(401);
+  });
+
+  it("see a demotion: the fresh check reads is_admin as it is now", async () => {
+    const { jar } = await signIn(send, ORIGIN, "alice", "wonderland");
+    await database(testEnv).update(user).set({ isAdmin: false }).where(eq(user.id, aliceId));
+
+    try {
+      const read = await sendGuarded(consoleRequest(ORIGIN, "/admin-read", { jar }));
+      const write = await sendGuarded(consoleRequest(ORIGIN, "/admin-write", { body: {}, jar }));
+
+      // The cache vouches for the admin it signed in as for up to 5 minutes.
+      expect(read.status).toBe(200);
+      expect(write.status).toBe(403);
+      expect(await write.json()).toEqual({ error: "forbidden" });
+    } finally {
+      await database(testEnv).update(user).set({ isAdmin: true }).where(eq(user.id, aliceId));
+    }
+  });
+
+  it("answer 401 without a session, before the admin check", async () => {
+    for (const [method, path] of [
+      ["GET", "/read"],
+      ["GET", "/admin-read"],
+      ["POST", "/write"],
+      ["POST", "/admin-write"],
+    ] as const) {
+      const response = await sendGuarded(consoleRequest(ORIGIN, path, { method }));
+      expect(response.status, path).toBe(401);
+      expect(await response.json()).toEqual({ error: "unauthenticated" });
+    }
+  });
+
+  it("answer 403 to a user who is not an admin", async () => {
+    const { jar } = await signIn(send, ORIGIN, "bob", "builder");
+
+    const read = await sendGuarded(consoleRequest(ORIGIN, "/admin-read", { jar }));
+    const write = await sendGuarded(consoleRequest(ORIGIN, "/admin-write", { body: {}, jar }));
+
+    expect([read.status, write.status]).toEqual([403, 403]);
+    expect(await read.json()).toEqual({ error: "forbidden" });
+  });
+});
+
+describe("a password set with setPassword", () => {
+  async function subsonicStatus(password: string): Promise<string> {
+    const query = new URLSearchParams({
+      u: "alice",
+      t: await subsonicToken(password, "5a17"),
+      s: "5a17",
+      v: "1.16.1",
+      c: "test",
+      f: "json",
+    });
+    const response = await SELF.fetch(`${BASE}/rest/ping?${query}`);
+    return ((await response.json()) as JsonEnvelope)["subsonic-response"].status;
+  }
+
+  it("signs in to the console and to Subsonic, and the old one no longer does", async () => {
+    const { jar } = await signIn(send, ORIGIN, "alice", "wonderland");
+    const current = (await (
+      await sendGuarded(consoleRequest(ORIGIN, "/read", { jar }))
+    ).json()) as { id: string };
+    const other = await signIn(send, ORIGIN, "alice", "wonderland");
+
+    await setPassword(database(testEnv), encryptionKey(), aliceId, "looking-glass", {
+      keepSessionId: current.id,
+    });
+
+    await expectPasswordInvariant(aliceId, "looking-glass");
+    expect((await signIn(send, ORIGIN, "alice", "looking-glass")).response.status).toBe(200);
+    expect((await signIn(send, ORIGIN, "alice", "wonderland")).response.status).toBe(401);
+    expect(await subsonicStatus("looking-glass")).toBe("ok");
+    expect(await subsonicStatus("wonderland")).toBe("failed");
+
+    // The kept session still writes; the other one is gone.
+    expect((await sendGuarded(consoleRequest(ORIGIN, "/write", { body: {}, jar }))).status).toBe(
+      200,
+    );
+    expect(
+      (await sendGuarded(consoleRequest(ORIGIN, "/write", { body: {}, jar: other.jar }))).status,
+    ).toBe(401);
+  });
+});

@@ -1,6 +1,8 @@
 import { applyD1Migrations, type D1Migration, env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { decryptPassword, encryptPassword } from "../src/auth/crypto";
+import { createConsoleAuth } from "../src/console-auth/auth";
+import { signIn } from "./console-auth-support";
 import { encryptionKey } from "./support";
 
 /**
@@ -144,6 +146,23 @@ describe("migration 0008 over existing users", () => {
       expect(count, table).toBe(0);
     }
   });
+
+  it("lets every existing user sign in to the console with their Subsonic password", async () => {
+    const origin = "https://migrated.stratosonic.test";
+    const auth = await createConsoleAuth({ db: MIGRATION_DB, passphrase: encryptionKey(), origin });
+    const send = (request: Request) => auth.handler(request);
+
+    const admin = await signIn(send, origin, "admin", "before-0008");
+    const listener = await signIn(send, origin, "LISTENER", "also-before");
+
+    expect(await admin.response.json()).toMatchObject({
+      user: { id: "user-admin", displayUsername: "Admin", isAdmin: true },
+    });
+    expect(await listener.response.json()).toMatchObject({
+      user: { id: "user-listener", displayUsername: "Listener", isAdmin: false },
+    });
+    expect((await signIn(send, origin, "admin", "wrong")).response.status).toBe(401);
+  }, 30_000);
 
   it("serves the sign-in lookup from an index", async () => {
     const plan = await MIGRATION_DB.prepare(
