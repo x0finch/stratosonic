@@ -13,9 +13,10 @@
   // plan's daily requests. Only the paths the Worker owns reach it: the
   // Subsonic API, the public image URLs and the console's JSON API. A pattern
   // ending in `/*` does not match its bare prefix, so `/rest` and `/api` are
-  // listed as well; `/share` has no route of its own. Every other path is an asset, and one that matches no file is the console's
-  // index.html, so `/` and a deep link to a client route both load the
-  // console (test/routing covers both environments).
+  // listed as well; `/share` has no route of its own. Every other path is an
+  // asset, and one that matches no file is the console's index.html, so `/`
+  // and a deep link to a client route both load the console (test/routing
+  // covers both environments).
   //
   // The directory is the console's build output, so `pnpm --filter
   // @stratosonic/admin build` has to run before anything serves or deploys
