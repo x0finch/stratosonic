@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app";
-import { consoleAuth, deriveSessionSecret } from "../src/console-auth/auth";
+import { consoleAuth, deriveSessionSecret, MAX_CACHED_INSTANCES } from "../src/console-auth/auth";
 import type { Env } from "../src/env";
 import { CookieJar, consoleRequest, SESSION_DATA_COOKIE, signIn } from "./console-auth-support";
 import { BASE, encryptionKey, seedUser, testEnv } from "./support";
@@ -71,6 +71,22 @@ describe("the instance", () => {
     expect(await consoleAuth({ ...options, origin: "http://localhost:8787" })).not.toBe(
       await consoleAuth(options),
     );
+  });
+
+  it(`keeps no more than ${MAX_CACHED_INSTANCES} origins' instances, dropping the oldest`, async () => {
+    const options = (origin: string) => ({ db: testEnv.DB, passphrase: encryptionKey(), origin });
+    const first = await consoleAuth(options("https://first.stratosonic.test"));
+    const second = await consoleAuth(options("https://second.stratosonic.test"));
+
+    // Enough newer origins to push the first out, and only the first.
+    for (let index = 0; index < MAX_CACHED_INSTANCES - 1; index++) {
+      await consoleAuth(options(`https://origin-${index}.stratosonic.test`));
+    }
+
+    expect(await consoleAuth(options("https://second.stratosonic.test"))).toBe(second);
+    const rebuilt = await consoleAuth(options("https://first.stratosonic.test"));
+    expect(rebuilt).not.toBe(first);
+    expect(await consoleAuth(options("https://first.stratosonic.test"))).toBe(rebuilt);
   });
 
   it("drops the __Secure- prefix and Secure only for a plain-http origin (wrangler dev)", async () => {

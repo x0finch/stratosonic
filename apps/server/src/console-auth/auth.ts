@@ -268,9 +268,11 @@ export async function createConsoleAuth(options: ConsoleAuthOptions): Promise<Co
  *
  * Building one costs a millisecond of CPU and its first request a couple more
  * (#86), so each is built once per isolate rather than per request. They are
- * keyed by origin because the origin is their base URL; an isolate serves the
- * one hostname Cloudflare routes to it, or at most the few a deployment has
- * (`workers.dev` and a custom domain), so the map stays that small. The
+ * keyed by origin because the origin is their base URL. An isolate serves the
+ * one hostname Cloudflare routes to it, or the few a deployment has
+ * (`workers.dev`, a custom domain, a preview), but nothing stops a request
+ * naming another, so the map is bounded: past `MAX_CACHED_INSTANCES` the
+ * oldest instance is dropped, and rebuilt if its origin comes back. The
  * bindings a first request brings are the isolate's own and stay valid for its
  * life, and the passphrase is a secret that changes only with a new
  * deployment, which starts new isolates.
@@ -281,6 +283,9 @@ export async function createConsoleAuth(options: ConsoleAuthOptions): Promise<Co
  */
 const instances = new Map<string, ConsoleAuth>();
 
+/** How many origins' instances an isolate keeps at once. */
+export const MAX_CACHED_INSTANCES = 8;
+
 /** The isolate's instance for this origin, built on first use. */
 export async function consoleAuth(options: ConsoleAuthOptions): Promise<ConsoleAuth> {
   const cached = instances.get(options.origin);
@@ -290,6 +295,13 @@ export async function consoleAuth(options: ConsoleAuthOptions): Promise<ConsoleA
 
   const built = await createConsoleAuth(options);
   instances.set(options.origin, built);
+  // A Map iterates in insertion order, so the first key is the oldest.
+  for (const origin of instances.keys()) {
+    if (instances.size <= MAX_CACHED_INSTANCES) {
+      break;
+    }
+    instances.delete(origin);
+  }
 
   return built;
 }
