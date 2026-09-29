@@ -84,19 +84,21 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
 
+      # The admin console ships as the Worker's static assets (wrangler.jsonc,
+      # `assets`), so its build output must exist before the deploy reads the
+      # config. `pnpm test` has built it already; building again here keeps
+      # what is deployed from depending on what the tests happened to need.
+      # It runs before the migrations, so a failed build stops the release
+      # before production has been touched.
+      - name: Build the admin console
+        run: pnpm --filter @stratosonic/admin build
+
       # Apply any new D1 migrations to the production database before deploying
       # the code that expects them. Wrangler runs non-interactively in CI, so it
       # applies without a confirmation prompt.
       - name: Apply D1 migrations (remote)
         working-directory: apps/server
         run: pnpm exec wrangler d1 migrations apply stratosonic_db --remote
-
-      # The admin console ships as the Worker's static assets (wrangler.jsonc,
-      # `assets`), so its build output must exist before the deploy reads the
-      # config. `pnpm test` has built it already; building again here keeps
-      # what is deployed from depending on what the tests happened to need.
-      - name: Build the admin console
-        run: pnpm --filter @stratosonic/admin build
 
       - name: Deploy Worker
         working-directory: apps/server
