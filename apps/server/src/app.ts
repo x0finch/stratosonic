@@ -65,6 +65,9 @@ export function createApp(): SubsonicApp {
   // "server unreachable", which a 404 here would trip, blocking login before
   // the first `ping`. Answer the root with 200 so that probe succeeds; real
   // servers (Navidrome) serve a page here too. Hono routes HEAD to this GET.
+  // Once deployed, the admin console's index.html answers `/` before the
+  // Worker is asked (wrangler.jsonc, `assets`), with the same 200; this route
+  // answers whenever the Worker itself is.
   app.get("/", (c) => c.text("Stratosonic — OpenSubsonic API. Endpoints are under /rest/.\n"));
 
   // Public: no authentication, as the OpenSubsonic spec requires.

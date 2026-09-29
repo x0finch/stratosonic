@@ -4,11 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "pnpm --filter @stratosonic/admin build && wrangler dev",
     "fixtures": "node scripts/generate-fixtures.mjs",
     "cf-typegen": "wrangler types --include-runtime=false --strict-vars=false",
     "typecheck": "pnpm run cf-typegen && tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && pnpm run test:routing",
+    "test:routing": "pnpm --filter @stratosonic/admin build && vitest run --config vitest.routing.config.ts",
     "test:watch": "vitest"
   },
   "dependencies": {
