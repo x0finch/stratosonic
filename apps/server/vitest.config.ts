@@ -1,5 +1,5 @@
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-workers";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 // Resolved against this project directory, which is Vitest's working directory.
 const migrationsDir = "../../packages/db/migrations";
@@ -28,6 +28,8 @@ export default defineConfig(async () => {
     ],
     test: {
       setupFiles: ["./test/apply-migrations.ts"],
+      // Run in Node by vitest.routing.config.ts, not inside the Workers pool.
+      exclude: [...configDefaults.exclude, "test/routing/**"],
     },
   };
 });

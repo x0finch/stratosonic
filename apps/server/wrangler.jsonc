@@ -8,6 +8,26 @@
   "observability": {
     "enabled": true
   },
+  // The admin console (apps/admin, #87): a single-page app served as static
+  // assets, which cost no Worker invocation and do not count toward the free
+  // plan's daily requests. Only the paths the Worker owns reach it: the
+  // Subsonic API, the public image URLs and the console's JSON API. A pattern
+  // ending in `/*` does not match its bare prefix, so `/rest` and `/api` are
+  // listed as well; `/share` has no route of its own. Every other path is an asset, and one that matches no file is the console's
+  // index.html, so `/` and a deep link to a client route both load the
+  // console (test/routing covers both environments).
+  //
+  // The directory is the console's build output, so `pnpm --filter
+  // @stratosonic/admin build` has to run before anything serves or deploys
+  // it: the dev and test:routing scripts run it themselves, and so does the
+  // deploy workflow. `wrangler types` and the Workers-pool tests read this
+  // file without needing the directory.
+  "assets": {
+    "directory": "../admin/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/rest", "/rest/*", "/share/*", "/api", "/api/*"]
+  },
   // The cron pokes the scan driver (ADR-0004, #31). The Scan itself runs one
   // bounded step per Durable Object alarm, and the driver chains the alarms
   // until the pass is done, so the schedule only decides how often a pass
@@ -65,6 +85,12 @@
   "env": {
     "preview": {
       "name": "stratosonic-preview",
+      "assets": {
+        "directory": "../admin/dist",
+        "binding": "ASSETS",
+        "not_found_handling": "single-page-application",
+        "run_worker_first": ["/rest", "/rest/*", "/share/*", "/api", "/api/*"]
+      },
       "triggers": {
         "crons": ["*/15 * * * *"]
       },

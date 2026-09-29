@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { createApiApp } from "./api/app";
 import { reportPlayback, scrobble, setRating, star, unstar } from "./endpoints/annotations";
 import { getAlbum, getArtist, getArtists, getGenres, getSong } from "./endpoints/browsing";
 import { getIndexes, getMusicDirectory, getMusicFolders } from "./endpoints/folders";
@@ -64,6 +65,9 @@ export function createApp(): SubsonicApp {
   // "server unreachable", which a 404 here would trip, blocking login before
   // the first `ping`. Answer the root with 200 so that probe succeeds; real
   // servers (Navidrome) serve a page here too. Hono routes HEAD to this GET.
+  // Once deployed, the admin console's index.html answers `/` before the
+  // Worker is asked (wrangler.jsonc, `assets`), with the same 200; this route
+  // answers whenever the Worker itself is.
   app.get("/", (c) => c.text("Stratosonic — OpenSubsonic API. Endpoints are under /rest/.\n"));
 
   // Public: no authentication, as the OpenSubsonic spec requires.
@@ -174,6 +178,10 @@ export function createApp(): SubsonicApp {
   // authorization. Navidrome mounts the same path whether or not sharing is
   // enabled (server/public/public.go). HEAD is routed here by Hono.
   app.get("/share/img/:token", (c) => servePublicImage(c.env, c.req.param("token"), c.req.raw));
+
+  // The admin console's JSON API (#87), which answers in JSON of its own and
+  // never with the envelope, including for the paths it does not know.
+  app.route("/api", createApiApp());
 
   registerUnknownEndpointHandler(app);
 
