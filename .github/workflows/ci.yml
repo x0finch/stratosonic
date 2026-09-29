@@ -6,7 +6,9 @@ name: CI
 # copy of the gate, so a release is never shipped from a red tree either.
 #
 # No secrets are needed: `wrangler types` only reads wrangler.jsonc, and the
-# tests run against Miniflare's local D1, R2 and Durable Objects.
+# tests run against Miniflare's local D1, R2 and Durable Objects. The routing
+# tests serve the admin console's build output, which `pnpm test` builds
+# itself before running them, so no separate build step is needed here.
 
 on:
   pull_request:
