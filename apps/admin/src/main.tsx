@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MutationCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRouter, RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -6,9 +6,21 @@ import { createRoot } from "react-dom/client";
 import "./index.css";
 import { ThemeProvider } from "@/components/theme-provider.tsx";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { ApiError, meQuery } from "@/lib/api";
 import { routeTree } from "./routeTree.gen";
 
-const queryClient = new QueryClient();
+const queryClient: QueryClient = new QueryClient({
+  // A write the server refused for want of a session (it was revoked, or ran
+  // out) signs the console out: the shell then shows the sign-in screen,
+  // which returns to the same page (routes/_shell.tsx).
+  mutationCache: new MutationCache({
+    onError: (error) => {
+      if (error instanceof ApiError && error.code === "unauthenticated") {
+        queryClient.setQueryData(meQuery.queryKey, null);
+      }
+    },
+  }),
+});
 
 const router = createRouter({ routeTree, context: { queryClient } });
 

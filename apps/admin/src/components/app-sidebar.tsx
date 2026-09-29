@@ -12,14 +12,17 @@ import type { ComponentProps } from "react";
 
 import { type NavItem, NavMain } from "@/components/nav-main";
 import { NavSecondary } from "@/components/nav-secondary";
+import { NavUser } from "@/components/nav-user";
 import {
   Sidebar,
   SidebarContent,
+  SidebarFooter,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
+import type { Me } from "@/lib/api";
 
 // Only the overview has a page so far; the other entries hold the places of
 // the pages the coming admin phases add (#80).
@@ -34,7 +37,7 @@ const data: { navMain: NavItem[]; navSecondary: NavItem[] } = {
   navSecondary: [{ title: "Settings", icon: <Settings2Icon /> }],
 };
 
-export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
+export function AppSidebar({ user, ...props }: ComponentProps<typeof Sidebar> & { user: Me }) {
   return (
     <Sidebar collapsible="offcanvas" {...props}>
       <SidebarHeader>
@@ -54,6 +57,9 @@ export function AppSidebar({ ...props }: ComponentProps<typeof Sidebar>) {
         <NavMain items={data.navMain} />
         <NavSecondary items={data.navSecondary} className="mt-auto" />
       </SidebarContent>
+      <SidebarFooter>
+        <NavUser user={user} />
+      </SidebarFooter>
     </Sidebar>
   );
 }

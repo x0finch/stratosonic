@@ -13,6 +13,7 @@ import { Route as ShellRouteImport } from './routes/_shell'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ShellIndexRouteImport } from './routes/_shell/index'
 import { Route as ShellSplatRouteImport } from './routes/_shell/$'
+import { Route as ShellAccountRouteImport } from './routes/_shell/account'
 import { Route as SetupIndexRouteImport } from './routes/setup/index'
 import { Route as SetupResetRouteImport } from './routes/setup/reset'
 
@@ -35,6 +36,11 @@ const ShellSplatRoute = ShellSplatRouteImport.update({
   path: '/$',
   getParentRoute: () => ShellRoute,
 } as any)
+const ShellAccountRoute = ShellAccountRouteImport.update({
+  id: '/account',
+  path: '/account',
+  getParentRoute: () => ShellRoute,
+} as any)
 const SetupIndexRoute = SetupIndexRouteImport.update({
   id: '/setup/',
   path: '/setup/',
@@ -50,12 +56,14 @@ export interface FileRoutesByFullPath {
   '/': typeof ShellIndexRoute
   '/login': typeof LoginRoute
   '/$': typeof ShellSplatRoute
+  '/account': typeof ShellAccountRoute
   '/setup/reset': typeof SetupResetRoute
   '/setup/': typeof SetupIndexRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/$': typeof ShellSplatRoute
+  '/account': typeof ShellAccountRoute
   '/setup/reset': typeof SetupResetRoute
   '/': typeof ShellIndexRoute
   '/setup': typeof SetupIndexRoute
@@ -65,20 +73,22 @@ export interface FileRoutesById {
   '/_shell': typeof ShellRouteWithChildren
   '/login': typeof LoginRoute
   '/_shell/$': typeof ShellSplatRoute
+  '/_shell/account': typeof ShellAccountRoute
   '/setup/reset': typeof SetupResetRoute
   '/_shell/': typeof ShellIndexRoute
   '/setup/': typeof SetupIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/$' | '/setup/reset' | '/setup/'
+  fullPaths: '/' | '/login' | '/$' | '/account' | '/setup/reset' | '/setup/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/login' | '/$' | '/setup/reset' | '/' | '/setup'
+  to: '/login' | '/$' | '/account' | '/setup/reset' | '/' | '/setup'
   id:
     | '__root__'
     | '/_shell'
     | '/login'
     | '/_shell/$'
+    | '/_shell/account'
     | '/setup/reset'
     | '/_shell/'
     | '/setup/'
@@ -121,6 +131,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellSplatRouteImport
       parentRoute: typeof ShellRoute
     }
+    '/_shell/account': {
+      id: '/_shell/account'
+      path: '/account'
+      fullPath: '/account'
+      preLoaderRoute: typeof ShellAccountRouteImport
+      parentRoute: typeof ShellRoute
+    }
     '/setup/': {
       id: '/setup/'
       path: '/setup'
@@ -140,11 +157,13 @@ declare module '@tanstack/react-router' {
 
 interface ShellRouteChildren {
   ShellSplatRoute: typeof ShellSplatRoute
+  ShellAccountRoute: typeof ShellAccountRoute
   ShellIndexRoute: typeof ShellIndexRoute
 }
 
 const ShellRouteChildren: ShellRouteChildren = {
   ShellSplatRoute: ShellSplatRoute,
+  ShellAccountRoute: ShellAccountRoute,
   ShellIndexRoute: ShellIndexRoute,
 }
 
