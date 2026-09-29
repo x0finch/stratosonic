@@ -14,6 +14,10 @@ import { countUsers } from "../users/repository";
  * in the `property` table records that setup has run, and the user is only
  * created while the table is empty, so a password changed later is never
  * overwritten.
+ *
+ * Deprecated in favour of the setup token (setup/setup-token.ts, #81), which
+ * keeps no password in the Worker's secrets. `INITIAL_USER` and
+ * `INITIAL_PASSWORD` keep working for this release.
  */
 
 /** Navidrome's `consts.InitialSetupFlagKey`. */
@@ -105,9 +109,10 @@ async function markInitialSetupDone(db: Database): Promise<void> {
 /**
  * Creates the admin user, or reports that the environment does not say what to
  * create. It goes through the one credential writer, so the admin gets the
- * console's credential account in the same batch as the user row, and two
- * isolates racing through their first request still make one user: the loser's
- * batch finds the name taken and writes nothing.
+ * console's credential account in the same batch as the user row, and only
+ * while there is no user at all: two isolates racing through their first
+ * request, or one racing a `POST /api/setup` that names someone else, still
+ * make one admin, and the loser's batch writes nothing.
  */
 async function createInitialAdmin(env: Env, db: Database): Promise<boolean> {
   const { INITIAL_USER: userName, INITIAL_PASSWORD: password } = env;
@@ -119,11 +124,12 @@ async function createInitialAdmin(env: Env, db: Database): Promise<boolean> {
     return false;
   }
 
-  await createUserWithPassword(db, env.PASSWORD_ENCRYPTION_KEY, {
-    userName,
-    password,
-    isAdmin: true,
-  });
+  await createUserWithPassword(
+    db,
+    env.PASSWORD_ENCRYPTION_KEY,
+    { userName, password, isAdmin: true },
+    { onlyIfFirstUser: true },
+  );
 
   return true;
 }

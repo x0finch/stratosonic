@@ -18,9 +18,10 @@ name: Deploy
 # repo:
 #   - CLOUDFLARE_API_TOKEN   (an "Edit Cloudflare Workers" token)
 #   - CLOUDFLARE_ACCOUNT_ID
-# The Worker's own runtime secrets (INITIAL_PASSWORD, PASSWORD_ENCRYPTION_KEY)
-# are set once on the Worker itself (dashboard or `wrangler secret put`) and are
-# NOT touched here; `wrangler deploy` leaves them in place.
+# The Worker's own runtime secrets (PASSWORD_ENCRYPTION_KEY, SETUP_TOKEN, and
+# the deprecated INITIAL_PASSWORD) are set once on the Worker itself (dashboard
+# or `wrangler secret put`) and are NOT touched here; `wrangler deploy` leaves
+# them in place.
 
 on:
   push:
