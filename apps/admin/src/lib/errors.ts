@@ -78,6 +78,18 @@ const MESSAGES: Record<string, ErrorMessage> = {
     title: "The request is too large",
     description: "Shorten what you entered and try again.",
   },
+  forbidden: {
+    title: "Only an admin can do that",
+    description: "Sign in as an admin to go on.",
+  },
+  not_found: {
+    title: "Not found",
+    description: "The server has nothing at this address. Reload this page and try again.",
+  },
+  internal: {
+    title: "The server failed",
+    description: "Something went wrong on the server. Try again in a moment.",
+  },
   network: {
     title: "The server could not be reached",
     description: "Check the connection and try again.",

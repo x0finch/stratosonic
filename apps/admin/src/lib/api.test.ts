@@ -130,6 +130,10 @@ describe("describeError", () => {
       "not_set_up",
       "unknown_user",
       "not_admin",
+      // Any route's: requireAdmin's, the unknown path's, a handler that threw.
+      "forbidden",
+      "not_found",
+      "internal",
     ]) {
       expect(describeError(new ApiError(400, code, "")).title).not.toBe("Something went wrong");
     }
