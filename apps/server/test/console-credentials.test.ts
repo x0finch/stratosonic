@@ -1,5 +1,5 @@
 import { SELF } from "cloudflare:test";
-import { account, newRandomId, session, user } from "@stratosonic/db";
+import { account, newRandomId, property, session, user } from "@stratosonic/db";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -124,6 +124,51 @@ describe("createUserWithPassword", () => {
     expect(await database(testEnv).select().from(account)).toEqual(before);
     expect(await subsonicStatus("alice", "wonderland")).toBe("ok");
   });
+
+  it("with onlyIfFirstUser, writes nothing once any user exists, whatever the name", async () => {
+    const d1 = countingD1(testEnv.DB);
+
+    const id = await createUserWithPassword(
+      drizzle(d1.binding),
+      encryptionKey(),
+      { userName: "Mallory", password: "second-admin", isAdmin: true },
+      { onlyIfFirstUser: true },
+    );
+
+    expect(id).toBeNull();
+    expect(d1.roundTrips()).toBe(1);
+    expect(d1.statements.reduce((sum, statement) => sum + statement.rowsWritten, 0)).toBe(0);
+    expect(await findUserByUsername(database(testEnv), "mallory")).toBeNull();
+  });
+
+  it("runs the statements alongside in its batch, and rolls back with them", async () => {
+    const db = database(testEnv);
+    await db.insert(property).values({ id: "credentials-test", value: "taken" });
+
+    // A plain insert of a key that exists fails, and takes the user with it.
+    await expect(
+      createUserWithPassword(
+        db,
+        encryptionKey(),
+        { userName: "Erin", password: "rolled-back", isAdmin: false },
+        { alongside: () => [db.insert(property).values({ id: "credentials-test", value: "" })] },
+      ),
+    ).rejects.toThrow();
+    expect(await findUserByUsername(db, "erin")).toBeNull();
+
+    const id = await createUserWithPassword(
+      db,
+      encryptionKey(),
+      { userName: "Erin", password: "kept", isAdmin: false },
+      { alongside: (userId) => [db.insert(property).values({ id: `created-${userId}` })] },
+    );
+    const marks = await db
+      .select()
+      .from(property)
+      .where(eq(property.id, `created-${id}`));
+    expect(marks).toHaveLength(1);
+    await expectPasswordInvariant(id ?? "", "kept");
+  });
 });
 
 describe("setPassword", () => {
@@ -199,6 +244,22 @@ describe("setPassword", () => {
 
     await expectPasswordInvariant(id, "recovered");
     expect(await subsonicStatus("dave", "recovered")).toBe("ok");
+  });
+
+  it("rolls the password and the revocation back when a statement alongside fails", async () => {
+    const db = database(testEnv);
+    await setPassword(db, encryptionKey(), carolId, "before");
+    const kept = await insertSession(carolId);
+    await db.insert(property).values({ id: "set-password-test", value: "taken" });
+
+    await expect(
+      setPassword(db, encryptionKey(), carolId, "after", {
+        alongside: [db.insert(property).values({ id: "set-password-test", value: "" })],
+      }),
+    ).rejects.toThrow();
+
+    await expectPasswordInvariant(carolId, "before");
+    expect(await sessionIds(carolId)).toEqual([kept]);
   });
 
   it("writes nothing for a user that does not exist", async () => {

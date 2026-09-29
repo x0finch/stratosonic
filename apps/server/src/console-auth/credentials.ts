@@ -1,5 +1,6 @@
-import { account, newRandomId, session, user } from "@stratosonic/db";
-import { and, eq, ne, sql } from "drizzle-orm";
+import { account, type NewUser, newRandomId, session, user } from "@stratosonic/db";
+import { and, eq, getTableColumns, ne, type SQL, sql } from "drizzle-orm";
+import type { BatchItem } from "drizzle-orm/batch";
 import { encryptPassword } from "../auth/crypto";
 import type { Database } from "../db";
 
@@ -44,43 +45,88 @@ export interface NewUserWithPassword {
   readonly email?: string;
 }
 
+/** A statement a caller adds to a writer's batch. */
+export type CredentialStatement = BatchItem<"sqlite">;
+
+export interface CreateUserOptions {
+  /**
+   * Create the user only while there is no user at all: the first admin, made
+   * by the setup token or by the first-run bootstrap. The condition is part of
+   * the insert, which D1 runs inside the batch's transaction, so two of these
+   * racing (two setups, or a setup and the bootstrap) make one user between
+   * them whatever names they ask for, and the loser writes nothing.
+   */
+  readonly onlyIfFirstUser?: boolean;
+  /**
+   * Statements to run in the same batch, after the user and the account. They
+   * are handed the new id, so they can be made conditional on the user row
+   * having been written, which is how setup marks its token spent. One that
+   * fails rolls the whole batch back, user included.
+   */
+  readonly alongside?: (userId: string) => readonly CredentialStatement[];
+}
+
 /**
  * Creates a user together with the credential account the console signs in
- * against, and answers the new user's id — or `null` when the name is already
- * taken in any case, in which case nothing is written.
+ * against, and answers the new user's id — or `null` when nothing was
+ * written: the name is already taken in any case or, with `onlyIfFirstUser`,
+ * a user already exists.
  *
- * The user row is inserted with `ON CONFLICT DO NOTHING` and the account is
- * copied from the row carrying the new id, so when the name is taken — by
- * another isolate racing through the first-run bootstrap, say — the account
+ * The user row is inserted from a `SELECT ... WHERE <condition>`, with
+ * `ON CONFLICT DO NOTHING`, and the account is copied from the row carrying
+ * the new id, so when the user is not inserted — because another isolate
+ * racing through the first-run bootstrap got there first, say — the account
  * finds no row to copy and nothing is written at all.
  */
 export async function createUserWithPassword(
   db: Database,
   passphrase: string,
   values: NewUserWithPassword,
+  options: CreateUserOptions = {},
 ): Promise<string | null> {
   const id = newRandomId();
   const now = new Date();
   const ciphertext = await encryptPassword(passphrase, values.password);
 
+  const row: Required<NewUser> = {
+    id,
+    userName: values.userName,
+    name: values.userName,
+    email: values.email ?? "",
+    password: ciphertext,
+    isAdmin: values.isAdmin,
+    tokenEpoch: 0,
+    lastLoginAt: null,
+    lastAccessAt: null,
+    createdAt: now,
+    updatedAt: now,
+    emailVerified: false,
+    image: null,
+  };
+  const condition = options.onlyIfFirstUser ? sql`not exists (select 1 from ${user})` : sql`true`;
+
   const [inserted] = await db.batch([
-    db
-      .insert(user)
-      .values({
-        id,
-        userName: values.userName,
-        name: values.userName,
-        email: values.email ?? "",
-        password: ciphertext,
-        isAdmin: values.isAdmin,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .onConflictDoNothing(),
+    db.insert(user).select(selectUserRow(row, condition)).onConflictDoNothing(),
     copyPasswordToAccount(db, id),
+    ...(options.alongside?.(id) ?? []),
   ]);
 
   return inserted.meta.changes > 0 ? id : null;
+}
+
+/**
+ * `SELECT <row> WHERE <condition>`, which a user insert takes its values
+ * from. It has one value per column the insert names, in the same order,
+ * since both are the table's columns in their declared order less the
+ * generated ones, which Drizzle leaves out of every insert. Each value is
+ * encoded by its column, as `values()` would do.
+ */
+function selectUserRow(row: Required<NewUser>, condition: SQL): SQL {
+  const values = Object.entries(getTableColumns(user))
+    .filter(([, column]) => column.generated === undefined)
+    .map(([key, column]) => sql.param(row[key as keyof NewUser], column));
+
+  return sql`select ${sql.join(values, sql`, `)} where ${condition}`;
 }
 
 export interface SetPasswordOptions {
@@ -90,6 +136,13 @@ export interface SetPasswordOptions {
    * theirs is revoked.
    */
   readonly keepSessionId?: string;
+  /**
+   * Statements to run in the same batch, after the password is written and
+   * the sessions are revoked. One that fails rolls the whole batch back:
+   * recovery marks its setup token spent with a plain insert, so a token that
+   * a racing request has already spent leaves the password as it was.
+   */
+  readonly alongside?: readonly CredentialStatement[];
 }
 
 /**
@@ -125,6 +178,7 @@ export async function setPassword(
           ? theirs
           : and(theirs, ne(session.id, options.keepSessionId)),
       ),
+    ...(options.alongside ?? []),
   ]);
 }
 
