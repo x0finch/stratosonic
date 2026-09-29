@@ -18,7 +18,8 @@
  * edge with Workers Observability (`cpuTime`).
  *
  * "D1 stmts" is the number of statements each request sends; the rows they
- * read and write are counted by D1 itself in test/console-auth-sessions.test.ts.
+ * read and write are counted by D1 itself in test/console-auth-sessions.test.ts,
+ * test/setup-token.test.ts and test/account-password.test.ts.
  * The first row is the first `/api` request of an isolate less the evaluation
  * of the Better Auth modules, which happens at startup: building the instance
  * and serving the request.
@@ -34,6 +35,7 @@ import type { Env } from "../src/env";
 
 const MIGRATIONS = new URL("../../../packages/db/migrations/", import.meta.url);
 const PASSPHRASE = "bench-password-encryption-key";
+const SETUP_TOKEN = "bench-setup-token-0123456789abcdef0123456789abcdef";
 const ORIGIN = "https://stratosonic.bench";
 const WARM_UP = 20;
 
@@ -139,7 +141,7 @@ for (const file of readdirSync(MIGRATIONS)
 }
 
 const DB = fakeD1(sqlite);
-const env = { DB, PASSWORD_ENCRYPTION_KEY: PASSPHRASE } as unknown as Env;
+const env = { DB, PASSWORD_ENCRYPTION_KEY: PASSPHRASE, SETUP_TOKEN } as unknown as Env;
 const db = database(env);
 
 /* ------------------------------------------------------------ requests -- */
@@ -293,6 +295,75 @@ let user = 0;
 await bench("createUserWithPassword (one batch)", 300, async () => {
   const userName = `user-${user++}`;
   return () => createUserWithPassword(db, PASSPHRASE, { userName, password: "x", isAdmin: false });
+});
+
+/** Fails the bench when a request is not answered as it should be. */
+async function expecting(status: number, response: Promise<Response>): Promise<void> {
+  const answered = await response;
+  if (answered.status !== status) {
+    throw new Error(`${answered.url} answered ${answered.status}, not ${status}`);
+  }
+}
+
+// Setup, recovery and the password change (#90). Recovery needs the token
+// unspent, so each run forgets it first, untimed.
+await bench(
+  "GET /api/setup (reset-available)",
+  1000,
+  async () => () => expecting(200, send(request("/api/setup"))),
+);
+await bench("POST /api/setup/reset", 300, async () => {
+  sqlite.exec("DELETE FROM property WHERE id LIKE 'SetupTokenSpent:%'");
+  return () =>
+    expecting(
+      200,
+      send(
+        request("/api/setup/reset", {
+          body: { token: SETUP_TOKEN, username: "alice", password: "wonderland" },
+        }),
+      ),
+    );
+});
+await bench("POST /api/account/password", 300, async () => {
+  const signedIn = await signIn();
+  return () =>
+    expecting(
+      200,
+      send(
+        request("/api/account/password", {
+          body: { currentPassword: "wonderland", newPassword: "wonderland" },
+          cookie: signedIn,
+        }),
+      ),
+    );
+});
+// Attempts are counted per session, and each run signs in afresh, so the
+// limit never answers 429 here.
+await bench("POST /api/account/password, wrong current password", 300, async () => {
+  const signedIn = await signIn();
+  return () =>
+    expecting(
+      400,
+      send(
+        request("/api/account/password", {
+          body: { currentPassword: "no", newPassword: "wonderland" },
+          cookie: signedIn,
+        }),
+      ),
+    );
+});
+// Last, since each run empties the user table first, untimed.
+await bench("POST /api/setup (first admin)", 300, async () => {
+  sqlite.exec("DELETE FROM session; DELETE FROM account; DELETE FROM user; DELETE FROM property");
+  return () =>
+    expecting(
+      201,
+      send(
+        request("/api/setup", {
+          body: { token: SETUP_TOKEN, username: "owner", password: "correct horse" },
+        }),
+      ),
+    );
 });
 
 console.log(`node ${process.version}, ${process.arch}`);

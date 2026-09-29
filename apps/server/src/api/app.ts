@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import { CONSOLE_AUTH_ROUTES } from "../console-auth/auth";
 import { type ConsoleEnv, loadConsoleAuth, requireSession } from "../console-auth/middleware";
+import { registerAccountRoutes } from "./account";
+import { registerSetupRoutes } from "./setup";
 
 /**
  * The admin console's JSON API, mounted at `/api` (#87).
@@ -41,6 +43,12 @@ export function createApiApp(): ApiApp {
     const { userId, userName, isAdmin } = c.var.session;
     return c.json({ id: userId, userName, isAdmin });
   });
+
+  // Every route below that writes goes behind `requireSameOrigin`
+  // (api/same-origin.ts): Better Auth's own origin check covers only its
+  // routes above.
+  registerSetupRoutes(api);
+  registerAccountRoutes(api);
 
   // A sub-app's `notFound` is never called once it is mounted — Hono only
   // runs the top-level app's — so the unknown paths are caught by a route.
