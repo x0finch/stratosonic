@@ -26,6 +26,9 @@ or from this directory with `pnpm <script>`:
 - `build` builds the console into `dist/`.
 - `typecheck` type-checks the sources and `vite.config.ts`.
 - `dev` starts the Vite dev server with hot reload.
+- `test` runs the unit tests of `src/lib` (Vitest, in Node).
+- `walkthrough` drives the auth screens in headless Chromium against a
+  running Worker (see below). It is not part of the test suite or CI.
 
 Lint and formatting are the repository's Biome (`pnpm lint` at the root).
 
@@ -50,7 +53,12 @@ pnpm --filter @stratosonic/admin dev
 Open the URL Vite prints (<http://localhost:5173> by default). Vite serves the
 console and proxies `/api`, `/rest` and `/share` to `wrangler dev`
 (`server.proxy` in `vite.config.ts`), so the console talks to the local Worker
-exactly as it does in production.
+exactly as it does in production. The proxy keeps the browser's `Host`
+header, from which `wrangler dev` builds the request URL: the Worker then sees
+Vite's origin, the one the browser names in `Origin`, and takes the console's
+POSTs (sign-in, sign-out, setup, the password change), which it refuses from
+any other origin. For a Worker on another port, set `WORKER_ORIGIN`, e.g.
+`WORKER_ORIGIN=http://localhost:8791 pnpm --filter @stratosonic/admin dev`.
 
 **`wrangler dev` alone** (the production layout). `pnpm --filter
 @stratosonic/server dev` builds the console first, and `wrangler dev` serves
@@ -73,5 +81,37 @@ pnpm exec shadcn add <component>   # in apps/admin
 ```
 
 The shell layout (`app-sidebar.tsx`, `nav-main.tsx`, `nav-secondary.tsx`,
-`site-header.tsx`) is adapted from the `dashboard-01` block, and
-`mode-toggle.tsx` is the one from shadcn/ui's Vite dark-mode guide.
+`nav-user.tsx`, `site-header.tsx`) is adapted from the `dashboard-01` block;
+the sign-in, setup and account forms (`login-form.tsx`, `setup-form.tsx`,
+`change-password-form.tsx`) and their full-screen page (`auth-layout.tsx`)
+from the `login-01` block; and `mode-toggle.tsx` is the one from shadcn/ui's
+Vite dark-mode guide.
+
+## Signing in
+
+Every page under the sidebar shell (`src/routes/_shell`) needs a session:
+without one, a visit goes to `/login?redirect=…` and returns there once signed
+in. The sign-in and setup screens (`/login`, `/setup`, `/setup/reset`) render
+full-screen, without the shell. `src/lib/api.ts` is the console's whole client
+of the Worker's `/api`: plain same-origin `fetch` calls, the session being
+Better Auth's HttpOnly cookie. Better Auth's own client would add about
+11.5 kB gzipped for the two calls the console makes to it.
+
+## The walkthrough
+
+`scripts/walkthrough.mjs` creates the first admin, signs out and back in,
+refuses a wrong password, changes the password (and checks that Subsonic's
+`ping` takes the new one), resets it with a second setup token, and checks
+dark mode, a phone-sized viewport and the browser console. It needs Chromium
+in Playwright's browser cache (`PLAYWRIGHT_BROWSERS_PATH`, or `pnpm exec
+playwright-core install chromium`). Start the Worker on an empty database with
+a `SETUP_TOKEN`, then:
+
+```sh
+BASE_URL=http://localhost:8787 SETUP_TOKEN=… RESET_TOKEN=… \
+  pnpm --filter @stratosonic/admin walkthrough
+```
+
+When it reaches the reset it waits for you to put `RESET_TOKEN` in
+`SETUP_TOKEN` and restart `wrangler dev`. The script's header lists the rest
+of its options.

@@ -9,7 +9,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 
-export const Route = createFileRoute("/")({
+export const Route = createFileRoute("/_shell/")({
   component: Overview,
   staticData: { title: "Overview" },
 });
