@@ -1,7 +1,7 @@
 import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
 import type { Env } from "../env";
-import { type ConsoleAuth, consoleAuth } from "./auth";
+import { type ConsoleAuth, consoleAuth, isUnauthorizedError } from "./auth";
 
 /**
  * The console API's view of Better Auth (#81, #89): the middleware that
@@ -104,6 +104,24 @@ export const requireAdmin = createMiddleware<SessionEnv>(async (c, next) => {
   await next();
 });
 
+function getSession(auth: ConsoleAuth, headers: Headers, fresh: boolean) {
+  return auth.api.getSession({
+    headers,
+    query: { disableCookieCache: fresh },
+    returnHeaders: true,
+  });
+}
+
+/** Passes on the cookies Better Auth set, when it set any. */
+function forwardCookies(c: Context, headers: unknown): void {
+  if (!(headers instanceof Headers)) {
+    return;
+  }
+  for (const cookie of headers.getSetCookie()) {
+    c.header("Set-Cookie", cookie, { append: true });
+  }
+}
+
 function unauthenticated(c: Context) {
   return c.json({ error: "unauthenticated" }, 401);
 }
@@ -122,16 +140,21 @@ async function readSession(
   c: Context<SessionEnv>,
   { fresh }: { fresh: boolean },
 ): Promise<ConsoleSession | null> {
-  const { headers, response } = await c.var.consoleAuth.api.getSession({
-    headers: c.req.raw.headers,
-    query: { disableCookieCache: fresh },
-    returnHeaders: true,
-  });
-
-  for (const cookie of headers.getSetCookie()) {
-    c.header("Set-Cookie", cookie, { append: true });
+  let checked: Awaited<ReturnType<typeof getSession>>;
+  try {
+    checked = await getSession(c.var.consoleAuth, c.req.raw.headers, fresh);
+  } catch (error) {
+    // The session went while it was being checked: no session, like any
+    // other, rather than the error handler's 500.
+    if (isUnauthorizedError(error)) {
+      forwardCookies(c, error.headers);
+      return null;
+    }
+    throw error;
   }
 
+  const { headers, response } = checked;
+  forwardCookies(c, headers);
   if (!response) {
     return null;
   }

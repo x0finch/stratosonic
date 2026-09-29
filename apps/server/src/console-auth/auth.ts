@@ -1,5 +1,6 @@
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { account, newRandomId, rateLimit, session, user, verification } from "@stratosonic/db";
+import { isAPIError } from "better-auth/api";
 import { betterAuth } from "better-auth/minimal";
 import { username } from "better-auth/plugins/username";
 import { drizzle } from "drizzle-orm/d1";
@@ -242,6 +243,16 @@ function build({ db, passphrase, origin }: ConsoleAuthOptions, secret: string) {
 }
 
 export type ConsoleAuth = ReturnType<typeof build>;
+
+/**
+ * Whether Better Auth refused a session check as unauthorized. `getSession`
+ * throws this, rather than answering null, when the session it is extending
+ * is deleted under it: a sign-out or a password change racing the check
+ * (api/routes/session, "session update fails").
+ */
+export function isUnauthorizedError(error: unknown): error is { headers?: unknown } {
+  return isAPIError(error) && error.status === "UNAUTHORIZED";
+}
 
 /** Builds a Better Auth instance. It does no I/O until it serves a request. */
 export async function createConsoleAuth(options: ConsoleAuthOptions): Promise<ConsoleAuth> {

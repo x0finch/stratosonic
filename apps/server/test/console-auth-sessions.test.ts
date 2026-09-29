@@ -257,6 +257,63 @@ describe("requireSession and requireFreshSession", () => {
   });
 });
 
+describe("a session deleted while it is being checked", () => {
+  /**
+   * A D1 that deletes a session just before Better Auth extends it, as a
+   * sign-out or a password change landing mid-check would. Better Auth then
+   * finds nothing to update and throws UNAUTHORIZED instead of answering null.
+   * The update names the session by its token, its last parameter.
+   */
+  function racingD1(inner: D1Database): D1Database {
+    const racing = (statement: D1PreparedStatement, token?: unknown): D1PreparedStatement => {
+      const deleteFirst =
+        <T>(run: () => Promise<T>) =>
+        async () => {
+          await inner.prepare("DELETE FROM session WHERE token = ?").bind(token).run();
+          return run();
+        };
+      return {
+        bind: (...values: unknown[]) => racing(statement.bind(...values), values.at(-1)),
+        all: deleteFirst(() => statement.all()),
+        run: deleteFirst(() => statement.run()),
+        raw: deleteFirst(() => statement.raw()),
+        first: deleteFirst(() => statement.first()),
+      } as unknown as D1PreparedStatement;
+    };
+
+    return new Proxy(inner, {
+      get(target, property) {
+        if (property === "prepare") {
+          return (sql: string) =>
+            /^update "session"/i.test(sql) ? racing(target.prepare(sql)) : target.prepare(sql);
+        }
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  }
+
+  it("is a 401, not the error handler's 500", async () => {
+    const origin = "https://racing.stratosonic.test";
+    const racingEnv: Env = { ...testEnv, DB: racingD1(testEnv.DB) };
+    const signInRacing = (request: Request) => app.request(request, undefined, racingEnv);
+    const sendRacing = (request: Request) => guarded.request(request, undefined, racingEnv);
+    const reader = await signIn(signInRacing, origin, "alice", "wonderland");
+    const writer = await signIn(signInRacing, origin, "alice", "wonderland");
+    // Past `updateAge`, so each check extends its session and meets the race.
+    afterCookieCacheExpiry(24 * 60 + 1);
+
+    for (const [method, path, jar] of [
+      ["GET", "/read", reader.jar],
+      ["POST", "/write", writer.jar],
+    ] as const) {
+      const response = await sendRacing(consoleRequest(origin, path, { method, jar }));
+      expect(response.status, path).toBe(401);
+      expect(await response.json()).toEqual({ error: "unauthenticated" });
+    }
+  });
+});
+
 describe("a password set with setPassword", () => {
   async function subsonicStatus(password: string): Promise<string> {
     const query = new URLSearchParams({
