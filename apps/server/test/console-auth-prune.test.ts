@@ -9,6 +9,8 @@ import {
   RATE_LIMIT_RETENTION_MS,
 } from "../src/console-auth/prune";
 import { database } from "../src/db";
+import type { Env } from "../src/env";
+import worker from "../src/index";
 import { ensureInitialSetup } from "../src/setup/initial-setup";
 import { cost, countingD1, shape } from "./console-auth-support";
 import { BASE, encryptionKey, seedUser, testEnv } from "./support";
@@ -214,5 +216,87 @@ describe("pruning the console's auth rows", () => {
 
     expect(await pruneExpiredAuthRows(db, NOW)).toEqual({ ...NOTHING, rateLimit: PRUNE_LIMIT });
     expect((await remaining()).rateLimit).toHaveLength(1);
+  });
+});
+
+/* ======================================================== the cron == */
+
+/** A scan driver that records its pokes, in place of the real one. */
+function stubDriver(env: Env) {
+  const start = vi.fn(async (_scheduledTime: number) => "started" as const);
+  const cronEnv = {
+    ...env,
+    SCAN_DRIVER: { idFromName: () => ({}), get: () => ({ start }) },
+  } as unknown as Env;
+
+  return { start, cronEnv };
+}
+
+function controllerAt(scheduledTime: number): ScheduledController {
+  return {
+    scheduledTime,
+    cron: "*/15 * * * *",
+    noRetry() {
+      // A cron run that fails is not retried; the next one pokes again.
+    },
+  };
+}
+
+describe("the cron", () => {
+  it("prunes as of its scheduled time, before the poke, and logs what it deleted", async () => {
+    await seedSessions(NOW - 1, NOW + 1);
+    await seedRateLimits(0, NOW);
+    const d1 = countingD1(testEnv.DB);
+    const { start, cronEnv } = stubDriver({ ...testEnv, DB: d1.binding });
+    let statementsBeforePoke = -1;
+    start.mockImplementation(async () => {
+      statementsBeforePoke = d1.statements.length;
+      return "started";
+    });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await worker.scheduled(controllerAt(NOW), cronEnv);
+
+    expect(start).toHaveBeenCalledExactlyOnceWith(NOW);
+    expect(statementsBeforePoke).toBe(3);
+    expect(await remaining()).toEqual({ session: [NOW + 1], rateLimit: [NOW], verification: [] });
+    expect(log).toHaveBeenCalledExactlyOnceWith(
+      "scan driver: a pass has started; pruned 2 expired console auth rows (session 1, rate_limit 1, verification 0)",
+    );
+  });
+
+  it("still pokes the driver when the prune fails", async () => {
+    const failing = {
+      ...testEnv.DB,
+      prepare: (sql: string) => testEnv.DB.prepare(sql),
+      batch: async () => {
+        throw new Error("D1 is unavailable");
+      },
+    } as unknown as D1Database;
+    const { start, cronEnv } = stubDriver({ ...testEnv, DB: failing });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await worker.scheduled(controllerAt(NOW), cronEnv);
+
+    expect(start).toHaveBeenCalledExactlyOnceWith(NOW);
+    expect(error).toHaveBeenCalledExactlyOnceWith(
+      "console auth: pruning expired rows failed; the next cron run tries again",
+      expect.any(Error),
+    );
+    expect(log).toHaveBeenCalledExactlyOnceWith("scan driver: a pass has started");
+  });
+
+  it("reports the prune on the line of a poke that fails", async () => {
+    const { start, cronEnv } = stubDriver(testEnv);
+    start.mockRejectedValue(new Error("the driver is unreachable"));
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await worker.scheduled(controllerAt(NOW), cronEnv);
+
+    expect(error).toHaveBeenCalledExactlyOnceWith(
+      "scan driver: the poke failed; the next cron run pokes again; pruned 0 expired console auth rows (session 0, rate_limit 0, verification 0)",
+      expect.any(Error),
+    );
   });
 });

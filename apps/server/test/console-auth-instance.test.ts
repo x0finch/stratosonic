@@ -15,7 +15,8 @@ import { BASE, testEnv } from "./support";
  * isolate serves, and only there (#89). The module is evaluated at startup
  * (console-auth/auth.ts says why), but the Subsonic API, the public image
  * URLs, the cron and the scan driver's alarm never build an instance, and
- * never read or write the auth tables.
+ * never read or write the auth tables, but for the cron's prune of their
+ * expired rows (#93).
  *
  * `betterAuth()` is counted through a mock of `better-auth/minimal`, and every
  * D1 statement through a counting binding.
@@ -106,7 +107,7 @@ describe("the console's Better Auth instance", () => {
     expect(built.count).toBe(0);
   });
 
-  it("is not built by the cron", async () => {
+  it("is not built by the cron, which touches the auth tables only to prune them", async () => {
     const start = vi.fn(async () => "started" as const);
     const cronEnv = {
       ...env,
@@ -117,7 +118,12 @@ describe("the console's Better Auth instance", () => {
     await (await freshWorker()).default.scheduled(createScheduledController(), cronEnv);
 
     expect(start).toHaveBeenCalledOnce();
-    expect(authTableStatements()).toEqual([]);
+    // The prune's three bounded deletes (console-auth/prune.ts), and nothing else.
+    expect(authTableStatements().map((sql) => sql.match(/^delete from "(\w+)"/)?.[1])).toEqual([
+      "session",
+      "rate_limit",
+      "verification",
+    ]);
     expect(built.count).toBe(0);
   });
 
