@@ -89,6 +89,33 @@ describe("the instance", () => {
     }
   });
 
+  it.each(["http://127.0.0.1:8787", "http://[::1]:8787"])(
+    "serves the other loopback address %s over plain http too",
+    async (origin) => {
+      expect((await signIn(sendWith(testEnv), origin, "alice", "wonderland")).response.status).toBe(
+        200,
+      );
+    },
+  );
+
+  it.each([
+    ["GET", "/api/me"],
+    ["GET", "/api/auth/get-session"],
+    ["POST", "/api/auth/sign-in/username"],
+    ["GET", "/api/nope"],
+  ])("refuses %s %s over plain http from any other host", async (method, path) => {
+    const response = await sendWith(testEnv)(
+      consoleRequest("http://stratosonic.test", path, {
+        method,
+        body: method === "POST" ? { username: "alice", password: "wonderland" } : undefined,
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "insecure_origin" });
+    expect(response.headers.getSetCookie()).toEqual([]);
+  });
+
   it("trusts its own origin only, not even another origin of the same Worker", async () => {
     const response = await sendWith(testEnv)(
       consoleRequest("http://localhost:8787", "/api/auth/sign-in/username", {

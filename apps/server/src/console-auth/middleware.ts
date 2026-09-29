@@ -37,12 +37,30 @@ export interface SessionEnv extends ConsoleEnv {
 let warnedAboutMissingKey = false;
 
 /**
+ * The hosts a plain-http origin may have: the local `wrangler dev` a developer
+ * runs the console on (`URL.hostname` keeps IPv6 in brackets).
+ */
+const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * Whether an origin is one the console's sessions may live on. Its scheme
+ * decides the cookies (console-auth/auth.ts): over plain http they could not
+ * be `__Secure-` or `Secure`, and would travel in the clear, so outside a
+ * loopback address only https will do. A Worker answers plain http too, on
+ * `workers.dev` and on a custom domain without "Always Use HTTPS".
+ */
+function isSecureOrigin(url: URL): boolean {
+  return url.protocol === "https:" || LOOPBACK_HOSTNAMES.has(url.hostname);
+}
+
+/**
  * Provides the isolate's Better Auth instance for the request's origin, or
  * answers `503 {"error":"not_configured"}` without `PASSWORD_ENCRYPTION_KEY`:
  * the console can neither sign a session nor read a password without it, and
  * a secret derived from an empty passphrase would be one anybody can compute
  * (#81). The Subsonic API has the same dependency and fails its logins
- * instead (auth/authenticate.ts).
+ * instead (auth/authenticate.ts). A plain-http origin other than a loopback
+ * address answers `403 {"error":"insecure_origin"}`, and builds nothing.
  */
 export const loadConsoleAuth = createMiddleware<ConsoleEnv>(async (c, next) => {
   const passphrase = c.env.PASSWORD_ENCRYPTION_KEY;
@@ -54,10 +72,12 @@ export const loadConsoleAuth = createMiddleware<ConsoleEnv>(async (c, next) => {
     return c.json({ error: "not_configured" }, 503);
   }
 
-  c.set(
-    "consoleAuth",
-    await consoleAuth({ db: c.env.DB, passphrase, origin: new URL(c.req.url).origin }),
-  );
+  const url = new URL(c.req.url);
+  if (!isSecureOrigin(url)) {
+    return c.json({ error: "insecure_origin" }, 403);
+  }
+
+  c.set("consoleAuth", await consoleAuth({ db: c.env.DB, passphrase, origin: url.origin }));
 
   await next();
 });
