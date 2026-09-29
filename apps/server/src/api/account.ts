@@ -3,11 +3,7 @@ import { eq } from "drizzle-orm";
 import { constantTimeEquals, decryptPassword } from "../auth/crypto";
 import { isAcceptablePassword, setPassword } from "../console-auth/credentials";
 import { requireFreshSession } from "../console-auth/middleware";
-import {
-  recentFailures,
-  recordFailedAttempt,
-  tooManyFailures,
-} from "../console-auth/password-attempts";
+import { countPasswordAttempt } from "../console-auth/password-attempts";
 import { database } from "../db";
 import type { ApiApp } from "./app";
 import { invalidRequest, limitJsonBody, readJsonObject } from "./json-body";
@@ -21,10 +17,10 @@ export function registerAccountRoutes(api: ApiApp): void {
    * As in Navidrome's `validatePasswordChange` (persistence/
    * user_repository.go), a user changing their own password has to give the
    * current one: `400 wrong_password` otherwise, having written nothing but
-   * the failed attempt. After `MAX_FAILED_PASSWORD_ATTEMPTS` of those within
-   * the window every attempt, right or wrong, is `429 rate_limited` and
-   * writes nothing (console-auth/password-attempts.ts). A new password
-   * outside the accepted lengths is `400 invalid_password`.
+   * the session's count of attempts. After `MAX_PASSWORD_ATTEMPTS` attempts
+   * within the window, the session's next ones, right or wrong, are
+   * `429 rate_limited` and write nothing (console-auth/password-attempts.ts).
+   * A new password outside the accepted lengths is `400 invalid_password`.
    *
    * The session is read from D1, as for every write, and it is the one
    * session kept: the user's others end with the old password, and their
@@ -47,17 +43,16 @@ export function registerAccountRoutes(api: ApiApp): void {
 
       const { id: sessionId, userId } = c.var.session;
       const db = database(c.env);
-      const now = Date.now();
-      // The stored password and the recent failures, in one statement.
-      const [stored] = await db
-        .select({ password: user.password, failures: recentFailures(db, userId, now) })
-        .from(user)
-        .where(eq(user.id, userId));
-      if (stored && tooManyFailures(stored.failures)) {
+      // The attempt is counted first, atomically, and the stored password
+      // read in the same round trip; it is compared only if the count allows.
+      const [counted, [stored]] = await db.batch([
+        countPasswordAttempt(db, sessionId, Date.now()),
+        db.select({ password: user.password }).from(user).where(eq(user.id, userId)),
+      ]);
+      if (counted.length === 0) {
         return c.json({ error: "rate_limited" }, 429);
       }
       if (!stored || !(await passwordMatches(c.var.passphrase, stored.password, currentPassword))) {
-        await recordFailedAttempt(db, userId, now);
         return c.json({ error: "wrong_password" }, 400);
       }
 

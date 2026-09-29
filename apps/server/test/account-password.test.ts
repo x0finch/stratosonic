@@ -6,7 +6,7 @@ import { createApp } from "../src/app";
 import { subsonicToken } from "../src/auth/crypto";
 import { MAX_PASSWORD_LENGTH, setPassword } from "../src/console-auth/credentials";
 import {
-  MAX_FAILED_PASSWORD_ATTEMPTS,
+  MAX_PASSWORD_ATTEMPTS,
   PASSWORD_ATTEMPT_KEY_PREFIX,
   PASSWORD_ATTEMPT_WINDOW_MS,
 } from "../src/console-auth/password-attempts";
@@ -130,13 +130,15 @@ async function expectRefusal(
   expect(await snapshot()).toEqual(before);
 }
 
-async function attemptRows() {
+/** The attempts counted for the session a jar is signed in with. */
+async function attemptRows(jar: CookieJar) {
+  const sessionId = await sessionIdOf(jar);
   const rows = await database(testEnv).select().from(rateLimit);
-  return rows.filter((row) => row.key === `${PASSWORD_ATTEMPT_KEY_PREFIX}${bobId}`);
+  return rows.filter((row) => row.key === `${PASSWORD_ATTEMPT_KEY_PREFIX}${sessionId}`);
 }
 
 describe("POST /api/account/password", () => {
-  it("refuses a wrong current password with 400, writing only the failed attempt", async () => {
+  it("refuses a wrong current password with 400, writing only the attempt's count", async () => {
     const { jar } = await signIn(send, ORIGIN, "bob", "builder");
     const before = await snapshot();
 
@@ -147,10 +149,10 @@ describe("POST /api/account/password", () => {
 
     expect(response?.status).toBe(400);
     expect(await response?.json()).toEqual({ error: "wrong_password" });
-    expect(statements.map(shape).at(-1)).toBe("insert rate_limit");
+    expect(statements.map(shape).slice(-2)).toEqual(["insert rate_limit", "select user"]);
     const after = await snapshot();
     expect({ ...after, rateLimits: [] }).toEqual({ ...before, rateLimits: [] });
-    expect(await attemptRows()).toMatchObject([{ count: 1 }]);
+    expect(await attemptRows(jar)).toMatchObject([{ count: 1 }]);
     expect(await subsonicStatus("bob", "builder")).toBe("ok");
   });
 
@@ -205,7 +207,6 @@ describe("POST /api/account/password", () => {
     const { jar: elsewhere } = await signIn(send, ORIGIN, "bob", "builder");
     const { jar: alice } = await signIn(send, ORIGIN, "alice", "wonderland");
     const kept = await sessionIdOf(here);
-    const rateLimitsBefore = (await snapshot()).rateLimits;
 
     let response: Response | undefined;
     const statements = await measured(async () => {
@@ -217,18 +218,17 @@ describe("POST /api/account/password", () => {
     expect(statements.map(shape)).toEqual([
       "select session", // requireFreshSession, past the cookie cache
       "select user",
-      // The stored password, with the recent failures from a subquery on
-      // rate_limit, which is the table the shape names first.
-      "select rate_limit",
+      "insert rate_limit", // the attempt, counted first, and in one batch
+      "select user", // the stored password
       "update user",
       "insert account",
       "delete session",
     ]);
     expect(cost(statements).roundTrips).toBe(4);
-    // The user row and the account, and the one other session; nothing in
-    // rate_limit.
-    expect(cost(statements).rowsWritten).toBe(2 + 1);
-    expect((await snapshot()).rateLimits).toEqual(rateLimitsBefore);
+    // The session's new counter, with its two keys; the user row and the
+    // account; and the one other session.
+    expect(cost(statements).rowsWritten).toBe(3 + 2 + 1);
+    expect(await attemptRows(here)).toMatchObject([{ count: 1 }]);
 
     expect(await sessionIds(bobId)).toEqual([kept]);
     await expectPasswordInvariant(bobId, "fixer");
@@ -272,17 +272,17 @@ describe("POST /api/account/password", () => {
   });
 });
 
-describe("the limit on wrong current passwords", () => {
+describe("the limit on attempts", () => {
   async function wrongAttempt(jar: CookieJar) {
     return changePassword(jar, { currentPassword: "guess", newPassword: "mine" });
   }
 
-  it(`answers 429 after ${MAX_FAILED_PASSWORD_ATTEMPTS} failures, right password or not, writing nothing`, async () => {
+  it(`answers 429 after ${MAX_PASSWORD_ATTEMPTS} attempts, right password or not, writing nothing`, async () => {
     const { jar } = await signIn(send, ORIGIN, "bob", "builder");
-    for (let attempt = 0; attempt < MAX_FAILED_PASSWORD_ATTEMPTS; attempt++) {
+    for (let attempt = 0; attempt < MAX_PASSWORD_ATTEMPTS; attempt++) {
       expect((await wrongAttempt(jar)).status).toBe(400);
     }
-    expect(await attemptRows()).toMatchObject([{ count: MAX_FAILED_PASSWORD_ATTEMPTS }]);
+    expect(await attemptRows(jar)).toMatchObject([{ count: MAX_PASSWORD_ATTEMPTS }]);
 
     await expectRefusal(() => wrongAttempt(jar), 429, "rate_limited");
     await expectRefusal(
@@ -293,24 +293,37 @@ describe("the limit on wrong current passwords", () => {
     expect(await subsonicStatus("bob", "builder")).toBe("ok");
   });
 
-  it("counts per user, whatever the session", async () => {
-    for (let attempt = 0; attempt < MAX_FAILED_PASSWORD_ATTEMPTS; attempt++) {
-      const { jar } = await signIn(send, ORIGIN, "bob", "builder");
-      await wrongAttempt(jar);
+  it("counts per session, so a stolen one cannot lock its user out", async () => {
+    const { jar: thief } = await signIn(send, ORIGIN, "bob", "builder");
+    const { jar: victim } = await signIn(send, ORIGIN, "bob", "builder");
+    for (let attempt = 0; attempt < MAX_PASSWORD_ATTEMPTS; attempt++) {
+      await wrongAttempt(thief);
     }
-    const { jar: fresh } = await signIn(send, ORIGIN, "bob", "builder");
-    const { jar: alice } = await signIn(send, ORIGIN, "alice", "wonderland");
+    expect((await wrongAttempt(thief)).status).toBe(429);
 
-    expect((await wrongAttempt(fresh)).status).toBe(429);
-    expect(
-      (await changePassword(alice, { currentPassword: "wonderland", newPassword: "wonderland" }))
-        .status,
-    ).toBe(200);
+    // The victim changes the password, which ends the thief's session.
+    const response = await changePassword(victim, {
+      currentPassword: "builder",
+      newPassword: "fixer",
+    });
+    expect(response.status).toBe(200);
+    expect((await wrongAttempt(thief)).status).toBe(401);
   });
 
-  it("lets the user try again once the window has passed since the last failure", async () => {
+  it(`lets at most ${MAX_PASSWORD_ATTEMPTS} of a parallel burst reach the password check`, async () => {
     const { jar } = await signIn(send, ORIGIN, "bob", "builder");
-    for (let attempt = 0; attempt < MAX_FAILED_PASSWORD_ATTEMPTS; attempt++) {
+
+    const responses = await Promise.all(Array.from({ length: 10 }, () => wrongAttempt(jar)));
+
+    const statuses = responses.map((response) => response.status);
+    expect(statuses.filter((status) => status === 400)).toHaveLength(MAX_PASSWORD_ATTEMPTS);
+    expect(statuses.filter((status) => status === 429)).toHaveLength(10 - MAX_PASSWORD_ATTEMPTS);
+    expect(await attemptRows(jar)).toMatchObject([{ count: MAX_PASSWORD_ATTEMPTS }]);
+  });
+
+  it("lets the session try again once the window has passed since its last attempt", async () => {
+    const { jar } = await signIn(send, ORIGIN, "bob", "builder");
+    for (let attempt = 0; attempt < MAX_PASSWORD_ATTEMPTS; attempt++) {
       await wrongAttempt(jar);
     }
 
@@ -319,7 +332,7 @@ describe("the limit on wrong current passwords", () => {
 
     // The count starts again at one.
     expect((await wrongAttempt(jar)).status).toBe(400);
-    expect(await attemptRows()).toMatchObject([{ count: 1 }]);
+    expect(await attemptRows(jar)).toMatchObject([{ count: 1 }]);
     const response = await changePassword(jar, {
       currentPassword: "builder",
       newPassword: "fixer",
@@ -331,18 +344,18 @@ describe("the limit on wrong current passwords", () => {
     expect(PASSWORD_ATTEMPT_WINDOW_MS).toBeLessThanOrEqual(LONGEST_RATE_LIMIT_WINDOW_MS);
     const { jar } = await signIn(send, ORIGIN, "bob", "builder");
     await wrongAttempt(jar);
-    const [row] = await attemptRows();
+    const [row] = await attemptRows(jar);
 
     // Still inside the retention, the row stays; past it, it goes.
     await pruneExpiredAuthRows(
       database(testEnv),
       (row?.lastRequest ?? 0) + RATE_LIMIT_RETENTION_MS,
     );
-    expect(await attemptRows()).toHaveLength(1);
+    expect(await attemptRows(jar)).toHaveLength(1);
     await pruneExpiredAuthRows(
       database(testEnv),
       (row?.lastRequest ?? 0) + RATE_LIMIT_RETENTION_MS + 1,
     );
-    expect(await attemptRows()).toEqual([]);
+    expect(await attemptRows(jar)).toEqual([]);
   });
 });
