@@ -12,7 +12,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@better-auth/drizzle-adapter": "1.7.6",
     "@stratosonic/db": "workspace:*",
+    "better-auth": "1.7.6",
     "drizzle-orm": "0.45.2",
     "hono": "4.13.8",
     "music-metadata": "11.15.0",

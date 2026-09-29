@@ -23,11 +23,27 @@ export default defineConfig(async () => {
             INITIAL_PASSWORD: "sesame",
             PASSWORD_ENCRYPTION_KEY: "test-password-encryption-key",
           },
+          // SPIKE #86: an empty second database, so a test can apply the
+          // migrations up to 0007, seed users, and watch 0008 backfill them.
+          d1Databases: ["MIGRATION_DB"],
         },
       }),
     ],
+    resolve: {
+      // SPIKE #86: Better Auth's default scrypt hasher, swapped for a counting
+      // wrapper around the real one (test/scrypt-probe.ts).
+      alias: [
+        {
+          find: /^@better-auth\/utils\/password$/,
+          replacement: new URL("./test/scrypt-probe.ts", import.meta.url).pathname,
+        },
+      ],
+    },
     test: {
       setupFiles: ["./test/apply-migrations.ts"],
+      // SPIKE #86: run Better Auth through Vite's module graph, so the alias
+      // above reaches its imports.
+      server: { deps: { inline: [/better-auth/] } },
     },
   };
 });

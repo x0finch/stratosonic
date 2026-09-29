@@ -1,5 +1,5 @@
-import { newRandomId, property, user } from "@stratosonic/db";
-import { eq } from "drizzle-orm";
+import { account, newRandomId, property, user } from "@stratosonic/db";
+import { eq, sql } from "drizzle-orm";
 import { encryptPassword } from "../auth/crypto";
 import { type Database, database } from "../db";
 import type { Env } from "../env";
@@ -118,18 +118,44 @@ async function createInitialAdmin(env: Env, db: Database): Promise<boolean> {
   }
 
   const now = new Date();
-  await db
-    .insert(user)
-    .values({
-      id: newRandomId(),
-      userName,
-      name: userName,
-      password: await encryptPassword(env.PASSWORD_ENCRYPTION_KEY, password),
-      isAdmin: true,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .onConflictDoNothing();
+  const id = newRandomId();
+  const ciphertext = await encryptPassword(env.PASSWORD_ENCRYPTION_KEY, password);
+  // SPIKE #86: the admin's console credential is written in the same batch,
+  // and only if this isolate's user row is the one that landed.
+  await db.batch([
+    db
+      .insert(user)
+      .values({
+        id,
+        userName,
+        name: userName,
+        password: ciphertext,
+        isAdmin: true,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoNothing(),
+    db.insert(account).select(
+      db
+        .select({
+          id: sql<string>`${newRandomId()}`.as("id"),
+          accountId: user.id,
+          providerId: sql<string>`'credential'`.as("provider_id"),
+          userId: user.id,
+          accessToken: sql<null>`null`.as("access_token"),
+          refreshToken: sql<null>`null`.as("refresh_token"),
+          idToken: sql<null>`null`.as("id_token"),
+          accessTokenExpiresAt: sql<null>`null`.as("access_token_expires_at"),
+          refreshTokenExpiresAt: sql<null>`null`.as("refresh_token_expires_at"),
+          scope: sql<null>`null`.as("scope"),
+          password: user.password,
+          createdAt: user.createdAt,
+          updatedAt: user.updatedAt,
+        })
+        .from(user)
+        .where(eq(user.id, id)),
+    ),
+  ]);
 
   return true;
 }

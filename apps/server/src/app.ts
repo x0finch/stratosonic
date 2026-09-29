@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { AUTH_BASE_PATH, consoleAuth } from "./console-auth/auth";
 import { reportPlayback, scrobble, setRating, star, unstar } from "./endpoints/annotations";
 import { getAlbum, getArtist, getArtists, getGenres, getSong } from "./endpoints/browsing";
 import { getIndexes, getMusicDirectory, getMusicFolders } from "./endpoints/folders";
@@ -174,6 +175,13 @@ export function createApp(): SubsonicApp {
   // authorization. Navidrome mounts the same path whether or not sharing is
   // enabled (server/public/public.go). HEAD is routed here by Hono.
   app.get("/share/img/:token", (c) => servePublicImage(c.env, c.req.param("token"), c.req.raw));
+
+  // SPIKE #86: the console's Better Auth routes. The base URL is the request's
+  // own origin here only because the prototype has no configured one.
+  app.on(["GET", "POST"], `${AUTH_BASE_PATH}/*`, async (c) => {
+    const auth = await consoleAuth(c.env, new URL(c.req.url).origin);
+    return auth.handler(c.req.raw);
+  });
 
   registerUnknownEndpointHandler(app);
 

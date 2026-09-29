@@ -57,6 +57,13 @@
       "when": 1790629173180,
       "tag": "0007_add_now_playing_playback_state",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1790672003544,
+      "tag": "0008_add_better_auth_tables",
+      "breakpoints": true
     }
   ]
 }
