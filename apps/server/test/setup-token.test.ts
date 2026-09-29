@@ -544,6 +544,24 @@ describe("POST /api/setup/reset", () => {
     expect((await changePassword(jar, "forgotten", "forgotten")).status).toBe(200);
   });
 
+  it("answers unknown_user for an admin deleted between its check and its batch", async () => {
+    const batch = d1.binding.batch.bind(d1.binding);
+    vi.spyOn(d1.binding, "batch").mockImplementationOnce(async (statements) => {
+      await database(testEnv).delete(user).where(eq(user.id, ownerId));
+      return batch(statements);
+    });
+
+    let response: Response | undefined;
+    const statements = await measured(async () => {
+      response = await reset({ token: TOKEN, username: "owner", password: "gone" });
+    });
+
+    expect(response?.status).toBe(400);
+    expect(await response?.json()).toEqual({ error: "unknown_user" });
+    expect(cost(statements).rowsWritten).toBe(0);
+    expect(await spentRows()).toEqual([]);
+  });
+
   it("looks the name up exactly as typed, spaces and all", async () => {
     const spacedId = await seedUser(" spaced ", "legacy", true);
 

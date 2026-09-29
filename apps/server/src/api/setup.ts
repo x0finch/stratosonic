@@ -1,3 +1,5 @@
+import { user } from "@stratosonic/db";
+import { eq } from "drizzle-orm";
 import type { Context } from "hono";
 import {
   acceptableUserName,
@@ -141,7 +143,10 @@ export function registerSetupRoutes(api: ApiApp): void {
       throw error;
     }
     if (!changed) {
-      return c.json({ error: "not_admin" }, 400);
+      // Demoted or deleted since the read; one more read, on this rare path
+      // alone, tells which.
+      const [still] = await db.select({ id: user.id }).from(user).where(eq(user.id, target.id));
+      return c.json({ error: still ? "not_admin" : "unknown_user" }, 400);
     }
 
     return c.json({ id: target.id, userName: target.userName, isAdmin: true });
