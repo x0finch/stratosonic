@@ -18,8 +18,15 @@ import { property } from "@stratosonic/db";
 import { eq } from "drizzle-orm";
 import type { Database } from "../db";
 
-/** The row a pass in flight writes. */
-const IMPORT_PROGRESS_KEY = "PlaylistImportProgress";
+/**
+ * The row a pass in flight writes.
+ *
+ * It is exported because it is the other half of the answer to "is a scan
+ * running": the driver runs the import after the scan's own pass has finished
+ * and cleared `ScanProgress` (#31), so `scanner/state.ts` reads this key
+ * alongside its own and `getScanStatus` still costs one query.
+ */
+export const PLAYLIST_IMPORT_PROGRESS_KEY = "PlaylistImportProgress";
 
 /** What a pass has done so far. */
 export interface PlaylistImportCounts {
@@ -30,9 +37,15 @@ export interface PlaylistImportCounts {
   steps: number;
   /** Objects the listing offered and the import looked at, playlist or not. */
   examined: number;
-  /** Playlists read from the bucket and written to the library. */
+  /** Playlists read from the bucket and made to agree with the library. */
   imported: number;
-  /** Entries that named a track and became a row. */
+  /**
+   * How many of those needed no writing at all, because the library already
+   * held exactly what the file resolved to. The ordinary case on every pass
+   * after the first, and the reason a quiet library costs no rows written.
+   */
+  unchanged: number;
+  /** Entries that named a track; what the playlist holds once resolved. */
   entries: number;
   /** Entry paths that named no track; skipped, never fatal. */
   unmatched: number;
@@ -43,7 +56,16 @@ export interface PlaylistImportCounts {
 }
 
 export function noPlaylistImportCounts(): PlaylistImportCounts {
-  return { steps: 0, examined: 0, imported: 0, entries: 0, unmatched: 0, deferred: 0, removed: 0 };
+  return {
+    steps: 0,
+    examined: 0,
+    imported: 0,
+    unchanged: 0,
+    entries: 0,
+    unmatched: 0,
+    deferred: 0,
+    removed: 0,
+  };
 }
 
 export function addPlaylistImportCounts(
@@ -78,7 +100,7 @@ export async function readPlaylistImportProgress(
   const rows = await db
     .select()
     .from(property)
-    .where(eq(property.id, IMPORT_PROGRESS_KEY))
+    .where(eq(property.id, PLAYLIST_IMPORT_PROGRESS_KEY))
     .limit(1);
 
   const value = rows[0]?.value;
@@ -120,12 +142,12 @@ export async function writePlaylistImportProgress(
 
   await db
     .insert(property)
-    .values({ id: IMPORT_PROGRESS_KEY, value })
+    .values({ id: PLAYLIST_IMPORT_PROGRESS_KEY, value })
     .onConflictDoUpdate({ target: property.id, set: { value } });
 }
 
 export async function clearPlaylistImportProgress(db: Database): Promise<void> {
-  await db.delete(property).where(eq(property.id, IMPORT_PROGRESS_KEY));
+  await db.delete(property).where(eq(property.id, PLAYLIST_IMPORT_PROGRESS_KEY));
 }
 
 /**

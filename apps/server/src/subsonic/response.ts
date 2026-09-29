@@ -66,11 +66,37 @@ export class SubsonicError extends Error {
 /**
  * A value in the response body tree.
  *
- * Scalars become XML attributes, nested objects become child elements, and
- * arrays become one repeated child element per item — the same mapping
- * Navidrome gets from its Go struct tags.
+ * Scalars become XML attributes, nested objects become child elements, a
+ * `TextElement` becomes a child element holding its text, and arrays become
+ * one repeated child element per item — the same mapping Navidrome gets from
+ * its Go struct tags.
  */
-export type SubsonicValue = string | number | boolean | SubsonicNode | readonly SubsonicValue[];
+export type SubsonicValue =
+  | string
+  | number
+  | boolean
+  | TextElement
+  | SubsonicNode
+  | readonly SubsonicValue[];
+
+/**
+ * A child element that holds nothing but text, which JSON carries as a bare
+ * string: `{ biography: new TextElement("…") }` renders as
+ * `<biography>…</biography>` in XML and as `"biography": "…"` in JSON.
+ *
+ * It exists for the fields Navidrome's structs tag as elements rather than
+ * attributes — `ArtistInfoBase.Biography` is `xml:"biography,omitempty"`, and
+ * the image URLs beside it and `AlbumInfo.Notes` are tagged the same way
+ * (server/subsonic/responses/responses.go) — which a plain scalar here would
+ * render as an attribute. `toJSON` is what lets JSON see the bare string.
+ */
+export class TextElement {
+  constructor(readonly text: string) {}
+
+  toJSON(): string {
+    return this.text;
+  }
+}
 
 export interface SubsonicNode {
   readonly [key: string]: SubsonicValue | undefined;
@@ -171,6 +197,8 @@ function renderElement(name: string, node: SubsonicNode): string {
 
     if (key === TEXT_KEY && isScalar(value)) {
       text = escapeXmlText(String(value));
+    } else if (value instanceof TextElement) {
+      children.push(renderChild(key, value));
     } else if (Array.isArray(value)) {
       for (const item of value as readonly SubsonicValue[]) {
         children.push(renderChild(key, item));
@@ -192,6 +220,9 @@ function renderElement(name: string, node: SubsonicNode): string {
 function renderChild(name: string, value: SubsonicValue): string {
   if (isScalar(value)) {
     return `<${name}>${escapeXmlText(String(value))}</${name}>`;
+  }
+  if (value instanceof TextElement) {
+    return `<${name}>${escapeXmlText(value.text)}</${name}>`;
   }
   if (Array.isArray(value)) {
     return (value as readonly SubsonicValue[]).map((item) => renderChild(name, item)).join("");

@@ -183,7 +183,25 @@ export async function recordPlays(
   userId: string,
   plays: readonly Play[],
 ): Promise<void> {
-  const statements = plays.map((play) => {
+  const [first, ...rest] = playStatements(db, userId, plays);
+  if (first === undefined) {
+    return;
+  }
+
+  await db.batch([first, ...rest]);
+}
+
+/**
+ * The statements `recordPlays` runs, one upsert per play, for a caller that
+ * has to run them in a batch of its own: `reportPlayback`'s `stopped` ends
+ * the session and counts the play in one batch.
+ */
+export function playStatements(
+  db: Database,
+  userId: string,
+  plays: readonly Play[],
+): BatchItem<"sqlite">[] {
+  return plays.map((play) => {
     const count = play.count ?? 1;
 
     return db
@@ -206,20 +224,27 @@ export async function recordPlays(
         },
       });
   });
-
-  const [first, ...rest] = statements;
-  if (first === undefined) {
-    return;
-  }
-
-  await db.batch([first, ...rest]);
 }
 
-/** The album each of these tracks belongs to, by track id. */
-export async function findTrackAlbums(
+/** The album and artist a track is attributed to. */
+export interface TrackParents {
+  readonly albumId: string;
+  readonly artistId: string;
+}
+
+/**
+ * The album and artist each of these tracks belongs to, by track id.
+ *
+ * A play counts for the track's album *and* its artist (Navidrome's
+ * `PlayTracker.incPlay` increments the media file, the album and the
+ * artist(s)), and a track carries a single `artist_id` — its album artist — so
+ * one query answers both parents at once. Reading the artist here rather than
+ * in a second lookup keeps the submission path's D1 cost unchanged.
+ */
+export async function findTrackParents(
   db: Database,
   trackIds: readonly string[],
-): Promise<Map<string, string>> {
+): Promise<Map<string, TrackParents>> {
   // One parameter is bound per id, so the ids are taken
   // `KEYS_PER_STATEMENT` at a time, as the existence check above takes them:
   // a `scrobble` flushing an offline backlog of more than a hundred tracks
@@ -227,10 +252,17 @@ export async function findTrackAlbums(
   // every test, because Miniflare is SQLite and allows 999. The chunks are
   // asked together, as that check asks its statements together.
   const lookups = [...chunked(trackIds)].map((chunk) =>
-    db.select({ id: track.id, albumId: track.albumId }).from(track).where(inArray(track.id, chunk)),
+    db
+      .select({ id: track.id, albumId: track.albumId, artistId: track.artistId })
+      .from(track)
+      .where(inArray(track.id, chunk)),
   );
 
-  return new Map((await Promise.all(lookups)).flat().map((row) => [row.id, row.albumId] as const));
+  return new Map(
+    (await Promise.all(lookups))
+      .flat()
+      .map((row) => [row.id, { albumId: row.albumId, artistId: row.artistId }] as const),
+  );
 }
 
 function starStatement(

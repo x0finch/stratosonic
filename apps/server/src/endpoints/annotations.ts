@@ -1,6 +1,7 @@
 /**
  * The Annotation module, write side: what a client saves about an item —
- * `star` and `unstar` here, `setRating` and `scrobble` alongside them.
+ * `star` and `unstar` here, `setRating`, `scrobble` and `reportPlayback`
+ * alongside them, as Navidrome files them in `media_annotation.go`.
  *
  * Every write is the caller's own (`annotations/repository.ts`), so a library
  * two accounts share keeps their stars apart. Each answers with an empty ok
@@ -27,7 +28,7 @@
  *   `scrobble` is held to the same cap and for the same reason. A client
  *   flushing an offline backlog is the one caller that really does send
  *   hundreds of ids at once, and its submission path reads them in chunks
- *   too (`findTrackAlbums`), so a thousand ids are ceil(1000 / 90) = 12
+ *   too (`findTrackParents`), so a thousand ids are ceil(1000 / 90) = 12
  *   selects and one batch.
  */
 
@@ -35,15 +36,20 @@ import { parseIdOfType, parsePrefixedId } from "@stratosonic/db";
 import {
   type AnnotatedItem,
   findMissingItems,
-  findTrackAlbums,
+  findTrackParents,
   type Play,
   recordPlays,
   setRating as saveRating,
   setStarred,
+  type TrackParents,
 } from "../annotations/repository";
 import { database } from "../db";
-import { registerNowPlaying } from "../nowplaying/repository";
+import { reportPlayback as applyPlaybackReport } from "../nowplaying/report";
+import { isPlaybackState } from "../nowplaying/session";
 import {
+  booleanParameterOr,
+  floatParameterOr,
+  integerParameterOr,
   integerParameterValue,
   requiredIntegerParameter,
   requiredParameter,
@@ -55,7 +61,8 @@ import type { AuthenticatedSubsonicRequest, SubsonicHandler } from "../subsonic/
  * `scrobble` — a client tells the server the caller played a track.
  *
  * `submission=false` (a track starting) only registers the caller's
- * now-playing entry; `submission=true` (the default, a track finished) only
+ * now-playing entry — a `playing` report, as `reportPlayback` would store it,
+ * `position` seconds in; `submission=true` (the default, a track finished) only
  * counts the play and moves its last-played instant. The two are exclusive, as
  * in Navidrome: a play does not touch now-playing, which expires by TTL, and a
  * now-playing does not count a play. `id` and `time` are repeatable and paired
@@ -72,15 +79,16 @@ export const scrobble: SubsonicHandler = async (request) => {
   const db = database(request.env);
 
   if (isSubmission(params)) {
-    // A play counts for the track and for its album, so `frequent`/`recent`
-    // album lists reflect what was played. One query answers both questions
-    // this path asks of `track` — which ids are real, and what album each one
-    // belongs to — because an id the map does not carry is precisely a track
-    // that is not in the library.
-    const albumOf = await findTrackAlbums(db, ids);
+    // A play counts for the track, for its album and for its artist, so
+    // `frequent`/`recent` album lists and `getArtist`'s play data reflect what
+    // was played (Navidrome's `PlayTracker.incPlay` increments all three). One
+    // query answers every question this path asks of `track` — which ids are
+    // real, and what album and artist each one belongs to — because an id the
+    // map does not carry is precisely a track that is not in the library.
+    const parentsOf = await findTrackParents(db, ids);
     const now = new Date();
     const played = ids.map((id, index) => ({ id, playDate: times[index] ?? now }));
-    if (played.some(({ id }) => !albumOf.has(id))) {
+    if (played.some(({ id }) => !parentsOf.has(id))) {
       throw new SubsonicError(SubsonicErrorCode.NotFound);
     }
 
@@ -88,28 +96,109 @@ export const scrobble: SubsonicHandler = async (request) => {
       item: { type: "track", id },
       playDate,
     }));
-    await recordPlays(db, request.user.id, [...trackPlays, ...albumPlays(played, albumOf)]);
+    await recordPlays(db, request.user.id, [
+      ...trackPlays,
+      ...parentPlays(played, parentsOf, "album"),
+      ...parentPlays(played, parentsOf, "artist"),
+    ]);
   } else {
-    const missing = await findMissingItems(
-      db,
-      ids.map((id) => ({ type: "track", id })),
-    );
-    if (missing.length > 0) {
-      throw new SubsonicError(SubsonicErrorCode.NotFound);
+    // `now_playing` holds one row per user, so only one of several ids can be
+    // registered, and it is the first, as Navidrome's `Scrobble` takes
+    // `ids[0]` for a now-playing. The others are still checked, so that an id
+    // naming nothing is error 70 wherever it sits (#42).
+    const [current = "", ...others] = ids;
+    if (others.length > 0) {
+      const missing = await findMissingItems(
+        db,
+        others.map((id) => ({ type: "track", id })),
+      );
+      if (missing.length > 0) {
+        throw new SubsonicError(SubsonicErrorCode.NotFound);
+      }
     }
 
-    // `now_playing` holds one row per user, so registering every id in turn
-    // would leave only the last of them anyway — each write overwrites the row
-    // the one before it made. A client that names several tracks is playing
-    // the last: that is the only one written, in one statement.
-    //
-    // Its instant is the server's now, never the client's `time`. Navidrome
-    // reads `time` for submissions alone, and a now-playing entry is measured
-    // against this server's clock as it expires.
-    const current = ids.at(-1);
-    if (current !== undefined) {
-      await registerNowPlaying(db, request.user.id, current, params.get("c") ?? "", new Date());
+    // A now-playing is a `playing` report, as Navidrome's `scrobblerNowPlaying`
+    // hands it to `ReportPlayback`: `position` is seconds into the track, and
+    // absent, unreadable or negative means the start. Its instant is the server's now,
+    // never the client's `time`, which Navidrome reads for submissions alone.
+    const found = await applyPlaybackReport(db, {
+      userId: request.user.id,
+      trackId: current,
+      state: "playing",
+      positionMs: Math.max(integerParameterOr(params, "position", 0), 0) * 1_000,
+      playbackRate: 1,
+      ignoreScrobble: false,
+      playerName: params.get("c") ?? "",
+    });
+    if (!found) {
+      throw new SubsonicError(SubsonicErrorCode.NotFound);
     }
+  }
+
+  return {};
+};
+
+/**
+ * `reportPlayback` — the OpenSubsonic `playbackReport` extension: a client
+ * reports where it is in a track, and whether it is starting, playing, paused
+ * or stopped.
+ *
+ * `starting`, `playing` and `paused` store the caller's now-playing session,
+ * which `getNowPlaying` shows with its state, its position moved on to now,
+ * and its rate. `stopped` ends the session and — unless `ignoreScrobble` —
+ * counts a play when the stop came at least half-way through the track or
+ * four minutes in, whichever is first: a client that sees the extension may
+ * stop sending `scrobble`, so this is where its plays are counted. The rules
+ * are Navidrome's play tracker's (`nowplaying/report.ts`).
+ *
+ * The parameters are read in Navidrome's order and refused as it refuses
+ * them: `mediaId`, `mediaType`, `positionMs` and `state` are required (error
+ * 10); a `positionMs` that is not a whole number or is negative, a `state`
+ * the extension does not define, and a `playbackRate` that is not a finite
+ * positive number are error 0. A `playbackRate` that is not a number at all
+ * is the default of 1, as Navidrome's `Float64Or` reads it. `mediaType` is
+ * not checked beyond being there — Navidrome logs one that is not `song` and
+ * goes on — so a `podcast` is answered as its id deserves: this server has no
+ * podcasts, and an id that names no track is error 70.
+ */
+export const reportPlayback: SubsonicHandler = async (request) => {
+  const { params } = request;
+  const mediaId = requiredParameter(params, "mediaId");
+  requiredParameter(params, "mediaType");
+  const positionMs = requiredIntegerParameter(params, "positionMs");
+  if (positionMs < 0) {
+    throw new SubsonicError(SubsonicErrorCode.Generic, "positionMs must be non-negative");
+  }
+
+  const state = requiredParameter(params, "state");
+  if (!isPlaybackState(state)) {
+    throw new SubsonicError(SubsonicErrorCode.Generic, `Invalid state: ${state}`);
+  }
+
+  const playbackRate = floatParameterOr(params, "playbackRate", 1);
+  if (!Number.isFinite(playbackRate) || playbackRate <= 0) {
+    throw new SubsonicError(
+      SubsonicErrorCode.Generic,
+      "playbackRate must be a finite positive number",
+    );
+  }
+
+  const trackId = parseIdOfType("track", mediaId);
+  if (trackId === null) {
+    throw new SubsonicError(SubsonicErrorCode.NotFound);
+  }
+
+  const found = await applyPlaybackReport(database(request.env), {
+    userId: request.user.id,
+    trackId,
+    state,
+    positionMs,
+    playbackRate,
+    ignoreScrobble: booleanParameterOr(params, "ignoreScrobble", false),
+    playerName: params.get("c") ?? "",
+  });
+  if (!found) {
+    throw new SubsonicError(SubsonicErrorCode.NotFound);
   }
 
   return {};
@@ -122,33 +211,40 @@ interface PlayedTrack {
 }
 
 /**
- * The album side of a submission: one play row per album, however many of its
- * tracks the request named.
+ * The album or artist side of a submission: one play row per parent, however
+ * many of its tracks the request named.
  *
- * A client that finishes a sync sends a whole album at once, and a row per
- * track would be as many statements — each overwriting the same album row — to
- * reach a count the request already knows. Grouping makes it one upsert per
- * album, adding that many plays and carrying the latest of their instants,
- * which is the one `recent` should order by.
+ * A client that finishes a sync sends a whole album — and so a whole artist —
+ * at once, and a row per track would be as many statements, each overwriting
+ * the same parent row, to reach a count the request already knows. Grouping
+ * makes it one upsert per album and one per artist, adding that many plays and
+ * carrying the latest of their instants, which is the one `recent` and
+ * `getArtist` should order by. A track carries a single `artist_id` — its
+ * album artist — so each play adds to exactly one artist.
  */
-function albumPlays(played: readonly PlayedTrack[], albumOf: ReadonlyMap<string, string>): Play[] {
-  const byAlbum = new Map<string, { playDate: Date; count: number }>();
+function parentPlays(
+  played: readonly PlayedTrack[],
+  parentsOf: ReadonlyMap<string, TrackParents>,
+  type: "album" | "artist",
+): Play[] {
+  const byParent = new Map<string, { playDate: Date; count: number }>();
 
   for (const { id, playDate } of played) {
-    const albumId = albumOf.get(id);
-    if (albumId === undefined) {
+    const parents = parentsOf.get(id);
+    if (parents === undefined) {
       continue;
     }
 
-    const current = byAlbum.get(albumId);
-    byAlbum.set(albumId, {
+    const parentId = type === "album" ? parents.albumId : parents.artistId;
+    const current = byParent.get(parentId);
+    byParent.set(parentId, {
       playDate: current && current.playDate > playDate ? current.playDate : playDate,
       count: (current?.count ?? 0) + 1,
     });
   }
 
-  return [...byAlbum].map(([id, { playDate, count }]) => ({
-    item: { type: "album", id },
+  return [...byParent].map(([id, { playDate, count }]) => ({
+    item: { type, id },
     playDate,
     count,
   }));

@@ -1,4 +1,4 @@
-import { albumId, prefixedId, trackId } from "@stratosonic/db";
+import { albumId, artistId, prefixedId, trackId } from "@stratosonic/db";
 import { beforeAll, describe, expect, it } from "vitest";
 import { write } from "./annotations-support";
 import { bootstrapAdmin, browse } from "./browsing-support";
@@ -10,7 +10,7 @@ import { seedAlbum, seedArtist, seedTrack } from "./support";
  *
  * This is the one caller that really does send hundreds of ids at once: a
  * client that has been offline flushes its backlog in a single request. The
- * submission path looks every id up in `findTrackAlbums` - one bound
+ * submission path looks every id up in `findTrackParents` - one bound
  * parameter each - so the lookup is chunked, and nothing here can fail in
  * Miniflare, which is SQLite and allows 999 where D1 allows a hundred. It is
  * a guard on the chunking rather than on the platform, and it lives in its
@@ -28,6 +28,7 @@ const keys = Array.from(
 );
 
 const theAlbumId = prefixedId("album", albumId(ARTIST, ALBUM, YEAR));
+const theArtistId = prefixedId("artist", artistId(ARTIST));
 
 beforeAll(async () => {
   await bootstrapAdmin();
@@ -62,6 +63,12 @@ describe("submitting more ids than one statement may bind", () => {
     // into a single upsert carrying all 250 of them.
     const album = (await browse("getAlbum", { id: theAlbumId })).album;
     expect(album?.playCount).toBe(COUNT);
+
+    // The same holds for the artist: 250 tracks of one artist are one artist
+    // upsert carrying all 250 plays, not 250 separate increments and not
+    // doubled.
+    const artist = (await browse("getArtist", { id: theArtistId })).artist;
+    expect(artist?.playCount).toBe(COUNT);
   });
 
   it("refuses a submission naming more ids than the cap allows", async () => {

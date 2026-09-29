@@ -105,3 +105,57 @@ export function integerParameterValue(name: string, value: string): number {
 
   return Number(parsed);
 }
+
+/** A decimal float as Go's `strconv.ParseFloat` spells one. */
+const FLOAT = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+
+/** The words `ParseFloat` also reads, in any case: infinities and NaN. */
+const FLOAT_WORD = /^([+-]?)(inf|infinity|nan)$/i;
+
+/**
+ * Reads a float parameter, falling back when it is absent or not a float -
+ * Navidrome's `req.Params.Float64Or`, which swallows the `ParseFloat` error.
+ *
+ * What `ParseFloat` accepts that is not a finite number comes back as it
+ * reads it: `NaN`, `Inf` and `-Infinity` are floats to Go, so a caller that
+ * wants a finite value has to refuse them itself, as Navidrome's
+ * `reportPlayback` does. A decimal too large for a float64 is a range error
+ * to Go, and so the fallback here. Go's hexadecimal floats are not read.
+ */
+export function floatParameterOr(params: URLSearchParams, name: string, fallback: number): number {
+  const value = params.get(name);
+  if (!value) {
+    return fallback;
+  }
+
+  const word = FLOAT_WORD.exec(value);
+  if (word) {
+    if (word[2]?.toLowerCase() === "nan") {
+      return Number.NaN;
+    }
+
+    return word[1] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY;
+  }
+
+  const parsed = FLOAT.test(value) ? Number(value) : Number.NaN;
+
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+/**
+ * Reads a boolean parameter as Navidrome's `req.Params.BoolOr` does: absent
+ * or empty is the fallback, `true`, `on` and `1` in any case are true, and
+ * anything else is false.
+ */
+export function booleanParameterOr(
+  params: URLSearchParams,
+  name: string,
+  fallback: boolean,
+): boolean {
+  const value = params.get(name);
+  if (!value) {
+    return fallback;
+  }
+
+  return ["true", "on", "1"].includes(value.toLowerCase());
+}

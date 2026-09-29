@@ -102,6 +102,7 @@ import {
   deleteTracksStatements,
   findAlbumCovers,
   findTracksInRange,
+  lyricsStatement,
   pruneEmptyAlbums,
   pruneEmptyArtists,
   pruneOrphanPlaylistEntries,
@@ -123,6 +124,7 @@ import {
   writeLastScanSummaryStatement,
   writeScanProgressStatement,
 } from "./state";
+import { SCAN_VERSION } from "./version";
 
 /** How much of the bucket one run gets through. See the budget above. */
 export interface ScanLimits {
@@ -164,13 +166,15 @@ interface Extracted {
   readonly cover: EmbeddedCover | undefined;
   /** Whether the library already held this track with different bytes. */
   readonly changed: boolean;
+  /** Whether the library holds a lyrics row for it, which tags without lyrics remove. */
+  readonly heldLyrics: boolean;
 }
 
 /** What one listed object turns out to need. */
 type Plan =
   /** Not music: artwork, a playlist, a stray file. */
   | { readonly work: "ignore" }
-  /** Its etag and size still match the row we hold. */
+  /** Its etag and size still match the row we hold, read by this scanner version. */
   | { readonly work: "unchanged" }
   /** Known unreadable at exactly these bytes; not worth a read. */
   | { readonly work: "known-broken" }
@@ -310,7 +314,12 @@ export async function runScan(
       }
 
       const rows = deriveRows(planned.object, read.metadata, now);
-      extracted.push({ rows, cover: read.metadata.cover, changed: planned.held !== undefined });
+      extracted.push({
+        rows,
+        cover: read.metadata.cover,
+        changed: bytesChanged(planned.held, planned.object),
+        heldLyrics: planned.held?.hasLyrics ?? false,
+      });
       counts.indexed++;
       if (planned.held === undefined) {
         counts.added++;
@@ -326,6 +335,10 @@ export async function runScan(
     const writes: ScanStatement[] = [];
     for (const item of extracted) {
       writes.push(...upsertStatements(db, item.rows, now));
+      const lyrics = lyricsStatement(db, item.rows, item.heldLyrics);
+      if (lyrics !== null) {
+        writes.push(lyrics);
+      }
     }
     for (const [albumId, coverKey] of await storeCovers(env, db, extracted, counts)) {
       writes.push(setAlbumCoverStatement(db, albumId, coverKey, now));
@@ -413,7 +426,12 @@ function planFor(object: R2Object, held: Map<string, StoredTrack>, broken: Broke
 
   const listed = asLibraryObject(object);
   const row = held.get(listed.key);
-  if (row !== undefined && row.etag === listed.etag && row.size === listed.size) {
+  if (
+    row !== undefined &&
+    row.etag === listed.etag &&
+    row.size === listed.size &&
+    row.scanVersion >= SCAN_VERSION
+  ) {
     return { work: "unchanged" };
   }
 
@@ -422,6 +440,16 @@ function planFor(object: R2Object, held: Map<string, StoredTrack>, broken: Broke
   }
 
   return { work: "read", object: listed, held: row };
+}
+
+/**
+ * Whether the library held this track with other bytes than the object now
+ * has - which is what lets a re-read replace its album's cover. A track read
+ * again only because its row predates `SCAN_VERSION` has the same bytes, so
+ * that re-read writes no cover.
+ */
+function bytesChanged(held: StoredTrack | undefined, object: LibraryObject): boolean {
+  return held !== undefined && (held.etag !== object.etag || held.size !== object.size);
 }
 
 /** What came of trying to read an object, and whose fault it was. */

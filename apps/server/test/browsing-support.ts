@@ -21,6 +21,8 @@ export interface SubsonicArtistElement {
   coverArt?: string;
   albumCount: number;
   starred?: string;
+  playCount?: number;
+  played?: string;
   userRating?: number;
   album?: SubsonicAlbumElement[];
 }

@@ -1,7 +1,14 @@
 import { Hono } from "hono";
-import { scrobble, setRating, star, unstar } from "./endpoints/annotations";
+import { reportPlayback, scrobble, setRating, star, unstar } from "./endpoints/annotations";
 import { getAlbum, getArtist, getArtists, getGenres, getSong } from "./endpoints/browsing";
 import { getIndexes, getMusicDirectory, getMusicFolders } from "./endpoints/folders";
+import {
+  getAlbumInfo,
+  getArtistInfo,
+  getArtistInfo2,
+  getSimilarSongs,
+  getSimilarSongs2,
+} from "./endpoints/info";
 import {
   getAlbumList2,
   getRandomSongs,
@@ -9,7 +16,8 @@ import {
   getStarred2,
   getTopSongs,
 } from "./endpoints/lists";
-import { download, getCoverArt, stream } from "./endpoints/media";
+import { getLyrics, getLyricsBySongId } from "./endpoints/lyrics";
+import { download, getCoverArt, servePublicImage, stream } from "./endpoints/media";
 import { notImplemented } from "./endpoints/not-implemented";
 import {
   createBookmark,
@@ -26,6 +34,7 @@ import {
   getPlaylists,
   updatePlaylist,
 } from "./endpoints/playlists";
+import { getScanStatus, startScan } from "./endpoints/scanning";
 import { search2, search3 } from "./endpoints/search";
 import { getLicense, getOpenSubsonicExtensions, ping } from "./endpoints/system";
 import { getUser, getUsers } from "./endpoints/users";
@@ -70,10 +79,23 @@ export function createApp(): SubsonicApp {
   registerEndpoint(app, "getSong", getSong);
   registerEndpoint(app, "getGenres", getGenres);
 
+  // What a client shows beside an artist's or an album's page, which
+  // Navidrome mounts right after `getSong`, in this order. `getAlbumInfo2` is
+  // the very handler `getAlbumInfo` is there, answering `<albumInfo>` too.
+  registerEndpoint(app, "getAlbumInfo", getAlbumInfo);
+  registerEndpoint(app, "getAlbumInfo2", getAlbumInfo);
+  registerEndpoint(app, "getArtistInfo", getArtistInfo);
+  registerEndpoint(app, "getArtistInfo2", getArtistInfo2);
+
   // Navidrome mounts `getTopSongs` here, with the browsing endpoints, because
   // it answers one artist's page rather than a home screen; the handler lives
   // in the Lists module with the other song lists.
   registerEndpoint(app, "getTopSongs", getTopSongs);
+
+  // The "more like this" mix, which Navidrome mounts right after
+  // `getTopSongs`, answered from local data as its local agent answers it.
+  registerEndpoint(app, "getSimilarSongs", getSimilarSongs);
+  registerEndpoint(app, "getSimilarSongs2", getSimilarSongs2);
 
   // Browsing (folders): the same library as one music folder of directories.
   registerEndpoint(app, "getMusicFolders", getMusicFolders);
@@ -108,6 +130,7 @@ export function createApp(): SubsonicApp {
   registerEndpoint(app, "unstar", unstar);
   registerEndpoint(app, "setRating", setRating);
   registerEndpoint(app, "scrobble", scrobble);
+  registerEndpoint(app, "reportPlayback", reportPlayback);
 
   registerEndpoint(app, "getUser", getUser);
   registerEndpoint(app, "getUsers", getUsers, { adminOnly: true });
@@ -121,6 +144,12 @@ export function createApp(): SubsonicApp {
   registerEndpoint(app, "getPlayQueue", getPlayQueue);
   registerEndpoint(app, "savePlayQueue", savePlayQueue);
 
+  // Lyrics, which Navidrome mounts in its media group ahead of `stream`: read
+  // from the sidecar beside the track when a client asks, so they answer with
+  // an envelope and write nothing.
+  registerEndpoint(app, "getLyrics", getLyrics);
+  registerEndpoint(app, "getLyricsBySongId", getLyricsBySongId);
+
   // Media: these answer with bytes rather than with an envelope, and with an
   // error envelope when there are no bytes to send.
   registerEndpoint(app, "stream", stream);
@@ -133,6 +162,18 @@ export function createApp(): SubsonicApp {
   for (const name of USER_WRITE_ENDPOINTS) {
     registerEndpoint(app, name, notImplemented);
   }
+
+  // Media library scanning, which is the last group of Navidrome's router and
+  // the last of the Subsonic API's own list. Admin-only, as Navidrome mounts
+  // it: a scan is server-wide, not one listener's business.
+  registerEndpoint(app, "getScanStatus", getScanStatus, { adminOnly: true });
+  registerEndpoint(app, "startScan", startScan, { adminOnly: true });
+
+  // The public image URLs the info endpoints hand out, outside `/rest/` and
+  // without Subsonic credentials: the signed token in the path is the
+  // authorization. Navidrome mounts the same path whether or not sharing is
+  // enabled (server/public/public.go). HEAD is routed here by Hono.
+  app.get("/share/img/:token", (c) => servePublicImage(c.env, c.req.param("token"), c.req.raw));
 
   registerUnknownEndpointHandler(app);
 

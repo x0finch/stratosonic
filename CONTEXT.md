@@ -31,6 +31,12 @@ A user's per-item state — starred flag, rating, and play count — keyed by
 (user, item, item type). Starts empty; no historical data is imported.
 _Avoid_: Favorite, Rating record.
 
+**Playback session**:
+What a user is playing right now — one track, its state (starting, playing,
+paused), position and rate — one per user, kept until it expires or the
+client reports it stopped. A stop far enough into the track counts a play.
+_Avoid_: Now-playing entry (that is how `getNowPlaying` renders one), Stream.
+
 **Entity id**:
 The stable identifier of an artist, album, track, or playlist: a 22-character
 base62 MD5 hash, exposed to clients with a type prefix (`ar-`, `al-`, `tr-`,
