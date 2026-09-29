@@ -8,11 +8,17 @@ import { bodyLimit } from "hono/body-limit";
  * and some of them answer before anyone has signed in, so a body is capped
  * before it is parsed: parsing an arbitrarily large one would spend the
  * request's 10 ms of CPU on a stranger's input. Navidrome caps its login and
- * first-admin bodies the same way (server/auth.go, `MaxLoginBodySize`, 8 KiB).
+ * first-admin bodies the same way (server/auth.go, `MaxLoginBodySize`).
  */
 
-/** The largest body a console form may send. */
-export const MAX_JSON_BODY_BYTES = 8 * 1024;
+/**
+ * The largest body a console form may send. Navidrome's cap is 8 KiB, but a
+ * password may be `MAX_PASSWORD_LENGTH` (1,024) UTF-16 units, and JSON may
+ * escape each as `\uXXXX`, six bytes: a password change carrying two such
+ * passwords is about 12 KiB. 16 KiB takes that with room to spare, and is
+ * still nothing to parse.
+ */
+export const MAX_JSON_BODY_BYTES = 16 * 1024;
 
 /**
  * Refuses a body over `MAX_JSON_BODY_BYTES` with
