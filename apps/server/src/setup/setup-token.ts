@@ -1,5 +1,5 @@
 import { property, user } from "@stratosonic/db";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, type SQL, sql } from "drizzle-orm";
 import { constantTimeEquals } from "../auth/crypto";
 import type { CredentialStatement } from "../console-auth/credentials";
 import type { Database } from "../db";
@@ -165,26 +165,39 @@ export function setupState(facts: SetupFacts | null): SetupState {
 }
 
 /**
- * Records the token as spent, for a recovery's batch. It is a plain insert,
- * so when a racing request has spent the same value first the key exists, the
- * insert fails, and D1 rolls the whole batch back, the password with it
- * (`isSpentTokenConflict`).
+ * Records the token as spent for a recovery's batch, if the admin it resets
+ * is still an admin when the batch runs: `setPassword`'s `onlyIfAdmin` holds
+ * the rest of the batch to the same condition, so a user demoted after the
+ * check writes nothing, and the token stays unspent.
+ *
+ * It is a plain insert, so when a racing request has spent the same value
+ * first the key exists, the insert fails, and D1 rolls the whole batch back,
+ * the password with it (`isSpentTokenConflict`).
  */
-export function markSpent(db: Database, digest: string): CredentialStatement {
-  return db.insert(property).values({ id: spentKey(digest), value: new Date().toISOString() });
+export function markSpentIfStillAdmin(
+  db: Database,
+  digest: string,
+  userId: string,
+): CredentialStatement {
+  return markSpentFrom(db, digest, and(eq(user.id, userId), eq(user.isAdmin, true)));
 }
 
 /**
  * Records the token as spent for a setup's batch, but only if the user it
  * created is there: when another setup, or the first-run bootstrap, won the
  * race, the user was not inserted and this writes nothing either. It is a
- * plain insert too, for the same reason as `markSpent`.
+ * plain insert too, for the same reason as `markSpentIfStillAdmin`.
  */
 export function markSpentIfCreated(
   db: Database,
   digest: string,
   userId: string,
 ): CredentialStatement {
+  return markSpentFrom(db, digest, eq(user.id, userId));
+}
+
+/** Inserts the spent key once for the user row `userRow` selects, if it selects one. */
+function markSpentFrom(db: Database, digest: string, userRow: SQL | undefined) {
   return db.insert(property).select(
     db
       .select({
@@ -192,7 +205,7 @@ export function markSpentIfCreated(
         value: sql<string>`${new Date().toISOString()}`.as("value"),
       })
       .from(user)
-      .where(eq(user.id, userId)),
+      .where(userRow),
   );
 }
 

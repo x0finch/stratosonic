@@ -1,4 +1,5 @@
 import { account, property, rateLimit, session, user } from "@stratosonic/db";
+import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app";
 import { subsonicToken } from "../src/auth/crypto";
@@ -226,6 +227,9 @@ describe("POST /api/setup", () => {
       "insert property", // the spent token
     ]);
     expect(cost(statements).roundTrips).toBe(2);
+    // D1 counts each index entry as a row written: the user row and its
+    // four indexes, the account and its three, the spent token and its key.
+    expect(cost(statements).rowsWritten).toBe(11);
 
     const [owner] = await database(testEnv).select().from(user);
     expect(owner).toMatchObject({ id: created.id, userName: "Owner", isAdmin: true });
@@ -448,6 +452,9 @@ describe("POST /api/setup/reset", () => {
       "insert property", // the spent token
     ]);
     expect(cost(statements).roundTrips).toBe(2);
+    // The user and the account, the spent token and its key, and the two
+    // sessions ended.
+    expect(cost(statements).rowsWritten).toBe(4 + 2);
 
     // The old sessions are gone: a write refuses the old cookie at once.
     expect(await sessionsOf(ownerId)).toEqual([]);
@@ -508,6 +515,63 @@ describe("POST /api/setup/reset", () => {
       () => reset({ token: TOKEN, username: "listener", password: "x" }),
       400,
       "not_admin",
+    );
+  });
+
+  it("writes nothing for an admin demoted between its check and its batch", async () => {
+    const { jar } = await signIn(send, ORIGIN, "owner", "forgotten");
+    const sessions = await sessionsOf(ownerId);
+    const batch = d1.binding.batch.bind(d1.binding);
+    // The demotion lands after the route has read `is_admin`, right before
+    // its batch reaches D1.
+    vi.spyOn(d1.binding, "batch").mockImplementationOnce(async (statements) => {
+      await database(testEnv).update(user).set({ isAdmin: false }).where(eq(user.id, ownerId));
+      return batch(statements);
+    });
+
+    let response: Response | undefined;
+    const statements = await measured(async () => {
+      response = await reset({ token: TOKEN, username: "owner", password: "taken-over" });
+    });
+
+    expect(response?.status).toBe(400);
+    expect(await response?.json()).toEqual({ error: "not_admin" });
+    expect(statements.map(shape)).toContain("update user");
+    expect(cost(statements).rowsWritten).toBe(0);
+    await expectPasswordInvariant(ownerId, "forgotten");
+    expect(await sessionsOf(ownerId)).toEqual(sessions);
+    expect(await spentRows()).toEqual([]);
+    expect((await changePassword(jar, "forgotten", "forgotten")).status).toBe(200);
+  });
+
+  it("looks the name up exactly as typed, spaces and all", async () => {
+    const spacedId = await seedUser(" spaced ", "legacy", true);
+
+    await expectRefusal(
+      () => reset({ token: TOKEN, username: "spaced", password: "x" }),
+      400,
+      "unknown_user",
+    );
+    await expectRefusal(
+      () => reset({ token: TOKEN, username: "   ", password: "x" }),
+      400,
+      "unknown_user",
+    );
+    const response = await reset({ token: TOKEN, username: " SPACED ", password: "found" });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ id: spacedId, userName: " spaced ", isAdmin: true });
+    await expectPasswordInvariant(spacedId, "found");
+  });
+
+  it.each([
+    ["an empty name", ""],
+    ["a name over 255 characters", "n".repeat(MAX_USERNAME_LENGTH + 1)],
+  ])("refuses %s", async (_, username) => {
+    await expectRefusal(
+      () => reset({ token: TOKEN, username, password: "x" }),
+      400,
+      "invalid_username",
     );
   });
 

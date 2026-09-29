@@ -1,5 +1,5 @@
 import { account, type NewUser, newRandomId, session, user } from "@stratosonic/db";
-import { and, eq, getTableColumns, ne, type SQL, sql } from "drizzle-orm";
+import { and, eq, exists, getTableColumns, ne, type SQL, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { encryptPassword } from "../auth/crypto";
 import type { Database } from "../db";
@@ -133,7 +133,7 @@ export async function createUserWithPassword(
 
   const [inserted] = await db.batch([
     db.insert(user).select(selectUserRow(row, condition)).onConflictDoNothing(),
-    copyPasswordToAccount(db, id),
+    copyPasswordToAccount(db, eq(user.id, id)),
     ...(options.alongside?.(id) ?? []),
   ]);
 
@@ -163,6 +163,14 @@ export interface SetPasswordOptions {
    */
   readonly keepSessionId?: string;
   /**
+   * Write only if the user is an admin when the batch runs, which recovery
+   * checks before it but cannot hold still: every statement here is
+   * conditioned on `is_admin`, so a user demoted in between keeps their
+   * password, account and sessions, and `setPassword` answers `false`.
+   * Statements `alongside` need the same condition of their own.
+   */
+  readonly onlyIfAdmin?: boolean;
+  /**
    * Statements to run in the same batch, after the password is written and
    * the sessions are revoked. One that fails rolls the whole batch back:
    * recovery marks its setup token spent with a plain insert, so a token that
@@ -180,6 +188,10 @@ export interface SetPasswordOptions {
  * holding a cookie-cached session keeps passing a cached check until the
  * cache's `maxAge` (5 minutes) runs out; the console's writes check the session
  * against D1 instead (`requireFreshSession`), so they stop immediately.
+ *
+ * Answers whether the password was written: `false` for a user who does not
+ * exist or, with `onlyIfAdmin`, is not an admin, in which case nothing of
+ * theirs was.
  */
 export async function setPassword(
   db: Database,
@@ -187,16 +199,21 @@ export async function setPassword(
   userId: string,
   plaintext: string,
   options: SetPasswordOptions = {},
-): Promise<void> {
+): Promise<boolean> {
   const ciphertext = await encryptPassword(passphrase, plaintext);
-  const theirs = eq(session.userId, userId);
+  const target = options.onlyIfAdmin
+    ? and(eq(user.id, userId), eq(user.isAdmin, true))
+    : eq(user.id, userId);
+  const theirs = options.onlyIfAdmin
+    ? and(eq(session.userId, userId), exists(db.select({ id: user.id }).from(user).where(target)))
+    : eq(session.userId, userId);
 
-  await db.batch([
+  const [updated] = await db.batch([
     db
       .update(user)
       .set({ password: ciphertext, tokenEpoch: sql`${user.tokenEpoch} + 1`, updatedAt: new Date() })
-      .where(eq(user.id, userId)),
-    copyPasswordToAccount(db, userId),
+      .where(target),
+    copyPasswordToAccount(db, target),
     db
       .delete(session)
       .where(
@@ -206,6 +223,8 @@ export async function setPassword(
       ),
     ...(options.alongside ?? []),
   ]);
+
+  return updated.meta.changes > 0;
 }
 
 /**
@@ -214,11 +233,13 @@ export async function setPassword(
  * existed, which its backfill could not see. It must run after the statement
  * that wrote `user.password`, in the same batch: the value is read back from
  * the user row, so the account always carries exactly what was stored there.
+ * `userRow` selects that row, by id and by whatever condition the write was
+ * made under, so when the write was not made nothing is copied either.
  *
  * `INSERT ... SELECT` names every column in the table's order, which Drizzle
  * checks when the query is built.
  */
-function copyPasswordToAccount(db: Database, userId: string) {
+function copyPasswordToAccount(db: Database, userRow: SQL | undefined) {
   return db
     .insert(account)
     .select(
@@ -242,7 +263,7 @@ function copyPasswordToAccount(db: Database, userId: string) {
           updatedAt: user.updatedAt,
         })
         .from(user)
-        .where(eq(user.id, userId)),
+        .where(userRow),
     )
     .onConflictDoUpdate({
       target: [account.providerId, account.accountId],

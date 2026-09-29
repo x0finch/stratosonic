@@ -265,8 +265,37 @@ describe("setPassword", () => {
   it("writes nothing for a user that does not exist", async () => {
     const before = await database(testEnv).select().from(account);
 
-    await setPassword(database(testEnv), encryptionKey(), newRandomId(), "nobody");
+    await expect(
+      setPassword(database(testEnv), encryptionKey(), newRandomId(), "nobody"),
+    ).resolves.toBe(false);
 
     expect(await database(testEnv).select().from(account)).toEqual(before);
+  });
+
+  it("with onlyIfAdmin, writes nothing of a user who is not an admin", async () => {
+    await setPassword(database(testEnv), encryptionKey(), carolId, "unchanged");
+    const kept = await insertSession(carolId);
+    const d1 = countingD1(testEnv.DB);
+
+    const changed = await setPassword(drizzle(d1.binding), encryptionKey(), carolId, "admin-only", {
+      onlyIfAdmin: true,
+      alongside: [],
+    });
+
+    expect(changed).toBe(false);
+    expect(d1.statements.reduce((sum, statement) => sum + statement.rowsWritten, 0)).toBe(0);
+    await expectPasswordInvariant(carolId, "unchanged");
+    expect(await sessionIds(carolId)).toEqual([kept]);
+  });
+
+  it("with onlyIfAdmin, sets an admin's password", async () => {
+    const [admin] = await database(testEnv).select().from(user).where(eq(user.userName, "admin"));
+
+    const changed = await setPassword(database(testEnv), encryptionKey(), admin?.id ?? "", "new", {
+      onlyIfAdmin: true,
+    });
+
+    expect(changed).toBe(true);
+    await expectPasswordInvariant(admin?.id ?? "", "new");
   });
 });
