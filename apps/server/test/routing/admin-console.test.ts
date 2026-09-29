@@ -69,6 +69,14 @@ describe.each([
     it("is served for a deep client route", async () => {
       await expectConsole(await server.fetch("/users", NAVIGATION));
     });
+
+    // The auth screens (#91), which a link or a reload opens directly.
+    it.each(["/login", "/login?redirect=%2Faccount", "/setup", "/setup/reset", "/account"])(
+      "is served for %s",
+      async (path) => {
+        await expectConsole(await server.fetch(path, NAVIGATION));
+      },
+    );
   });
 
   describe("the paths the Worker answers first", () => {
