@@ -1,11 +1,7 @@
-import { drizzleAdapter } from "@better-auth/drizzle-adapter";
-import * as scrypt from "@better-auth/utils/password";
 import { account, rateLimit, session, user, verification } from "@stratosonic/db";
-import { betterAuth } from "better-auth/minimal";
 import { drizzle } from "drizzle-orm/d1";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { createApp } from "../src/app";
-import { consoleRequest, signIn } from "./console-auth-support";
+import { type Send, signIn } from "./console-auth-support";
 import { seedUser, testEnv } from "./support";
 
 /**
@@ -15,10 +11,11 @@ import { seedUser, testEnv } from "./support";
  *
  * The default hasher is `@better-auth/utils/password`, whose `workerd` build
  * runs `node:crypto`'s scrypt. It is replaced here by spies that forward to the
- * real functions; the Workers pool loads Better Auth through Vitest's module
- * graph, so its own import of the hasher gets the spies too. (It is a
- * devDependency so that this file can name it.) A control proves the spies see
- * scrypt when the hooks are left out.
+ * real functions. (It is a devDependency so that this file can name it.) The
+ * pool loads the Worker, and Better Auth with it, before this file's mocks
+ * exist, so the module registry is reset and the Worker's app imported again,
+ * which gives Better Auth's own import of the hasher the spies. A control
+ * proves the spies see scrypt when the hooks are left out.
  */
 
 vi.mock("@better-auth/utils/password", async (importOriginal) => {
@@ -31,8 +28,11 @@ vi.mock("@better-auth/utils/password", async (importOriginal) => {
 });
 
 const ORIGIN = "https://password.stratosonic.test";
-const app = createApp();
-const send = (request: Request) => app.request(request, undefined, testEnv);
+
+let send: Send;
+let scrypt: typeof import("@better-auth/utils/password");
+let betterAuth: typeof import("better-auth/minimal").betterAuth;
+let drizzleAdapter: typeof import("@better-auth/drizzle-adapter").drizzleAdapter;
 
 function scryptCalls(): number {
   return (
@@ -42,9 +42,16 @@ function scryptCalls(): number {
 }
 
 beforeAll(async () => {
+  vi.resetModules();
+  const { createApp } = await import("../src/app");
+  scrypt = await import("@better-auth/utils/password");
+  ({ betterAuth } = await import("better-auth/minimal"));
+  ({ drizzleAdapter } = await import("@better-auth/drizzle-adapter"));
+
+  const app = createApp();
+  send = (request) => app.request(request, undefined, testEnv);
   await seedUser("Alice", "wonderland");
-  await send(consoleRequest(ORIGIN, "/api/me"));
-}, 30_000);
+});
 
 beforeEach(() => {
   vi.mocked(scrypt.hashPassword).mockClear();

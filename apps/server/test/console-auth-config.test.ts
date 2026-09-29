@@ -16,8 +16,7 @@ const sendWith = (env: Env) => (request: Request) => app.request(request, undefi
 
 beforeAll(async () => {
   await seedUser("Alice", "wonderland");
-  await sendWith(testEnv)(consoleRequest(BASE, "/api/me"));
-}, 30_000);
+});
 
 afterEach(() => {
   vi.restoreAllMocks();

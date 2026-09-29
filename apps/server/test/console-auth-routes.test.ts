@@ -23,15 +23,13 @@ import { BASE, type JsonEnvelope, seedUser, testEnv } from "./support";
 const send = (request: Request) => SELF.fetch(request);
 
 beforeAll(async () => {
-  // The first request bootstraps the admin, before any other user exists, and
-  // the first /api request loads Better Auth, which under Vitest means
-  // transforming it too: seconds, once per file.
+  // The first request bootstraps the admin, before any other user exists.
   await send(consoleRequest(BASE, "/api/me"));
   await seedUser("Alice", "wonderland", false, "alice@example.com");
   await seedUser("Émile", "zola");
   await seedUser("jo", "short-name");
   await seedUser("DJ Shadow-7", "endtroducing");
-}, 30_000);
+});
 
 async function me(jar: CookieJar) {
   const response = await send(consoleRequest(BASE, "/api/me", { jar }));

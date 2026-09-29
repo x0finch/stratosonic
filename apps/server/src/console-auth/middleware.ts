@@ -1,16 +1,15 @@
 import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
 import type { Env } from "../env";
-import type { ConsoleAuth } from "./auth";
+import { type ConsoleAuth, consoleAuth } from "./auth";
 
 /**
- * The console API's view of Better Auth (#81, #89): the middleware that loads
- * it, and the middleware later tickets guard their routes with.
+ * The console API's view of Better Auth (#81, #89): the middleware that
+ * provides it, and the middleware later tickets guard their routes with.
  *
- * Better Auth is imported here by type only. The instance comes from a dynamic
- * `import()` on the first `/api` request an isolate serves, so the Subsonic
- * API, the public image URLs, the cron and the scan driver's alarm never
- * evaluate it (console-auth/auth.ts).
+ * The instance is built on the first `/api` request an isolate serves for an
+ * origin, and only there, so the Subsonic API, the public image URLs, the cron
+ * and the scan driver's alarm never build one (console-auth/auth.ts).
  */
 
 /** Who a console request is from, as a route sees it. */
@@ -38,7 +37,7 @@ export interface SessionEnv extends ConsoleEnv {
 let warnedAboutMissingKey = false;
 
 /**
- * Loads the isolate's Better Auth instance for the request's origin, or
+ * Provides the isolate's Better Auth instance for the request's origin, or
  * answers `503 {"error":"not_configured"}` without `PASSWORD_ENCRYPTION_KEY`:
  * the console can neither sign a session nor read a password without it, and
  * a secret derived from an empty passphrase would be one anybody can compute
@@ -55,7 +54,6 @@ export const loadConsoleAuth = createMiddleware<ConsoleEnv>(async (c, next) => {
     return c.json({ error: "not_configured" }, 503);
   }
 
-  const { consoleAuth } = await import("./auth");
   c.set(
     "consoleAuth",
     await consoleAuth({ db: c.env.DB, passphrase, origin: new URL(c.req.url).origin }),

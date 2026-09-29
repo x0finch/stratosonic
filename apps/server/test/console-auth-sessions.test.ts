@@ -61,9 +61,7 @@ let aliceId: string;
 beforeAll(async () => {
   aliceId = await seedUser("Alice", "wonderland", true);
   await seedUser("Bob", "builder");
-  // The first /api request loads Better Auth; under Vitest, seconds.
-  await send(consoleRequest(ORIGIN, "/api/me"));
-}, 30_000);
+});
 
 afterEach(() => {
   vi.useRealTimers();

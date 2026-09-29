@@ -162,7 +162,7 @@ describe("migration 0008 over existing users", () => {
       user: { id: "user-listener", displayUsername: "Listener", isAdmin: false },
     });
     expect((await signIn(send, origin, "admin", "wrong")).response.status).toBe(401);
-  }, 30_000);
+  });
 
   it("serves the sign-in lookup from an index", async () => {
     const plan = await MIGRATION_DB.prepare(

@@ -28,8 +28,7 @@ function attempt(address: string, password = "wrong") {
 
 beforeAll(async () => {
   await seedUser("Alice", "wonderland");
-  await send(consoleRequest(ORIGIN, "/api/me"));
-}, 30_000);
+});
 
 afterEach(() => {
   vi.useRealTimers();

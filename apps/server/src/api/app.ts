@@ -22,8 +22,8 @@ export function createApiApp(): ApiApp {
   });
 
   // Every path under `/api` needs Better Auth, or answers 503 without the key
-  // it is built from; it is imported here, on the first `/api` request, and
-  // nowhere else.
+  // it is built from. Its instance is built here, on the first `/api` request,
+  // and nowhere else.
   api.use(loadConsoleAuth);
 
   // Better Auth's own routes (sign-in, sign-out, get-session), which it
