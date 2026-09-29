@@ -5,18 +5,23 @@ import type { Database } from "../db";
 /**
  * Deletes the console's expired auth rows, from the cron (#93).
  *
- * Better Auth never deletes most of them itself. A session row outlives its
+ * Better Auth deletes them only on the way past. A session row outlives its
  * `expires_at` until its own cookie comes back to a session check, which may
- * be never; a rate-limit row is deleted only when a later request from the
- * same address and path finds its window over, so a caller rotating through
- * addresses leaves a row behind for each one; and `verification`, though no
- * flow the console serves writes it, keeps whatever expired rows it has.
+ * be never. The rate limiter (1.7.6) does sweep, with an unbounded delete of
+ * every row older than the longest window it has seen, but only when some
+ * key's window resets, that is when an address comes back to a path after
+ * its window is over; a caller rotating through fresh addresses never comes
+ * back, so it never triggers the sweep and leaves a row behind for each
+ * address. And `verification`, though no flow the console serves writes it,
+ * keeps whatever expired rows it has. Hence this bounded prune on the cron.
  *
  * A row is deleted only once Better Auth would treat it as absent anyway: a
  * session past `expires_at` is refused and deleted by the next check that
  * reads it, and a rate-limit row whose window is over is reset to a count of
- * one by the next attempt, exactly as a missing row is created with one. So
- * the prune changes what D1 holds, never what a client sees.
+ * one by the next attempt, exactly as a missing row is created with one. The
+ * prune's cut for `rate_limit`, the longest window plus an hour, is looser
+ * than the limiter's own 60 seconds, so it never deletes a row the limiter
+ * still counts. So the prune changes what D1 holds, never what a client sees.
  *
  * Budget: one D1 batch of three statements a cron run, whether or not
  * anything expired, and the cron runs 96 times a day (wrangler.jsonc). Each
@@ -35,8 +40,10 @@ import type { Database } from "../db";
  * Neither `expires_at` nor `last_request` is indexed (an index on
  * `last_request` would cost a write on every sign-in attempt), so a statement
  * that finds fewer than `PRUNE_LIMIT` expired rows reads its whole table:
- * rows read are about the three tables' sizes a run, which the prune itself
- * keeps small.
+ * rows read are about 96 × (the three tables' sizes combined) a day, which
+ * the prune itself keeps small. A backlog of about 50,000 rows would bring
+ * that near the Free plan's 5,000,000 rows read a day, but a flood big enough
+ * to build one runs into the 100,000 rows written a day first.
  */
 
 /** The most rows one statement deletes in one cron run. */
