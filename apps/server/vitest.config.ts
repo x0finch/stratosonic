@@ -23,6 +23,10 @@ export default defineConfig(async () => {
             INITIAL_PASSWORD: "sesame",
             PASSWORD_ENCRYPTION_KEY: "test-password-encryption-key",
           },
+          // A second, empty database, which no setup file migrates: a test
+          // migrates it part of the way, writes the rows a deployed server
+          // would have, then applies the rest (test/migration-0008.test.ts).
+          d1Databases: ["MIGRATION_DB"],
         },
       }),
     ],

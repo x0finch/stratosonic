@@ -3,10 +3,10 @@ import { describe, expect, it } from "vitest";
 import { BASE } from "./support";
 
 /**
- * `/api/*`, the admin console's JSON API (#87). It has no routes yet, so every
- * path under it is unknown, and an unknown path is a JSON 404 — never the
- * Subsonic envelope the rest of the Worker answers with. Which paths reach the
- * Worker at all is covered by test/routing.
+ * `/api/*`, the admin console's JSON API (#87). An unknown path under it is a
+ * JSON 404 — never the Subsonic envelope the rest of the Worker answers with.
+ * Its routes have tests of their own (test/console-auth-*.test.ts), and which
+ * paths reach the Worker at all is covered by test/routing.
  */
 describe("the admin console API", () => {
   it.each([

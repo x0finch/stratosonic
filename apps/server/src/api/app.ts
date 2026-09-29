@@ -1,5 +1,6 @@
 import { Hono } from "hono";
-import type { Env } from "../env";
+import { CONSOLE_AUTH_ROUTES } from "../console-auth/auth";
+import { type ConsoleEnv, loadConsoleAuth, requireSession } from "../console-auth/middleware";
 
 /**
  * The admin console's JSON API, mounted at `/api` (#87).
@@ -10,7 +11,7 @@ import type { Env } from "../env";
  * that throws, which would otherwise fall through to the Subsonic app's own
  * not-found and error handlers.
  */
-export type ApiApp = Hono<{ Bindings: Env }>;
+export type ApiApp = Hono<ConsoleEnv>;
 
 /** Builds the console API. Routes are registered here, ahead of the catch-all. */
 export function createApiApp(): ApiApp {
@@ -19,6 +20,26 @@ export function createApiApp(): ApiApp {
   api.onError((error, c) => {
     console.error("admin api: a handler failed", error);
     return c.json({ error: "internal" }, 500);
+  });
+
+  // Every path under `/api` needs Better Auth, or answers 503 without the key
+  // it is built from. Its instance is built here, on the first `/api` request,
+  // and nowhere else.
+  api.use(loadConsoleAuth);
+
+  // The Better Auth routes the console uses, and no other: any other path
+  // under `/api/auth` is the catch-all's JSON 404, whatever a Better Auth
+  // upgrade adds. Better Auth refuses the rest itself as well
+  // (console-auth/auth.ts).
+  for (const { method, path } of CONSOLE_AUTH_ROUTES) {
+    api.on(method, `/auth${path}`, (c) => c.var.consoleAuth.handler(c.req.raw));
+  }
+
+  // Who am I (#81): the signed-in user, from a session the cookie cache may
+  // vouch for.
+  api.get("/me", requireSession, (c) => {
+    const { userId, userName, isAdmin } = c.var.session;
+    return c.json({ id: userId, userName, isAdmin });
   });
 
   // A sub-app's `notFound` is never called once it is mounted — Hono only

@@ -111,5 +111,20 @@ describe.each([
       expect(response.status).toBe(404);
       expect(await response.json()).toEqual({ error: "not_found" });
     });
+
+    // Better Auth in Wrangler's own bundle, rather than in Vitest's module
+    // graph.
+    it("keep /api/auth signing the first-run admin in", async () => {
+      const response = await server.fetch("/api/auth/sign-in/username", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "CF-Connecting-IP": "192.0.2.1" },
+        body: JSON.stringify({ username: "admin", password: "sesame" }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        user: { displayUsername: "admin", isAdmin: true },
+      });
+    });
   });
 });

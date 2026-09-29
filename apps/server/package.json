@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "pnpm --filter @stratosonic/admin build && wrangler dev",
     "fixtures": "node scripts/generate-fixtures.mjs",
+    "bench:console-auth": "tsx scripts/bench-console-auth.ts",
+    "bench:startup": "node scripts/bench-startup.mjs",
     "cf-typegen": "wrangler types --include-runtime=false --strict-vars=false",
     "typecheck": "pnpm run cf-typegen && tsc --noEmit",
     "test": "vitest run && pnpm run test:routing",
@@ -13,15 +15,19 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@better-auth/drizzle-adapter": "1.7.6",
     "@stratosonic/db": "workspace:*",
+    "better-auth": "1.7.6",
     "drizzle-orm": "0.45.2",
     "hono": "4.13.8",
     "music-metadata": "11.15.0",
     "strtok3": "10.3.5"
   },
   "devDependencies": {
+    "@better-auth/utils": "0.4.2",
     "@cloudflare/vitest-pool-workers": "0.22.0",
     "@cloudflare/workers-types": "^5.20260918.1",
+    "tsx": "4.23.15",
     "typescript": "5.9.3",
     "vitest": "4.1.11",
     "wrangler": "4.124.0"

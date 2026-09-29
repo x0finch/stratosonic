@@ -1,6 +1,6 @@
-import { newRandomId, property, user } from "@stratosonic/db";
+import { property } from "@stratosonic/db";
 import { eq } from "drizzle-orm";
-import { encryptPassword } from "../auth/crypto";
+import { createUserWithPassword } from "../console-auth/credentials";
 import { type Database, database } from "../db";
 import type { Env } from "../env";
 import { countUsers } from "../users/repository";
@@ -104,8 +104,10 @@ async function markInitialSetupDone(db: Database): Promise<void> {
 
 /**
  * Creates the admin user, or reports that the environment does not say what to
- * create. `onConflictDoNothing` keeps two isolates racing through their first
- * request from turning into two rows.
+ * create. It goes through the one credential writer, so the admin gets the
+ * console's credential account in the same batch as the user row, and two
+ * isolates racing through their first request still make one user: the loser's
+ * batch finds the name taken and writes nothing.
  */
 async function createInitialAdmin(env: Env, db: Database): Promise<boolean> {
   const { INITIAL_USER: userName, INITIAL_PASSWORD: password } = env;
@@ -117,19 +119,11 @@ async function createInitialAdmin(env: Env, db: Database): Promise<boolean> {
     return false;
   }
 
-  const now = new Date();
-  await db
-    .insert(user)
-    .values({
-      id: newRandomId(),
-      userName,
-      name: userName,
-      password: await encryptPassword(env.PASSWORD_ENCRYPTION_KEY, password),
-      isAdmin: true,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .onConflictDoNothing();
+  await createUserWithPassword(db, env.PASSWORD_ENCRYPTION_KEY, {
+    userName,
+    password,
+    isAdmin: true,
+  });
 
   return true;
 }

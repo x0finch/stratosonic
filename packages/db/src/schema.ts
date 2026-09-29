@@ -51,6 +51,25 @@ export const user = sqliteTable(
     lastAccessAt: integer("last_access_at", { mode: "timestamp_ms" }),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+    // The columns Better Auth's user model needs beyond Navidrome's, for the
+    // admin console's sessions (#81). Nothing above changes type or meaning.
+    //
+    // `username` is what the username plugin looks a sign-in up by. It is
+    // derived and never written: SQLite's `lower()` folds ASCII letters only,
+    // exactly as `userNamesMatch` and the unique index below do, so the console
+    // and the Subsonic API agree on whom a name refers to. `user_name` keeps
+    // the name as it was entered, and is what `getUser` still returns.
+    username: text("username").generatedAlwaysAs(sql`lower("user_name")`, { mode: "virtual" }),
+    // Better Auth's `email`, which its schema requires and keeps unique. The
+    // Subsonic `email` above is optional and not unique, and is what `getUser`
+    // answers with, so the console gets a placeholder of its own that no mail
+    // can reach (RFC 2606 reserves `.invalid`). No route that uses it is
+    // enabled.
+    authEmail: text("auth_email").generatedAlwaysAs(sql`lower("user_name") || '@users.invalid'`, {
+      mode: "virtual",
+    }),
+    emailVerified: integer("email_verified", { mode: "boolean" }).notNull().default(false),
+    image: text("image"),
   },
   (table) => [
     // Usernames are matched case-insensitively (Navidrome queries them
@@ -58,11 +77,106 @@ export const user = sqliteTable(
     // this, "Admin" and "admin" could both be created and a login would be
     // ambiguous.
     uniqueIndex("user_user_name_unique").on(sql`lower(${table.userName})`),
+    // The same rule over the generated columns. The first is the index the
+    // username plugin's `WHERE username = ?` is served from; the second is
+    // Better Auth's own uniqueness rule for `email`.
+    uniqueIndex("user_username_unique").on(table.username),
+    uniqueIndex("user_auth_email_unique").on(table.authEmail),
   ],
 );
 
 export type User = typeof user.$inferSelect;
 export type NewUser = typeof user.$inferInsert;
+
+/**
+ * The admin console's sessions and credentials, in Better Auth's core schema
+ * (v1.7: `session`, `account`, `verification`), plus the table its
+ * database-backed rate limiter keeps. Column names follow the snake_case of the
+ * tables above, and timestamps are epoch milliseconds like theirs.
+ *
+ * Better Auth reads and writes these rows itself, with one exception: the
+ * password. `account.password` holds the same AES-GCM ciphertext as
+ * `user.password`, and only apps/server's `console-auth/credentials.ts` writes
+ * either, both in one batch, so the console and the Subsonic API can never
+ * disagree about a user's password.
+ */
+export const session = sqliteTable(
+  "session",
+  {
+    id: text("id").primaryKey(),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    token: text("token").notNull().unique(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+    ipAddress: text("ip_address"),
+    userAgent: text("user_agent"),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+  },
+  (table) => [index("session_user_id_idx").on(table.userId)],
+);
+
+export type Session = typeof session.$inferSelect;
+
+export const account = sqliteTable(
+  "account",
+  {
+    id: text("id").primaryKey(),
+    // For the `credential` provider, Better Auth looks the account up by
+    // `account_id = user_id`.
+    accountId: text("account_id").notNull(),
+    providerId: text("provider_id").notNull(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    accessToken: text("access_token"),
+    refreshToken: text("refresh_token"),
+    idToken: text("id_token"),
+    accessTokenExpiresAt: integer("access_token_expires_at", { mode: "timestamp_ms" }),
+    refreshTokenExpiresAt: integer("refresh_token_expires_at", { mode: "timestamp_ms" }),
+    scope: text("scope"),
+    password: text("password"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    index("account_user_id_idx").on(table.userId),
+    // At most one credential account per user, so the password writers'
+    // `WHERE user_id = ? AND provider_id = 'credential'` names one row.
+    uniqueIndex("account_provider_account_unique").on(table.providerId, table.accountId),
+  ],
+);
+
+export type Account = typeof account.$inferSelect;
+
+/**
+ * Unused by the console's flows (it holds email-verification and reset
+ * tokens), but part of the core schema Better Auth checks its adapter against.
+ */
+export const verification = sqliteTable(
+  "verification",
+  {
+    id: text("id").primaryKey(),
+    identifier: text("identifier").notNull(),
+    value: text("value").notNull(),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [index("verification_identifier_idx").on(table.identifier)],
+);
+
+/**
+ * The sign-in rate limiter's counters: one row per client address and path.
+ * `last_request` is epoch milliseconds, which Better Auth compares as a number.
+ */
+export const rateLimit = sqliteTable("rate_limit", {
+  id: text("id").primaryKey(),
+  key: text("key").notNull().unique(),
+  count: integer("count").notNull(),
+  lastRequest: integer("last_request").notNull(),
+});
 
 /**
  * The library tables, shaped like Navidrome's (`model/*.go`) so the cutover
