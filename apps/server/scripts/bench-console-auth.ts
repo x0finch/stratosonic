@@ -337,7 +337,10 @@ await bench("POST /api/account/password", 300, async () => {
       ),
     );
 });
+// Each run forgets the failures counted so far, untimed, or the limit on
+// them would answer 429 from the sixth on.
 await bench("POST /api/account/password, wrong current password", 300, async () => {
+  sqlite.exec("DELETE FROM rate_limit WHERE key LIKE 'account-password:%'");
   const signedIn = await signIn();
   return () =>
     expecting(
