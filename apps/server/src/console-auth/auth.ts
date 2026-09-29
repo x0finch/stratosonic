@@ -14,14 +14,16 @@ import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH } from "./credentials";
  * (#86) and #81 specifies it.
  *
  * This module is the only one that imports Better Auth, and the Worker imports
- * it statically. Evaluating the auth stack takes about 45 ms: at an isolate's
- * startup that falls under the separate 1 s startup limit, and Cloudflare
- * starts isolates while the TLS handshake is still under way, whereas inside
- * the first `/api` request, as a dynamic `import()` would put it, it would be
- * charged to that request's 10 ms of CPU. What `/rest/*`, `/share/*`, the cron
- * and the scan driver's alarm never pay is an instance: one is built on the
- * first `/api` request for an origin (`consoleAuth` below), and nothing else
- * touches the auth tables but the credential writer.
+ * it statically. Evaluating the auth stack adds about 38 ms to the Worker's
+ * startup (`wrangler check startup` medians, scripts/bench-startup.mjs: 33 ms
+ * without it, about 71 ms with it). At an isolate's startup that falls under
+ * the separate 1 s startup limit, and Cloudflare starts isolates while the TLS
+ * handshake is still under way, whereas inside the first `/api` request, as a
+ * dynamic `import()` would put it, it would be charged to that request's 10 ms
+ * of CPU. What `/rest/*`, `/share/*`, the cron and the scan driver's alarm
+ * never pay is an instance: one is built on the first `/api` request for an
+ * origin (`consoleAuth` below), and nothing else touches the auth tables but
+ * the credential writer.
  */
 
 /** Where the Better Auth routes are mounted, on the `/api` sub-app. */
