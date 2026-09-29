@@ -23,6 +23,18 @@ describe("safeRedirect", () => {
     }
   });
 
+  it("refuses a path that dot segments turn into a protocol-relative one", () => {
+    for (const target of [
+      "/.//evil.example",
+      "/a/..//evil.example",
+      "/..//evil.example",
+      "/%2e//evil.example",
+      "/./\\evil.example",
+    ]) {
+      expect(safeRedirect(target, ORIGIN)).toBe("/");
+    }
+  });
+
   it("refuses the paths the Worker answers, which are not console pages", () => {
     for (const target of ["/api/me", "/api", "/rest/ping", "/share/img/x"]) {
       expect(safeRedirect(target, ORIGIN)).toBe("/");

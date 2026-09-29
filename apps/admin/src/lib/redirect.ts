@@ -31,7 +31,12 @@ export function safeRedirect(target: unknown, origin: string = window.location.o
     return "/";
   }
 
+  // Dot segments can leave a path that starts with `//` (`/.//host`,
+  // `/a/..//host`), which the router would read as another origin.
   const path = url.pathname;
+  if (path.startsWith("//")) {
+    return "/";
+  }
   if ([...WORKER_PATHS, ...SIGNED_OUT_PATHS].some((prefix) => isUnder(path, prefix))) {
     return "/";
   }
