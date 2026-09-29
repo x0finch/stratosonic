@@ -185,6 +185,15 @@ function build({ db, passphrase, origin }: ConsoleAuthOptions, secret: string) {
       // read. The credential account carries the same AES-GCM ciphertext as
       // `user.password` instead (ADR-0003), so verifying is a decryption and
       // a constant-time comparison.
+      //
+      // Sign-in can still tell, by timing, a name that exists from one that
+      // does not: an unknown name costs one D1 read and a hash (the username
+      // plugin's `hash` of the attempt, meant to even the paths out), a known
+      // one with a wrong password two reads and a decryption. That is an
+      // accepted trade-off, not an oversight: the answers are identical, the
+      // rate limit caps a caller at 5 guesses a minute, and a server with a
+      // single owner has few names to find. Padding the unknown path with a
+      // dummy query would cost D1 on every failed sign-in.
       password: {
         hash: (password) => encryptPassword(passphrase, password),
         verify: async ({ hash, password }) => {
