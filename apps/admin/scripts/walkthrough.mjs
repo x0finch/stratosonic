@@ -59,6 +59,8 @@ const results = [];
 const consoleErrors = [];
 /** The page the last step worked in, for a screenshot of a failure. */
 let lastPage;
+/** The error a step failed with, which that step has already printed. */
+let stepFailure;
 /** How often sign-in hit the rate limit. */
 let rateLimited = 0;
 
@@ -84,6 +86,7 @@ async function step(name, run) {
       await lastPage?.screenshot({ path: join(SCREENSHOTS, "failure.png") }).catch(() => {});
     }
     console.log(`✗ ${name}\n    ${error instanceof Error ? error.message : error}`);
+    stepFailure = error;
     throw error;
   }
 }
@@ -378,6 +381,11 @@ async function main() {
   }
 }
 
-main().catch(() => {
+main().catch((error) => {
+  // A failed step has said why; anything else (Chromium failing to start, a
+  // Worker that is not there) says so here.
+  if (error !== stepFailure) {
+    console.error(error);
+  }
   process.exitCode = 1;
 });
