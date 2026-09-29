@@ -1,4 +1,6 @@
 import { createApp } from "./app";
+import { describePrunedRows, pruneExpiredAuthRows } from "./console-auth/prune";
+import { database } from "./db";
 import type { Env } from "./env";
 import { SCAN_DRIVER_INSTANCE } from "./scanner/driver";
 import { ensureInitialSetup } from "./setup/initial-setup";
@@ -47,20 +49,36 @@ export default {
    * A failed poke is logged and swallowed rather than allowed to fail the
    * invocation: the pass the driver is already running is untouched by it,
    * and the next cron run pokes again.
+   *
+   * Before the poke, the cron deletes the console's expired auth rows, one
+   * bounded batch a run (console-auth/prune.ts, #93), as of the same
+   * scheduled time. A prune that fails is logged and skipped, so it can never
+   * cost the library its poke; the next run prunes what this one left.
    */
   async scheduled(controller, env) {
     await ensureInitialSetup(env);
 
+    let pruned = "";
+    try {
+      const rows = await pruneExpiredAuthRows(database(env), controller.scheduledTime);
+      pruned = `; ${describePrunedRows(rows)}`;
+    } catch (error) {
+      console.error(
+        "console auth: pruning expired rows failed; the next cron run tries again",
+        error,
+      );
+    }
+
     try {
       const driver = env.SCAN_DRIVER.get(env.SCAN_DRIVER.idFromName(SCAN_DRIVER_INSTANCE));
       const outcome = await driver.start(controller.scheduledTime);
-      console.log(
+      const poked =
         outcome === "started"
           ? "scan driver: a pass has started"
-          : "scan driver: a pass is already running",
-      );
+          : "scan driver: a pass is already running";
+      console.log(`${poked}${pruned}`);
     } catch (error) {
-      console.error("scan driver: the poke failed; the next cron run pokes again", error);
+      console.error(`scan driver: the poke failed; the next cron run pokes again${pruned}`, error);
     }
   },
 } satisfies ExportedHandler<Env>;
