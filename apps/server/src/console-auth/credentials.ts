@@ -34,6 +34,32 @@ import type { Database } from "../db";
 export const MIN_PASSWORD_LENGTH = 1;
 export const MAX_PASSWORD_LENGTH = 1024;
 
+/**
+ * The longest name the console accepts, which is also the longest its
+ * username plugin lets sign in (console-auth/auth.ts).
+ */
+export const MAX_USERNAME_LENGTH = 255;
+
+/** Whether a password is one the routes that set a password accept. */
+export function isAcceptablePassword(password: string): boolean {
+  return password.length >= MIN_PASSWORD_LENGTH && password.length <= MAX_PASSWORD_LENGTH;
+}
+
+/**
+ * The name a new user gets from what was typed, or `null` if there is none.
+ *
+ * Navidrome requires only that a name is there (its `createAdmin` takes any
+ * string, and its UI marks the field required), and the console's sign-in
+ * accepts any name `user_name` holds, so nothing narrower is imposed.
+ * Whitespace around the name is dropped, since a name that ends in a space
+ * would look the same as one that does not and never be typed right again,
+ * and the result must be 1 to `MAX_USERNAME_LENGTH` characters.
+ */
+export function acceptableUserName(typed: string): string | null {
+  const userName = typed.trim();
+  return userName.length >= 1 && userName.length <= MAX_USERNAME_LENGTH ? userName : null;
+}
+
 /** Better Auth's provider id for an account signed in to with a password. */
 const CREDENTIAL_PROVIDER = "credential";
 

@@ -6,7 +6,7 @@ import { username } from "better-auth/plugins/username";
 import { drizzle } from "drizzle-orm/d1";
 import { constantTimeEquals, decryptPassword, encryptPassword } from "../auth/crypto";
 import { foldAsciiCase } from "../users/repository";
-import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH } from "./credentials";
+import { MAX_PASSWORD_LENGTH, MAX_USERNAME_LENGTH, MIN_PASSWORD_LENGTH } from "./credentials";
 
 /**
  * The admin console's sessions: Better Auth (v1.7, `better-auth/minimal`, so
@@ -241,7 +241,7 @@ function build({ db, passphrase, origin }: ConsoleAuthOptions, secret: string) {
         // only the plugin's default 3-30 characters of `[a-zA-Z0-9_.]`.
         usernameValidator: () => true,
         minUsernameLength: 1,
-        maxUsernameLength: 255,
+        maxUsernameLength: MAX_USERNAME_LENGTH,
         // The plugin's `displayUsername` is the name as entered, our
         // `user_name`; its `username` is the generated, folded column.
         schema: { user: { fields: { displayUsername: "userName" } } },

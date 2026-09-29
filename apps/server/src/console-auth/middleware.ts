@@ -22,10 +22,14 @@ export interface ConsoleSession {
   readonly isAdmin: boolean;
 }
 
-/** What every route under `/api` has: the Worker's bindings and Better Auth. */
+/**
+ * What every route under `/api` has: the Worker's bindings, Better Auth, and
+ * `PASSWORD_ENCRYPTION_KEY`, which the middleware has checked is set, for the
+ * routes that hand it to the credential writer.
+ */
 export interface ConsoleEnv {
   Bindings: Env;
-  Variables: { consoleAuth: ConsoleAuth };
+  Variables: { consoleAuth: ConsoleAuth; passphrase: string };
 }
 
 /** What a route behind `requireSession` or `requireFreshSession` has as well. */
@@ -78,6 +82,7 @@ export const loadConsoleAuth = createMiddleware<ConsoleEnv>(async (c, next) => {
   }
 
   c.set("consoleAuth", await consoleAuth({ db: c.env.DB, passphrase, origin: url.origin }));
+  c.set("passphrase", passphrase);
 
   await next();
 });
