@@ -182,8 +182,14 @@ export const meQuery = queryOptions({
   retry: false,
 });
 
+/**
+ * What the setup token may do. It changes only when a setup screen spends
+ * the token, which drops this query (setup-form.tsx), or when the Worker's
+ * secret is replaced, so a refocused window need not ask again at once.
+ */
 export const setupStateQuery = queryOptions({
   queryKey: ["setup-state"],
   queryFn: fetchSetupState,
+  staleTime: 30 * 1000,
   retry: false,
 });
