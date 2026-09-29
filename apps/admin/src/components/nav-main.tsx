@@ -39,9 +39,11 @@ export function NavMain({ items }: { items: NavItem[] }) {
 export function NavButton({ item, tooltip }: { item: NavItem; tooltip?: string }) {
   const matchRoute = useMatchRoute();
 
+  // No tooltip on a placeholder: a disabled button takes no pointer events to
+  // show one on, and the tooltip trigger would drop the `disabled` it needs.
   if (item.to === undefined) {
     return (
-      <SidebarMenuButton tooltip={tooltip} disabled>
+      <SidebarMenuButton disabled>
         {item.icon}
         <span>{item.title}</span>
       </SidebarMenuButton>
