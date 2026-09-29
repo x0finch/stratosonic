@@ -21,6 +21,18 @@ import type { Database } from "../db";
  * it without loading the console's auth stack.
  */
 
+/**
+ * The shortest and longest password the console accepts. Navidrome sets no
+ * rule beyond a password being there, and Subsonic none at all; the upper
+ * bound only keeps a request from making the server encrypt, or compare, an
+ * arbitrarily large string; at 1,024 characters the AES-GCM work is still
+ * far under a tenth of a millisecond. Better Auth enforces both on sign-in (console-auth/
+ * auth.ts); the routes that set a password check them before calling a
+ * writer here.
+ */
+export const MIN_PASSWORD_LENGTH = 1;
+export const MAX_PASSWORD_LENGTH = 1024;
+
 /** Better Auth's provider id for an account signed in to with a password. */
 const CREDENTIAL_PROVIDER = "credential";
 

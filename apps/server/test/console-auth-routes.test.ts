@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import { subsonicToken } from "../src/auth/crypto";
 import { CONSOLE_AUTH_ROUTES, consoleAuth, DISABLED_AUTH_PATHS } from "../src/console-auth/auth";
+import { MAX_PASSWORD_LENGTH } from "../src/console-auth/credentials";
 import { database } from "../src/db";
 import { findUserByUsername } from "../src/users/repository";
 import {
@@ -83,6 +84,16 @@ describe("sign-in", () => {
 
     expect((await findUserByUsername(database(testEnv), "ÉMILE"))?.userName).toBe("Émile");
     expect((await signIn(send, BASE, "ÉMILE", "zola")).response.status).toBe(200);
+  });
+
+  it("accepts a password of up to MAX_PASSWORD_LENGTH characters, not Better Auth's 128", async () => {
+    const longest = "p".repeat(MAX_PASSWORD_LENGTH);
+    await seedUser("Verbose", longest);
+
+    expect((await signIn(send, BASE, "verbose", longest)).response.status).toBe(200);
+    const tooLong = await signIn(send, BASE, "verbose", `${longest}p`);
+    expect(tooLong.response.status).toBe(400);
+    expect(await tooLong.response.json()).toMatchObject({ code: "PASSWORD_TOO_LONG" });
   });
 
   it("accepts names the username plugin's default rules would refuse", async () => {

@@ -6,6 +6,7 @@ import { username } from "better-auth/plugins/username";
 import { drizzle } from "drizzle-orm/d1";
 import { constantTimeEquals, decryptPassword, encryptPassword } from "../auth/crypto";
 import { foldAsciiCase } from "../users/repository";
+import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH } from "./credentials";
 
 /**
  * The admin console's sessions: Better Auth (v1.7, `better-auth/minimal`, so
@@ -175,7 +176,10 @@ function build({ db, passphrase, origin }: ConsoleAuthOptions, secret: string) {
       // Users are created by our own code (the first-run bootstrap, the setup
       // token) through console-auth/credentials.ts, never by a public sign-up.
       disableSignUp: true,
-      minPasswordLength: 1,
+      // Better Auth's default maximum, 128, would lock a longer Subsonic
+      // password out of the console.
+      minPasswordLength: MIN_PASSWORD_LENGTH,
+      maxPasswordLength: MAX_PASSWORD_LENGTH,
       // Better Auth's default hasher is scrypt, about 100 ms of CPU a call
       // against the Free plan's 10 ms, and a hash the Subsonic API could not
       // read. The credential account carries the same AES-GCM ciphertext as
