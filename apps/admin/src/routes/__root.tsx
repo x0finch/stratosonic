@@ -1,43 +1,20 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { createRootRouteWithContext, Outlet } from "@tanstack/react-router";
-import type { CSSProperties } from "react";
 
-import { AppSidebar } from "@/components/app-sidebar";
+import { ErrorScreen } from "@/components/error-screen";
 import { NotFound } from "@/components/not-found";
-import { SiteHeader } from "@/components/site-header";
-import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 
 export interface RouterContext {
   queryClient: QueryClient;
 }
 
+/**
+ * Two layouts hang off the root: the sidebar shell (`_shell`), for signed-in
+ * pages, and the full-screen sign-in and setup screens, which render bare as
+ * the login-01 block does.
+ */
 export const Route = createRootRouteWithContext<RouterContext>()({
-  component: Shell,
+  component: Outlet,
+  errorComponent: ErrorScreen,
   notFoundComponent: NotFound,
 });
-
-/** The dashboard-01 block's layout, with each route rendered where its content was. */
-function Shell() {
-  return (
-    <SidebarProvider
-      style={
-        {
-          "--sidebar-width": "calc(var(--spacing) * 72)",
-          "--header-height": "calc(var(--spacing) * 12)",
-        } as CSSProperties
-      }
-    >
-      <AppSidebar variant="inset" />
-      <SidebarInset>
-        <SiteHeader />
-        <div className="flex flex-1 flex-col">
-          <div className="@container/main flex flex-1 flex-col gap-2">
-            <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
-              <Outlet />
-            </div>
-          </div>
-        </div>
-      </SidebarInset>
-    </SidebarProvider>
-  );
-}
