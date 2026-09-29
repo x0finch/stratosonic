@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { createApiApp } from "./api/app";
 import { reportPlayback, scrobble, setRating, star, unstar } from "./endpoints/annotations";
 import { getAlbum, getArtist, getArtists, getGenres, getSong } from "./endpoints/browsing";
 import { getIndexes, getMusicDirectory, getMusicFolders } from "./endpoints/folders";
@@ -174,6 +175,10 @@ export function createApp(): SubsonicApp {
   // authorization. Navidrome mounts the same path whether or not sharing is
   // enabled (server/public/public.go). HEAD is routed here by Hono.
   app.get("/share/img/:token", (c) => servePublicImage(c.env, c.req.param("token"), c.req.raw));
+
+  // The admin console's JSON API (#87), which answers in JSON of its own and
+  // never with the envelope, including for the paths it does not know.
+  app.route("/api", createApiApp());
 
   registerUnknownEndpointHandler(app);
 
