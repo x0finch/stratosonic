@@ -3,6 +3,7 @@ import { user } from "@stratosonic/db";
 import { eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import { subsonicToken } from "../src/auth/crypto";
+import { CONSOLE_AUTH_ROUTES, consoleAuth, DISABLED_AUTH_PATHS } from "../src/console-auth/auth";
 import { database } from "../src/db";
 import { findUserByUsername } from "../src/users/repository";
 import {
@@ -12,7 +13,7 @@ import {
   SESSION_TOKEN_COOKIE,
   signIn,
 } from "./console-auth-support";
-import { BASE, type JsonEnvelope, seedUser, testEnv } from "./support";
+import { BASE, encryptionKey, type JsonEnvelope, seedUser, testEnv } from "./support";
 
 /**
  * The console's Better Auth routes and `GET /api/me` (#89), through the Worker
@@ -153,41 +154,78 @@ describe("sign-in", () => {
   });
 });
 
-describe("the disabled routes", () => {
-  it.each([
-    "/sign-in/email",
-    "/sign-up/email",
-    "/update-user",
-    "/change-password",
-    "/change-email",
-    "/delete-user",
-    "/request-password-reset",
-    "/reset-password",
-    "/is-username-available",
-  ])("answer POST /api/auth%s with 404", async (path) => {
-    const { jar } = await signIn(send, BASE, "admin", "sesame");
+describe("the Better Auth routes", () => {
+  const allowed = new Set<string>(CONSOLE_AUTH_ROUTES.map((route) => route.path));
+  const disabled = new Set<string>(DISABLED_AUTH_PATHS);
 
-    const response = await send(
-      consoleRequest(BASE, `/api/auth${path}`, {
-        body: {
-          email: "admin@users.invalid",
-          password: "sesame",
-          newPassword: "x",
-          currentPassword: "sesame",
-          newEmail: "x@example.com",
-          name: "x",
-          username: "x",
-          token: "x",
-        },
-        jar,
-      }),
-    );
+  /** Every route the built instance registers, with the methods it takes. */
+  async function registered(): Promise<{ path: string; methods: string[] }[]> {
+    const auth = await consoleAuth({ db: testEnv.DB, passphrase: encryptionKey(), origin: BASE });
+    return Object.values(auth.api).flatMap((endpoint) => {
+      const { path, options } = endpoint as { path?: string; options?: { method?: unknown } };
+      if (path === undefined) {
+        // Server-only (`setPassword`): callable from our code, never routed.
+        return [];
+      }
+      const method = options?.method;
+      return [{ path, methods: Array.isArray(method) ? method : [String(method)] }];
+    });
+  }
 
-    expect(response.status).toBe(404);
+  /** A request path for a route, its parameters filled in. */
+  const concrete = (path: string) => `/api/auth${path.replace(/:\w+/g, "x")}`;
+
+  it("are each either used by the console or disabled, so an upgrade's new route fails here", async () => {
+    const paths = (await registered()).map((route) => route.path).sort();
+
+    expect(paths.filter((path) => !allowed.has(path) && !disabled.has(path))).toEqual([]);
+    // And neither list names a route that no longer exists.
+    expect([...allowed, ...disabled].sort()).toEqual(paths);
   });
 
-  it("leave the password where it was", async () => {
-    expect((await signIn(send, BASE, "admin", "sesame")).response.status).toBe(200);
+  it("answer 404 over HTTP for every route and method the console does not use", async () => {
+    const { jar } = await signIn(send, BASE, "admin", "sesame");
+    const refused: string[] = [];
+
+    for (const { path, methods } of await registered()) {
+      for (const method of ["GET", "POST"]) {
+        const used = CONSOLE_AUTH_ROUTES.some(
+          (route) => route.path === path && route.method === method,
+        );
+        if (used || !methods.includes(method)) {
+          continue;
+        }
+        const response = await send(
+          consoleRequest(BASE, concrete(path), {
+            method,
+            body: method === "POST" ? { password: "sesame", token: "x" } : undefined,
+            jar,
+          }),
+        );
+        if (response.status !== 404) {
+          refused.push(`${method} ${path}: ${response.status}`);
+        }
+      }
+    }
+
+    expect(refused).toEqual([]);
+  });
+
+  it("are refused by Better Auth itself too, but for the paths with a parameter", async () => {
+    const auth = await consoleAuth({ db: testEnv.DB, passphrase: encryptionKey(), origin: BASE });
+
+    for (const path of DISABLED_AUTH_PATHS.filter((path) => !path.includes(":"))) {
+      const response = await auth.handler(consoleRequest(BASE, concrete(path), { body: {} }));
+      expect(response.status, path).toBe(404);
+    }
+  });
+
+  it("leave the console's own three reachable", async () => {
+    const { response, jar } = await signIn(send, BASE, "admin", "sesame");
+    const session = await send(consoleRequest(BASE, "/api/auth/get-session", { jar }));
+    const signOut = await send(consoleRequest(BASE, "/api/auth/sign-out", { body: {}, jar }));
+
+    expect([response.status, session.status, signOut.status]).toEqual([200, 200, 200]);
   });
 });
 

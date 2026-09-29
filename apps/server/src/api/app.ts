@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { CONSOLE_AUTH_ROUTES } from "../console-auth/auth";
 import { type ConsoleEnv, loadConsoleAuth, requireSession } from "../console-auth/middleware";
 
 /**
@@ -26,9 +27,13 @@ export function createApiApp(): ApiApp {
   // and nowhere else.
   api.use(loadConsoleAuth);
 
-  // Better Auth's own routes (sign-in, sign-out, get-session), which it
-  // routes itself under its base path. Its disabled routes answer 404 there.
-  api.on(["GET", "POST"], "/auth/*", (c) => c.var.consoleAuth.handler(c.req.raw));
+  // The Better Auth routes the console uses, and no other: any other path
+  // under `/api/auth` is the catch-all's JSON 404, whatever a Better Auth
+  // upgrade adds. Better Auth refuses the rest itself as well
+  // (console-auth/auth.ts).
+  for (const { method, path } of CONSOLE_AUTH_ROUTES) {
+    api.on(method, `/auth${path}`, (c) => c.var.consoleAuth.handler(c.req.raw));
+  }
 
   // Who am I (#81): the signed-in user, from a session the cookie cache may
   // vouch for.

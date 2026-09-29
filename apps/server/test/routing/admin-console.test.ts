@@ -112,9 +112,8 @@ describe.each([
       expect(await response.json()).toEqual({ error: "not_found" });
     });
 
-    // Better Auth is split from the Worker's startup by a dynamic import
-    // (console-auth/middleware.ts); this is that import in Wrangler's own
-    // bundle rather than in Vitest's module graph.
+    // Better Auth in Wrangler's own bundle, rather than in Vitest's module
+    // graph.
     it("keep /api/auth signing the first-run admin in", async () => {
       const response = await server.fetch("/api/auth/sign-in/username", {
         method: "POST",

@@ -26,6 +26,71 @@ import { foldAsciiCase } from "../users/repository";
 export const AUTH_BASE_PATH = "/api/auth";
 
 /**
+ * The Better Auth routes the console uses, and all that the `/api` sub-app
+ * forwards to it (api/app.ts): sign-in by username, the session check, which
+ * is a GET (a POST to it serves `deferSessionRefresh` only, which is off), and
+ * sign-out.
+ */
+export const CONSOLE_AUTH_ROUTES = [
+  { method: "POST", path: "/sign-in/username" },
+  { method: "GET", path: "/get-session" },
+  { method: "POST", path: "/sign-out" },
+] as const;
+
+/**
+ * Every other route Better Auth 1.7 serves with this configuration, core and
+ * username plugin, which it is told to refuse as well. A test fails when an
+ * upgrade registers a route on neither list (test/console-auth-routes.test.ts).
+ *
+ * The writers of users, passwords and emails matter most: those writes go
+ * through console-auth/credentials.ts, so that `user.password` and
+ * `account.password` can never disagree, and `auth_email` is a generated
+ * placeholder that Drizzle leaves out of every write. The rest are session
+ * management, social and email flows, a health check (`/ok`) and the OAuth
+ * error page (`/error`), none of which the console, or Better Auth itself,
+ * needs over HTTP.
+ *
+ * Better Auth matches these paths exactly, so the two with a parameter
+ * (`/callback/:id`, `/reset-password/:token`) are listed for completeness and
+ * closed by the mount, which forwards `CONSOLE_AUTH_ROUTES` alone.
+ */
+export const DISABLED_AUTH_PATHS = [
+  // Users, passwords and emails.
+  "/sign-up/email",
+  "/sign-in/email",
+  "/update-user",
+  "/change-password",
+  "/change-email",
+  "/delete-user",
+  "/delete-user/callback",
+  "/request-password-reset",
+  "/reset-password",
+  "/reset-password/:token",
+  "/verify-password",
+  "/verify-email",
+  "/send-verification-email",
+  "/is-username-available",
+  // Sessions, beyond the console's own sign-in and sign-out.
+  "/update-session",
+  "/list-sessions",
+  "/revoke-session",
+  "/revoke-sessions",
+  "/revoke-other-sessions",
+  // Social providers and linked accounts, of which there are none.
+  "/sign-in/social",
+  "/callback/:id",
+  "/link-social",
+  "/unlink-account",
+  "/list-accounts",
+  "/account-info",
+  "/refresh-token",
+  "/get-access-token",
+  // The health check and the OAuth error page.
+  "/ok",
+  "/error",
+] as const;
+
+/**
  * The HKDF `info` the session secret is derived under. Rotating every
  * console session, and nothing else, means bumping it to `/v2`.
  */
@@ -146,22 +211,7 @@ function build({ db, passphrase, origin }: ConsoleAuthOptions, secret: string) {
         "/**": false,
       },
     },
-    // Everything that would let Better Auth write a user or a password on its
-    // own: those writes go through console-auth/credentials.ts, so that
-    // `user.password` and `account.password` can never disagree. The email
-    // routes are off too: `auth_email` is a generated placeholder, which
-    // Drizzle leaves out of every write.
-    disabledPaths: [
-      "/sign-in/email",
-      "/sign-up/email",
-      "/update-user",
-      "/change-password",
-      "/change-email",
-      "/delete-user",
-      "/request-password-reset",
-      "/reset-password",
-      "/is-username-available",
-    ],
+    disabledPaths: [...DISABLED_AUTH_PATHS],
     plugins: [
       username({
         // SQLite's `lower()` folds ASCII letters only, and the generated
