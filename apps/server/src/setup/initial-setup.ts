@@ -4,6 +4,7 @@ import { createUserWithPassword } from "../console-auth/credentials";
 import { type Database, database } from "../db";
 import type { Env } from "../env";
 import { countUsers } from "../users/repository";
+import { configuredSetupToken } from "./setup-token";
 
 /**
  * First-run bootstrap: the server creates its one admin user from the
@@ -37,6 +38,9 @@ const INITIAL_SETUP_FLAG = "InitialSetup";
  * bindings, and `onConflictDoNothing` keeps a few of them racing harmless.
  */
 let attempted = false;
+
+/** Whether this isolate has already reported that no admin exists nor can be created. */
+let reportedNoAdmin = false;
 
 /**
  * Runs the bootstrap at most once per isolate. Called from both Worker entry
@@ -117,9 +121,29 @@ async function markInitialSetupDone(db: Database): Promise<void> {
 async function createInitialAdmin(env: Env, db: Database): Promise<boolean> {
   const { INITIAL_USER: userName, INITIAL_PASSWORD: password } = env;
 
-  if (!userName || !password || !env.PASSWORD_ENCRYPTION_KEY) {
+  // Without the password the deprecated fallback is simply not in use, which
+  // is the recommended setup: `INITIAL_USER` is a plain var in wrangler.jsonc,
+  // so it being set says nothing. The only thing worth saying is when no admin
+  // can be created at all, not even in the console.
+  if (!password) {
+    if (configuredSetupToken(env) === null && !reportedNoAdmin) {
+      reportedNoAdmin = true;
+      console.log(
+        "no admin exists: set SETUP_TOKEN (wrangler secret put SETUP_TOKEN) to create one in the console",
+      );
+    }
+    return false;
+  }
+
+  // The password is set, so the fallback is meant to be used: what else it
+  // needs is a misconfiguration worth a warning that says what to fix.
+  if (!userName || !env.PASSWORD_ENCRYPTION_KEY) {
+    const missing = [
+      userName ? null : "INITIAL_USER",
+      env.PASSWORD_ENCRYPTION_KEY ? null : "PASSWORD_ENCRYPTION_KEY",
+    ].filter((name) => name !== null);
     console.warn(
-      "no initial user created: INITIAL_USER, INITIAL_PASSWORD and PASSWORD_ENCRYPTION_KEY must all be set",
+      `no initial user created: INITIAL_PASSWORD is set but ${missing.join(" and ")} ${missing.length === 1 ? "is" : "are"} not`,
     );
     return false;
   }
