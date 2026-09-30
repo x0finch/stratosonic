@@ -6,13 +6,19 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { ApiError, changePassword } from "@/lib/api";
-import { describeError, MAX_PASSWORD_LENGTH } from "@/lib/errors";
+import { changePassword } from "@/lib/api";
+import { MAX_PASSWORD_LENGTH } from "@/lib/errors";
+import {
+  type FieldErrors,
+  fieldErrorsFrom,
+  NO_FIELD_ERRORS,
+  stillCurrent,
+  withoutFieldError,
+} from "@/lib/field-errors";
 import { toastError, toastSuccess } from "@/lib/toasts";
 
-function isWrongPassword(error: unknown): boolean {
-  return error instanceof ApiError && error.code === "wrong_password";
-}
+/** The refusals that belong to a field: a wrong current password. */
+const FIELDS_BY_CODE = { wrong_password: "current-password" };
 
 /**
  * The login-01 block's form with the change-password fields (#81): the
@@ -25,6 +31,7 @@ export function ChangePasswordForm({
   ...props
 }: ComponentProps<"div"> & { username: string }) {
   const [mismatch, setMismatch] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>(NO_FIELD_ERRORS);
 
   // A wrong current password belongs to its field; any other outcome is a
   // toast.
@@ -32,7 +39,7 @@ export function ChangePasswordForm({
     mutationFn: changePassword,
     onSuccess: () => toastSuccess("Password changed", "Your other sessions are signed out."),
     onError: (error) => {
-      if (!isWrongPassword(error)) {
+      if (!fieldErrorsFrom(error, FIELDS_BY_CODE)) {
         toastError(error);
       }
     },
@@ -42,6 +49,9 @@ export function ChangePasswordForm({
     event.preventDefault();
     const target = event.currentTarget;
     const form = new FormData(target);
+    // A new attempt: what the server said of the last one no longer holds,
+    // whether or not this one gets past the checks below (#103).
+    setFieldErrors(NO_FIELD_ERRORS);
     const newPassword = String(form.get("new-password") ?? "");
     if (newPassword !== String(form.get("confirm") ?? "")) {
       setMismatch(true);
@@ -50,11 +60,28 @@ export function ChangePasswordForm({
     setMismatch(false);
     mutation.mutate(
       { currentPassword: String(form.get("current-password") ?? ""), newPassword },
-      { onSuccess: () => target.reset() },
+      {
+        onSuccess: () => target.reset(),
+        onError: (error) => {
+          const reported = fieldErrorsFrom(error, FIELDS_BY_CODE);
+          if (reported) {
+            setFieldErrors(stillCurrent(reported, form, new FormData(target)));
+          }
+        },
+      },
     );
   }
 
-  const wrongPassword = isWrongPassword(mutation.error);
+  // A server-reported error belongs to the value it was reported for: it goes
+  // as soon as its field changes (#103).
+  function onChange(event: FormEvent<HTMLFormElement>) {
+    if (event.target instanceof HTMLInputElement) {
+      const { name } = event.target;
+      setFieldErrors((errors) => withoutFieldError(errors, name));
+    }
+  }
+
+  const wrongPassword = fieldErrors["current-password"];
 
   return (
     <div className={cn("flex flex-col gap-6", className)} {...props}>
@@ -66,7 +93,7 @@ export function ChangePasswordForm({
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={onSubmit}>
+          <form onSubmit={onSubmit} onChange={onChange}>
             <FieldGroup>
               {/* For password managers, which file a password under a username. */}
               <input
@@ -77,7 +104,7 @@ export function ChangePasswordForm({
                 readOnly
                 hidden
               />
-              <Field data-invalid={wrongPassword || undefined}>
+              <Field data-invalid={wrongPassword ? true : undefined}>
                 <FieldLabel htmlFor="current-password">Current password</FieldLabel>
                 <Input
                   id="current-password"
@@ -85,10 +112,10 @@ export function ChangePasswordForm({
                   type="password"
                   autoComplete="current-password"
                   maxLength={MAX_PASSWORD_LENGTH}
-                  aria-invalid={wrongPassword || undefined}
+                  aria-invalid={wrongPassword ? true : undefined}
                   required
                 />
-                {wrongPassword && <FieldError>{describeError(mutation.error).title}.</FieldError>}
+                {wrongPassword && <FieldError>{wrongPassword}</FieldError>}
               </Field>
               <Field>
                 <FieldLabel htmlFor="new-password">New password</FieldLabel>
