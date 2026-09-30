@@ -65,10 +65,13 @@ renames the Subsonic `user` table to `subsonic_user`, with every row and
 foreign key, and creates the console's tables under Better Auth's names. The
 deploy workflow applies the migration and then deploys the Worker, so:
 
-- Between the two steps, the Worker still running is the old one, which looks
-  Subsonic users up in `user`: Subsonic clients get authentication errors for
-  that short window, until the new code is live. Nothing is lost; they sign in
-  again once it is.
+- Between the two steps, the Worker still running is the old one, which reads
+  and writes Subsonic users' rows in `user` and now finds Better Auth's table
+  there: its queries fail with `no such column`, so every `/rest` request in
+  that short window answers Subsonic error 0 (a generic error), not 40. Writes
+  clients attempt in the window (scrobbles, stars and ratings,
+  `savePlayQueue`, bookmarks) are not recorded; nothing already stored is
+  affected, and clients work again once the new code is live.
 - If the release has to be undone, D1 Time Travel restores the database to
   its state before the migration (`wrangler d1 time-travel restore
   stratosonic_db --timestamp=<an RFC 3339 time before the deploy>`), and the
@@ -114,7 +117,10 @@ Subsonic user is created until the console manages them (#82), but they keep a
 password in the Worker's secrets: delete `INITIAL_PASSWORD` once the user
 exists (`wrangler secret delete INITIAL_PASSWORD`). With `INITIAL_PASSWORD` set
 but `INITIAL_USER` or `PASSWORD_ENCRYPTION_KEY` missing, the Worker warns that
-no initial Subsonic user was created.
+no initial Subsonic user was created; with no Subsonic user and
+`INITIAL_PASSWORD` unset, it logs `no Subsonic user exists: set INITIAL_USER
+and INITIAL_PASSWORD to create one (the console will manage Subsonic users in
+a later release)` once per isolate.
 
 ## Scripts
 
