@@ -11,12 +11,31 @@ The Worker's secrets are set once per environment with `wrangler secret put`,
 and never written to `wrangler.jsonc`. For `wrangler dev`, copy
 `.dev.vars.example` to `.dev.vars` and fill it in.
 
-- `PASSWORD_ENCRYPTION_KEY`: the passphrase every stored password is
-  encrypted under (ADR-0003), and the console's session secret. Without it
-  Subsonic logins fail and every `/api` route answers 503. Changing it after
-  users exist locks everyone out.
-- `SETUP_TOKEN`: a one-time token for setting up and recovering the admin,
-  described below.
+- `PASSWORD_ENCRYPTION_KEY`: the passphrase every Subsonic password is
+  encrypted under (ADR-0003), and the source of the console's session secret
+  and of the pepper its operators' passwords are hashed with (ADR-0007).
+  Without it Subsonic logins fail and every `/api` route answers 503.
+  Changing it after users exist locks everyone out.
+- `SETUP_TOKEN`: a one-time token for creating and recovering the console's
+  operators, described below.
+
+## Operators and Subsonic users
+
+The console has accounts of its own, **operators**, which are separate from
+Subsonic users:
+
+- an operator signs in to the console and never to Subsonic (a Subsonic
+  client given an operator's name and password gets error 40);
+- a Subsonic user signs in to Subsonic and never to the console;
+- changing an operator's password changes no Subsonic password.
+
+Operators have no roles: each can do all the console does. Their passwords
+are stored as a peppered HMAC-SHA256, one way, while Subsonic passwords stay
+reversibly encrypted, because Subsonic's token auth needs them back
+(ADR-0003, ADR-0007).
+
+Subsonic users come from `INITIAL_USER` / `INITIAL_PASSWORD` (deprecated,
+below) for now, and from the console once it manages them (#82).
 
 ## First run
 
@@ -27,24 +46,27 @@ openssl rand -hex 32              # prints the token; keep it for the next steps
 wrangler secret put SETUP_TOKEN   # paste it when asked
 ```
 
-`/setup` in the console asks for the token, with the admin's name and
-password. It works only while there are no users, and only once. The token
-must be at least 32 characters; a shorter value is ignored (the Worker logs
-that it is) and setup stays closed.
+`/setup` in the console asks for the token, with the operator's name and
+password. It works only while there is no operator, whatever Subsonic users
+there are, and only once. The token must be at least 32 characters; a
+shorter value is ignored (the Worker logs that it is) and setup stays closed.
+Until an operator exists and while no usable token is set, the Worker logs
+`no operator exists: set SETUP_TOKEN (wrangler secret put SETUP_TOKEN) to
+create one in the console` once per isolate.
 
-## Recovering the admin
+## Recovering an operator
 
-If the admin's password is forgotten, set a **new** token value (a value that
-has been used once is refused from then on) and open `/setup/reset`:
+If an operator's password is forgotten, set a **new** token value (a value
+that has been used once is refused from then on) and open `/setup/reset`:
 
 ```sh
 openssl rand -hex 32
 wrangler secret put SETUP_TOKEN
 ```
 
-The reset asks for the token, the admin's name and a new password. It ends
-every console session of that admin, and their Subsonic clients need the new
-password too. Only an admin's password can be reset this way.
+The reset asks for the token, the operator's name and a new password, and
+ends every console session of that operator. It cannot reset a Subsonic
+user's password.
 
 The routes behind these pages are `POST /api/setup` and
 `POST /api/setup/reset`, which take `{"token", "username", "password"}` as
@@ -54,17 +76,20 @@ the Worker's own, so a script calling them has to send it:
 ```sh
 curl https://<worker>/api/setup/reset \
   -H 'Origin: https://<worker>' -H 'Content-Type: application/json' \
-  -d '{"token":"...","username":"admin","password":"..."}'
+  -d '{"token":"...","username":"owner","password":"..."}'
 ```
 
 ## Deprecated: `INITIAL_USER` / `INITIAL_PASSWORD`
 
-Before the setup token, the first admin came from the `INITIAL_USER` var in
+The first Subsonic user, an admin, comes from the `INITIAL_USER` var in
 `wrangler.jsonc` and an `INITIAL_PASSWORD` secret, created on the first request
-while the user table is empty. They still work in this release, but they keep a
-password in the Worker's secrets; use `SETUP_TOKEN` instead, and delete
-`INITIAL_PASSWORD` once the admin exists (`wrangler secret delete
-INITIAL_PASSWORD`).
+while the user table is empty. It is a Subsonic user only: it cannot sign in to
+the console, and it is not an operator. They keep working in this release, and
+are how a Subsonic user is created until the console manages them (#82), but
+they keep a password in the Worker's secrets: delete `INITIAL_PASSWORD` once
+the user exists (`wrangler secret delete INITIAL_PASSWORD`). With
+`INITIAL_PASSWORD` set but `INITIAL_USER` or `PASSWORD_ENCRYPTION_KEY` missing,
+the Worker warns that no initial Subsonic user was created.
 
 ## Scripts
 

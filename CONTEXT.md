@@ -53,6 +53,17 @@ The opaque id a client passes to `getCoverArt`; for an album it is the album's
 own id (`al-<id>`), and an artist reuses its primary album's cover.
 _Avoid_: image id, artwork id.
 
+**User**:
+A Subsonic account: what a Subsonic client signs in as, with a password kept
+reversibly encrypted (ADR-0003). An admin user holds Subsonic's admin role.
+_Avoid_: Account (alone), Operator.
+
+**Operator**:
+An account of the admin console, which signs in to the console and never to
+Subsonic. Operators are separate from users and have no roles; their
+passwords are hashed one way (ADR-0007).
+_Avoid_: Admin, Administrator (both are the Subsonic role), Console user.
+
 **Scan**:
 The scheduled (cron) process in the Worker that reads tags from R2 objects,
 extracts cover art, and upserts the library index into D1.
