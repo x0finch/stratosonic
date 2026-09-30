@@ -414,6 +414,7 @@ async function main() {
       await page.getByRole("button", { name: "Reset password" }).click();
       await page.waitForURL((url) => url.pathname === "/login");
       await page.getByText("The password is reset").waitFor();
+      await page.getByText("All sessions of that account are signed out.").waitFor();
       password = passwords.reset;
       await signIn(page, password, { expectAt: "/" });
       await checkOwnerCannotPing(password);

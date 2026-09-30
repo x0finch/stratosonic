@@ -23,8 +23,7 @@ const NOTICES: Record<LoginNotice, { title: string; description: string }> = {
   },
   reset: {
     title: "The password is reset",
-    description:
-      "Sign in with the new password. Every other session of that account is signed out.",
+    description: "Sign in with the new password. All sessions of that account are signed out.",
   },
 };
 
