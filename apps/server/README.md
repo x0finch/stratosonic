@@ -113,6 +113,14 @@ account the Worker runs in.
      --command "DELETE FROM user WHERE role = 'owner'"
    ```
 
+   Setup reopens only when no console user is left at all. Today the owner
+   is the only console user, so this one row is enough; once there are
+   others, they have to be deleted too (`DELETE FROM user`).
+
+   A browser still signed in as the deleted owner may go on reading
+   `/api/me` for up to the 5-minute session cookie cache; every write is
+   refused at once.
+
 2. Set a **new** `SETUP_TOKEN` (the value used before is spent and stays
    refused) and set the server up again at `/setup`, as on first run:
 

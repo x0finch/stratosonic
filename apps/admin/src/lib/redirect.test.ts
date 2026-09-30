@@ -42,7 +42,7 @@ describe("safeRedirect", () => {
   });
 
   it("refuses the sign-in and setup screens, which would lead nowhere", () => {
-    for (const target of ["/login", "/login?redirect=/account", "/setup", "/setup/"]) {
+    for (const target of ["/login", "/login?redirect=/account", "/setup", "/setup/anything"]) {
       expect(safeRedirect(target, ORIGIN)).toBe("/");
     }
   });
