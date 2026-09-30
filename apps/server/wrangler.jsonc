@@ -64,10 +64,12 @@
   //     under, and which the console's session secret and the pepper of its
   //     console users' password hashes are derived from;
   //   - `SETUP_TOKEN`, at least 32 characters (`openssl rand -hex 32`), which
-  //     creates the console's owner at `/setup` and, set to a new value,
-  //     resets the owner's password at `/setup/reset`. Each value works once.
-  //     Console users are the console's own accounts, separate from Subsonic
-  //     users.
+  //     creates the console's owner at `/setup` on first run, and does
+  //     nothing else. It is used once: deleting it afterwards (`wrangler
+  //     secret delete SETUP_TOKEN`) is optional, and leaving it has no effect.
+  //     A lost owner password is recovered by deleting the owner in D1 and
+  //     setting up again with a new value (README.md). Console users are the
+  //     console's own accounts, separate from Subsonic users.
   //
   // Deprecated: `INITIAL_USER` below and the `INITIAL_PASSWORD` secret create
   // the first Subsonic user, an admin, on first run. They still work in this

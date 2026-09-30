@@ -44,15 +44,7 @@ const MESSAGES: Record<string, ErrorMessage> = {
   },
   already_set_up: {
     title: "The server is already set up",
-    description: "Sign in instead, or reset the owner's password with a new setup token.",
-  },
-  not_set_up: {
-    title: "There is no owner yet",
-    description: "Set up the server with the setup token instead.",
-  },
-  unknown_user: {
-    title: "There is no console user by that name",
-    description: "Enter the owner's username.",
+    description: "Sign in with your console account instead.",
   },
   invalid_username: {
     title: "The username is not valid",

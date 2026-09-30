@@ -16,12 +16,10 @@ import type { Env } from "../src/env";
 import { runInitialSetup } from "../src/setup/initial-setup";
 import { setupTokenDigest } from "../src/setup/setup-token";
 import {
-  type CookieJar,
   consoleRequest,
   cost,
   countingD1,
   expectConsolePassword,
-  GUEST_ROLE,
   type RecordedStatement,
   seedConsoleUser,
   shape,
@@ -31,9 +29,10 @@ import {
 import { seedUser, testEnv } from "./support";
 
 /**
- * Setup and recovery with the setup token (#81, #90, #99), through the
- * Worker's app over a D1 binding that counts every statement. They create and
- * reset console users, the console's own accounts, and never a Subsonic user.
+ * First-run setup with the setup token (#81, #90, #99, #105), through the
+ * Worker's app over a D1 binding that counts every statement. It creates the
+ * owner, a console user, the console's own kind of account, and never a
+ * Subsonic user. The token resets no password: `/api/setup/reset` is gone.
  *
  * This file owns its database, and every test starts from an empty one: the
  * app is called directly rather than through the Worker's `fetch`, which would
@@ -71,16 +70,12 @@ function setup(body: Form, env = envWith()) {
   return send(consoleRequest(ORIGIN, "/api/setup", { body }), env);
 }
 
-function reset(body: Form, env = envWith()) {
-  return send(consoleRequest(ORIGIN, "/api/setup/reset", { body }), env);
-}
-
 /** What a Subsonic `ping` answers with these credentials: "ok", or the error code. */
 function subsonicStatus(username: string, password: string) {
   return subsonicPing(send, ORIGIN, username, password);
 }
 
-/** Every row setup and recovery could touch. */
+/** Every row setup could touch. */
 async function snapshot() {
   const db = database(testEnv);
   return {
@@ -128,16 +123,6 @@ async function spentRows() {
 async function sessionsOf(userId: string) {
   const rows = await database(testEnv).select().from(consoleSession);
   return rows.filter((row) => row.userId === userId);
-}
-
-/** A route that writes, behind `requireFreshSession`: 401 once the session is gone. */
-function changePassword(jar: CookieJar, currentPassword: string, newPassword: string) {
-  return send(
-    consoleRequest(ORIGIN, "/api/account/password", {
-      body: { currentPassword, newPassword },
-      jar,
-    }),
-  );
 }
 
 beforeEach(async () => {
@@ -189,10 +174,10 @@ describe("GET /api/setup", () => {
     expect(cost(statements).rowsWritten).toBe(0);
   });
 
-  it("offers a reset once a console user exists", async () => {
+  it("is closed once a console user exists, even with an unspent token", async () => {
     await seedConsoleUser("owner", "old");
 
-    expect(await state()).toEqual({ state: "reset-available" });
+    expect(await state()).toEqual({ state: "closed" });
   });
 
   it("still needs setup while only Subsonic users exist", async () => {
@@ -201,11 +186,11 @@ describe("GET /api/setup", () => {
     expect(await state()).toEqual({ state: "needs-setup" });
   });
 
-  it("is closed once the token has been used, and open again for a new value", async () => {
+  it("is closed once the token has been used, and for a new value too while the owner exists", async () => {
     expect((await setup({ token: TOKEN, username: "owner", password: "pw" })).status).toBe(201);
 
     expect(await state()).toEqual({ state: "closed" });
-    expect(await state(envWith(OTHER_TOKEN))).toEqual({ state: "reset-available" });
+    expect(await state(envWith(OTHER_TOKEN))).toEqual({ state: "closed" });
   });
 
   it("is closed for a spent token even when no console user is left", async () => {
@@ -449,6 +434,26 @@ describe("POST /api/setup", () => {
     );
   });
 
+  it("rolls the owner back when the token is spent between its check and its batch", async () => {
+    const batch = d1.binding.batch.bind(d1.binding);
+    vi.spyOn(d1.binding, "batch").mockImplementationOnce(async (statements) => {
+      await database(testEnv)
+        .insert(property)
+        .values({ id: `SetupTokenSpent:${await setupTokenDigest(TOKEN)}`, value: "raced" });
+      return batch(statements);
+    });
+
+    const response = await setup({ token: TOKEN, username: "owner", password: "pw" });
+
+    // The console user was inserted, then the spent token's insert hit the
+    // key and took it back out with the whole batch.
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "invalid_token" });
+    expect(await database(testEnv).select().from(consoleUser)).toEqual([]);
+    expect(await database(testEnv).select().from(consoleAccount)).toEqual([]);
+    expect(await spentRows()).toEqual([expect.objectContaining({ value: "raced" })]);
+  });
+
   it("neither races nor is raced by the INITIAL_* bootstrap, which makes a Subsonic user", async () => {
     const [response] = await Promise.all([
       setup({ token: TOKEN, username: "admin", password: "pw" }),
@@ -466,236 +471,90 @@ describe("POST /api/setup", () => {
   });
 });
 
-describe("POST /api/setup/reset", () => {
-  let ownerId: string;
+describe("the setup token's other uses", () => {
+  it("resets no password: /api/setup/reset is the API's JSON 404, and writes nothing", async () => {
+    const ownerId = await seedConsoleUser("owner", "forgotten");
 
-  beforeEach(async () => {
-    ownerId = await seedConsoleUser("Owner", "forgotten");
-    await seedConsoleUser("other", "theirs", GUEST_ROLE);
-    // Subsonic users, one of them Owner's namesake, which a reset never names.
-    await seedUser("Owner", "subsonic", true);
-    await seedUser("listener", "music");
-  });
-
-  it("resets a console user's password, ends every session, and spends the token", async () => {
-    const { jar } = await signIn(send, ORIGIN, "owner", "forgotten");
-    await signIn(send, ORIGIN, "owner", "forgotten");
-    expect(await sessionsOf(ownerId)).toHaveLength(2);
-
-    let response: Response | undefined;
-    const statements = await measured(async () => {
-      response = await reset({ token: TOKEN, username: "owner", password: "remembered" });
-    });
-
-    expect(response?.status).toBe(200);
-    expect(await response?.json()).toEqual({
-      id: ownerId,
-      username: "Owner",
-      role: "owner",
-      permissions: [...PERMISSIONS],
-    });
-    expect(statements.map(shape)).toEqual([
-      "select user", // whether the token is spent, and the console user it names
-      "update account",
-      "delete session",
-      "insert property", // the spent token
-    ]);
-    expect(cost(statements).roundTrips).toBe(2);
-    // The credential account, the two sessions ended, and the spent token and
-    // its key.
-    expect(cost(statements).rowsWritten).toBe(1 + 2 + 2);
-
-    // The old sessions are gone: a write refuses the old cookie at once.
-    expect(await sessionsOf(ownerId)).toEqual([]);
-    expect((await changePassword(jar, "remembered", "again")).status).toBe(401);
-    await expectConsolePassword(ownerId, "remembered");
-    expect(await spentRows()).toHaveLength(1);
-  });
-
-  it("moves the console to the new password, and leaves Subsonic's as it was", async () => {
-    const before = await database(testEnv).select().from(subsonicUser);
-
-    await reset({ token: TOKEN, username: "owner", password: "remembered" });
-
-    expect((await signIn(send, ORIGIN, "owner", "remembered")).response.status).toBe(200);
-    expect((await signIn(send, ORIGIN, "owner", "forgotten")).response.status).toBe(401);
-    expect(await database(testEnv).select().from(subsonicUser)).toEqual(before);
-    expect(await subsonicStatus("owner", "subsonic")).toBe("ok");
-    expect(await subsonicStatus("owner", "remembered")).toBe(40);
-  });
-
-  it("keeps the console user's role, whatever it is", async () => {
-    await database(testEnv)
-      .update(consoleUser)
-      .set({ role: "read-only" })
-      .where(eq(consoleUser.id, ownerId));
-
-    const response = await reset({ token: TOKEN, username: "owner", password: "remembered" });
-
-    // A role this release does not know grants nothing, and the reset gives
-    // it nothing more.
-    expect(await response.json()).toEqual({
-      id: ownerId,
-      username: "Owner",
-      role: "read-only",
-      permissions: [],
-    });
-    const [row] = await database(testEnv)
-      .select({ role: consoleUser.role })
-      .from(consoleUser)
-      .where(eq(consoleUser.id, ownerId));
-    expect(row?.role).toBe("read-only");
-  });
-
-  it("refuses the same token value a second time", async () => {
-    await reset({ token: TOKEN, username: "owner", password: "remembered" });
-
-    await expectRefusal(
-      () => reset({ token: TOKEN, username: "owner", password: "stolen" }),
-      403,
-      "invalid_token",
-    );
-    expect(await state()).toEqual({ state: "closed" });
-  });
-
-  it("keeps an old value spent after a newer one is used", async () => {
-    await reset({ token: TOKEN, username: "owner", password: "one" });
-    await reset({ token: OTHER_TOKEN, username: "owner", password: "two" }, envWith(OTHER_TOKEN));
-
-    await expectRefusal(
-      () => reset({ token: TOKEN, username: "owner", password: "three" }),
-      403,
-      "invalid_token",
-    );
-  });
-
-  it("refuses a wrong token", async () => {
-    await expectRefusal(
-      () => reset({ token: OTHER_TOKEN, username: "owner", password: "x" }),
-      403,
-      "invalid_token",
-    );
-  });
-
-  it("refuses without a token configured", async () => {
-    await expectRefusal(
-      () => reset({ token: TOKEN, username: "owner", password: "x" }, envWith(null)),
-      403,
-      "invalid_token",
-    );
-  });
-
-  it("refuses a Subsonic user's name, which no console user has", async () => {
-    await expectRefusal(
-      () => reset({ token: TOKEN, username: "listener", password: "x" }),
-      400,
-      "unknown_user",
-    );
-  });
-
-  it("answers unknown_user for a console user deleted between its check and its batch", async () => {
-    const batch = d1.binding.batch.bind(d1.binding);
-    vi.spyOn(d1.binding, "batch").mockImplementationOnce(async (statements) => {
-      await database(testEnv).delete(consoleUser).where(eq(consoleUser.id, ownerId));
-      return batch(statements);
-    });
-
-    let response: Response | undefined;
-    const statements = await measured(async () => {
-      response = await reset({ token: TOKEN, username: "owner", password: "gone" });
-    });
-
-    expect(response?.status).toBe(400);
-    expect(await response?.json()).toEqual({ error: "unknown_user" });
-    expect(cost(statements).rowsWritten).toBe(0);
-    expect(await spentRows()).toEqual([]);
-  });
-
-  it("looks the name up as sign-in does: in any ASCII case, and untrimmed", async () => {
-    await expectRefusal(
-      () => reset({ token: TOKEN, username: " owner ", password: "x" }),
-      400,
-      "unknown_user",
-    );
-    await expectRefusal(
-      () => reset({ token: TOKEN, username: "   ", password: "x" }),
-      400,
-      "unknown_user",
-    );
-    const response = await reset({ token: TOKEN, username: "OWNER", password: "found" });
-
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ id: ownerId, username: "Owner" });
-    await expectConsolePassword(ownerId, "found");
-    expect((await signIn(send, ORIGIN, " owner ", "found")).response.status).toBe(401);
-  });
-
-  it.each([
-    ["an empty name", ""],
-    ["a name over 255 characters", "n".repeat(MAX_USERNAME_LENGTH + 1)],
-  ])("refuses %s", async (_, username) => {
-    await expectRefusal(
-      () => reset({ token: TOKEN, username, password: "x" }),
-      400,
-      "invalid_username",
-    );
-  });
-
-  it("refuses a name nobody has", async () => {
-    await expectRefusal(
-      () => reset({ token: TOKEN, username: "nobody", password: "x" }),
-      400,
-      "unknown_user",
-    );
-  });
-
-  it("refuses when there is no console user, whatever Subsonic users there are", async () => {
-    await database(testEnv).delete(consoleUser);
-
-    await expectRefusal(
-      () => reset({ token: TOKEN, username: "owner", password: "x" }),
-      409,
-      "not_set_up",
-    );
-  });
-
-  it("refuses an invalid new password", async () => {
-    await expectRefusal(
-      () => reset({ token: TOKEN, username: "owner", password: "" }),
-      400,
-      "invalid_password",
-    );
-  });
-
-  it("refuses a cross-origin request", async () => {
     await expectRefusal(
       () =>
         send(
           consoleRequest(ORIGIN, "/api/setup/reset", {
-            body: { token: TOKEN, username: "owner", password: "x" },
-            headers: { origin: "https://evil.example" },
+            body: { token: TOKEN, username: "owner", password: "remembered" },
           }),
         ),
-      403,
-      "forbidden_origin",
+      404,
+      "not_found",
     );
+    await expectConsolePassword(ownerId, "forgotten");
+  });
+});
+
+/**
+ * The last resort for a lost owner password (apps/server/README.md): the
+ * owner's row is deleted by hand, its sessions and credential account go with
+ * it, and the server is set up again with a new token.
+ */
+describe("setting up again after the owner is deleted", () => {
+  /** The statement the README gives, as `wrangler d1 execute` runs it. */
+  async function deleteOwner(): Promise<void> {
+    await testEnv.DB.prepare("DELETE FROM user WHERE role = 'owner'").run();
+  }
+
+  async function accountsOf(userId: string) {
+    return database(testEnv).select().from(consoleAccount).where(eq(consoleAccount.userId, userId));
+  }
+
+  it("takes the owner's sessions and credential account with it, and no Subsonic user", async () => {
+    const created = await setup({ token: TOKEN, username: "Owner", password: "forgotten" });
+    const { id: ownerId } = (await created.json()) as { id: string };
+    const { jar } = await signIn(send, ORIGIN, "owner", "forgotten");
+    await signIn(send, ORIGIN, "owner", "forgotten");
+    await seedUser("listener", "music");
+    const subsonicUsers = await database(testEnv).select().from(subsonicUser);
+    expect(await sessionsOf(ownerId)).toHaveLength(2);
+    expect(await accountsOf(ownerId)).toHaveLength(1);
+
+    await deleteOwner();
+
+    expect(await database(testEnv).select().from(consoleUser)).toEqual([]);
+    expect(await sessionsOf(ownerId)).toEqual([]);
+    expect(await accountsOf(ownerId)).toEqual([]);
+    // A write checks the session against D1, so the old cookie is refused at
+    // once; reads may pass on the cookie cache for up to its five minutes.
+    const write = await send(
+      consoleRequest(ORIGIN, "/api/account/password", {
+        body: { currentPassword: "forgotten", newPassword: "x" },
+        jar,
+      }),
+    );
+    expect(write.status).toBe(401);
+    expect(await database(testEnv).select().from(subsonicUser)).toEqual(subsonicUsers);
+    expect(await subsonicStatus("listener", "music")).toBe("ok");
   });
 
-  it("lets one of two racing resets with the same token through, and rolls the other back", async () => {
-    const batches = vi.spyOn(d1.binding, "batch");
-    const responses = await Promise.all([
-      reset({ token: TOKEN, username: "owner", password: "first" }),
-      reset({ token: TOKEN, username: "owner", password: "second" }),
-    ]);
+  it("opens setup to a new token, and still refuses the spent one", async () => {
+    await setup({ token: TOKEN, username: "owner", password: "forgotten" });
+    await deleteOwner();
 
-    // Both found the token unspent and sent their batch; the second's spent
-    // insert failed, and took its password change with it.
-    expect(batches).toHaveBeenCalledTimes(2);
+    expect(await state()).toEqual({ state: "closed" });
+    await expectRefusal(
+      () => setup({ token: TOKEN, username: "owner", password: "stolen" }),
+      403,
+      "invalid_token",
+    );
 
-    const statuses = responses.map((response) => response.status);
-    expect([...statuses].sort()).toEqual([200, 403]);
-    expect(await responses[statuses.indexOf(403)]?.json()).toEqual({ error: "invalid_token" });
-    await expectConsolePassword(ownerId, statuses[0] === 200 ? "first" : "second");
-    expect(await spentRows()).toHaveLength(1);
+    const fresh = envWith(OTHER_TOKEN);
+    expect(await state(fresh)).toEqual({ state: "needs-setup" });
+    const response = await setup(
+      { token: OTHER_TOKEN, username: "owner", password: "remembered" },
+      fresh,
+    );
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ username: "owner", role: "owner" });
+    expect((await signIn(send, ORIGIN, "owner", "remembered")).response.status).toBe(200);
+    expect((await signIn(send, ORIGIN, "owner", "forgotten")).response.status).toBe(401);
+    expect(await spentRows()).toHaveLength(2);
+    expect(await state(fresh)).toEqual({ state: "closed" });
   });
 });

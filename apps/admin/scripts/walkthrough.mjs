@@ -2,7 +2,7 @@
  * A headless Chromium walkthrough of the console's auth screens (#91), against
  * a running Worker:
  *
- *   BASE_URL=http://localhost:8787 SETUP_TOKEN=… RESET_TOKEN=… \
+ *   BASE_URL=http://localhost:8787 SETUP_TOKEN=… \
  *     pnpm --filter @stratosonic/admin walkthrough
  *
  * Not part of the test suite or CI. It needs a Worker serving the built
@@ -21,20 +21,17 @@
  *
  * It walks, in order: the router guard; first-run setup, with a wrong token
  * and a mismatched confirmation on the way, then the first sign-in;
- * sign-out and sign-in; a wrong password, and a Subsonic user's; a deep link
- * opened while signed out, which sign-in returns to; the account page's
- * validation, where a wrong current password's error goes once that field
- * changes and at the next submit, and a password change, after which a
- * Subsonic `ping` with neither password is ok; signing out from the account page, which lands on
- * plain `/login` and signs in to the overview; a session that ends while on a
- * page, which sign-in returns to; a reset with a new setup token, whose
- * toast says all of the account's sessions are signed out; dark mode; and a
- * phone-sized viewport. The reset needs a token the first run did not spend,
- * so the script waits, up to five minutes, for `GET /api/setup` to say
- * `reset-available`: put `RESET_TOKEN` in `SETUP_TOKEN` (apps/server/.dev.vars)
- * and restart `wrangler dev` when it asks. Without `RESET_TOKEN` the reset is
- * skipped. It signs in more often than the server's limit of 5 a minute
- * allows, so it meets the rate limit's message on the way, and waits it out.
+ * sign-out and sign-in; a wrong password, and a Subsonic user's; a set-up
+ * server, whose screens offer neither setup nor a password reset (the setup
+ * token only sets the server up, #105); a deep link opened while signed out,
+ * which sign-in returns to; the account page's validation, where a wrong
+ * current password's error goes once that field changes and at the next
+ * submit, and a password change, after which a Subsonic `ping` with neither
+ * password is ok; signing out from the account page, which lands on plain
+ * `/login` and signs in to the overview; a session that ends while on a page,
+ * which sign-in returns to; dark mode; and a phone-sized viewport. It signs in
+ * more often than the server's limit of 5 a minute allows, so it meets the
+ * rate limit's message on the way, and waits it out.
  *
  * What a form did, or why it failed, is a toast (#101): the walkthrough waits
  * for a new one, in the toaster's live region, with the expected words.
@@ -55,7 +52,6 @@ import { chromium } from "playwright-core";
 
 const BASE_URL = (process.env.BASE_URL ?? "http://localhost:8787").replace(/\/$/, "");
 const SETUP_TOKEN = process.env.SETUP_TOKEN;
-const RESET_TOKEN = process.env.RESET_TOKEN;
 const USERNAME = process.env.OWNER_USER ?? "owner";
 const SUBSONIC_USER = process.env.SUBSONIC_USER;
 const SUBSONIC_PASSWORD = process.env.SUBSONIC_PASSWORD;
@@ -64,7 +60,6 @@ const SCREENSHOTS = process.env.SCREENSHOTS;
 const passwords = {
   first: process.env.OWNER_PASSWORD ?? "first-run password",
   changed: "changed in the console",
-  reset: "reset with a setup token",
 };
 
 /** The refused responses the walkthrough expects, by path. */
@@ -112,13 +107,7 @@ async function step(name, run) {
 }
 
 async function setupState() {
-  let response;
-  try {
-    response = await fetch(`${BASE_URL}/api/setup`);
-  } catch {
-    // Restarting, say, while the reset waits for its token.
-    return "unreachable";
-  }
+  const response = await fetch(`${BASE_URL}/api/setup`);
   return response.ok ? (await response.json()).state : `http_${response.status}`;
 }
 
@@ -381,6 +370,31 @@ async function main() {
       await checkSubsonicUserPings();
     });
 
+    await step("a set-up server offers neither setup nor a password reset", async () => {
+      check((await setupState()) === "closed", "GET /api/setup is not closed");
+      await page.goto(`${BASE_URL}/login`);
+      await page.getByRole("button", { name: "Sign in" }).waitFor();
+      const offers = await page.getByRole("link", { name: /set up|reset|forgot/i }).count();
+      check(offers === 0, `the sign-in screen offers ${offers} setup or reset link(s)`);
+      await page.goto(`${BASE_URL}/setup`);
+      await page.getByText("The server is already set up").waitFor();
+      check(
+        (await page.getByLabel("Setup token", { exact: true }).count()) === 0,
+        "/setup still shows its form",
+      );
+      await shot(page, "setup-closed");
+      const reset = await fetch(`${BASE_URL}/api/setup/reset`, {
+        method: "POST",
+        headers: { origin: BASE_URL, "content-type": "application/json" },
+        body: JSON.stringify({ token: SETUP_TOKEN ?? "", username: USERNAME, password: "x" }),
+      });
+      const body = await reset.json();
+      check(
+        reset.status === 404 && body.error === "not_found",
+        `POST /api/setup/reset answered ${reset.status} ${JSON.stringify(body)}`,
+      );
+    });
+
     await step("sign-in returns to the page that asked for it", async () => {
       await page.goto(`${BASE_URL}/account`);
       await page.waitForURL((url) => url.pathname === "/login");
@@ -492,48 +506,6 @@ async function main() {
       check(url.searchParams.get("redirect") === "/account", `redirect is ${url.search}`);
       await signIn(page, password, { expectAt: "/account" });
       await page.getByRole("heading", { name: "Account" }).waitFor();
-    });
-
-    await step("reset with a new setup token", async () => {
-      if (!RESET_TOKEN) {
-        return "skipped";
-      }
-      if ((await setupState()) !== "reset-available") {
-        console.log(
-          "  Put RESET_TOKEN in SETUP_TOKEN (apps/server/.dev.vars) and restart wrangler dev; waiting…",
-        );
-        const deadline = Date.now() + 5 * 60 * 1000;
-        while ((await setupState()) !== "reset-available") {
-          check(Date.now() < deadline, "no reset-available within five minutes");
-          await new Promise((resolve) => setTimeout(resolve, 2000));
-        }
-      }
-      await signOut(page);
-      await page.getByRole("link", { name: "Reset with a setup token" }).click();
-      await page.waitForURL((url) => url.pathname === "/setup/reset");
-      await page.getByLabel("Setup token", { exact: true }).fill(RESET_TOKEN);
-      await page.getByLabel("Owner username", { exact: true }).fill(USERNAME);
-      await page.getByLabel("New password", { exact: true }).fill(passwords.reset);
-      await page.getByLabel("Confirm password", { exact: true }).fill(passwords.reset);
-      await shot(page, "reset");
-      await markToasts(page);
-      await page.getByRole("button", { name: "Reset password" }).click();
-      await page.waitForURL((url) => url.pathname === "/login");
-      await expectToast(
-        page,
-        "The password is reset",
-        "Sign in with the new password. All sessions of that account are signed out.",
-      );
-      check(
-        new URL(page.url()).search === "",
-        `the reset landed on /login${new URL(page.url()).search}`,
-      );
-      await shot(page, "login-after-reset");
-      password = passwords.reset;
-      await signIn(page, password, { expectAt: "/" });
-      await checkOwnerCannotPing(password);
-      await checkSubsonicUserPings();
-      check((await setupState()) === "closed", "the reset token is not spent");
     });
 
     await step("dark mode", async () => {

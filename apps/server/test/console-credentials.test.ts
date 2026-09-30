@@ -294,22 +294,6 @@ describe("setConsolePassword", () => {
     await expectConsolePassword(namesake?.id ?? "", "sesame");
   });
 
-  it("rolls the password and the revocation back when a statement alongside fails", async () => {
-    const db = database(testEnv);
-    await setConsolePassword(db, encryptionKey(), carolId, "before");
-    const kept = await insertSession(carolId);
-    await db.insert(property).values({ id: "set-password-test", value: "taken" });
-
-    await expect(
-      setConsolePassword(db, encryptionKey(), carolId, "after", {
-        alongside: [db.insert(property).values({ id: "set-password-test", value: "" })],
-      }),
-    ).rejects.toThrow();
-
-    await expectConsolePassword(carolId, "before");
-    expect(await sessionIds(carolId)).toEqual([kept]);
-  });
-
   it("writes nothing, and answers false, for a console user that does not exist", async () => {
     const before = await database(testEnv).select().from(consoleAccount);
 

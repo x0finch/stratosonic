@@ -15,7 +15,6 @@ import { Route as ShellIndexRouteImport } from './routes/_shell/index'
 import { Route as ShellSplatRouteImport } from './routes/_shell/$'
 import { Route as ShellAccountRouteImport } from './routes/_shell/account'
 import { Route as SetupIndexRouteImport } from './routes/setup/index'
-import { Route as SetupResetRouteImport } from './routes/setup/reset'
 
 const ShellRoute = ShellRouteImport.update({
   id: '/_shell',
@@ -46,25 +45,18 @@ const SetupIndexRoute = SetupIndexRouteImport.update({
   path: '/setup/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const SetupResetRoute = SetupResetRouteImport.update({
-  id: '/setup/reset',
-  path: '/setup/reset',
-  getParentRoute: () => rootRouteImport,
-} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof ShellIndexRoute
   '/login': typeof LoginRoute
   '/$': typeof ShellSplatRoute
   '/account': typeof ShellAccountRoute
-  '/setup/reset': typeof SetupResetRoute
   '/setup/': typeof SetupIndexRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/$': typeof ShellSplatRoute
   '/account': typeof ShellAccountRoute
-  '/setup/reset': typeof SetupResetRoute
   '/': typeof ShellIndexRoute
   '/setup': typeof SetupIndexRoute
 }
@@ -74,22 +66,20 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/_shell/$': typeof ShellSplatRoute
   '/_shell/account': typeof ShellAccountRoute
-  '/setup/reset': typeof SetupResetRoute
   '/_shell/': typeof ShellIndexRoute
   '/setup/': typeof SetupIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/$' | '/account' | '/setup/reset' | '/setup/'
+  fullPaths: '/' | '/login' | '/$' | '/account' | '/setup/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/login' | '/$' | '/account' | '/setup/reset' | '/' | '/setup'
+  to: '/login' | '/$' | '/account' | '/' | '/setup'
   id:
     | '__root__'
     | '/_shell'
     | '/login'
     | '/_shell/$'
     | '/_shell/account'
-    | '/setup/reset'
     | '/_shell/'
     | '/setup/'
   fileRoutesById: FileRoutesById
@@ -97,7 +87,6 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   ShellRoute: typeof ShellRouteWithChildren
   LoginRoute: typeof LoginRoute
-  SetupResetRoute: typeof SetupResetRoute
   SetupIndexRoute: typeof SetupIndexRoute
 }
 
@@ -145,13 +134,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SetupIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/setup/reset': {
-      id: '/setup/reset'
-      path: '/setup/reset'
-      fullPath: '/setup/reset'
-      preLoaderRoute: typeof SetupResetRouteImport
-      parentRoute: typeof rootRouteImport
-    }
   }
 }
 
@@ -172,7 +154,6 @@ const ShellRouteWithChildren = ShellRoute._addFileChildren(ShellRouteChildren)
 const rootRouteChildren: RootRouteChildren = {
   ShellRoute: ShellRouteWithChildren,
   LoginRoute: LoginRoute,
-  SetupResetRoute: SetupResetRoute,
   SetupIndexRoute: SetupIndexRoute,
 }
 export const routeTree = rootRouteImport

@@ -14,11 +14,11 @@
 PASSWORD_ENCRYPTION_KEY = "change-me-too"
 
 # One-time token that creates the console's owner (/setup) while there is no
-# console user, and resets the owner's password (/setup/reset) once there is.
-# Console users are the console's own accounts, not Subsonic users. At least 32
-# characters, or it is ignored; generate one with `openssl rand -hex 32`. Each
-# value works once: to recover again, set a new one. This placeholder is too
-# short, so setup stays closed until it is replaced.
+# console user, and does nothing else. Console users are the console's own
+# accounts, not Subsonic users. At least 32 characters, or it is ignored;
+# generate one with `openssl rand -hex 32`. Each value works once; leaving it
+# set after setup has no effect. This placeholder is too short, so setup stays
+# closed until it is replaced.
 SETUP_TOKEN = "change-me"
 
 # Deprecated: password of the Subsonic admin user created on first run,
