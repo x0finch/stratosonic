@@ -48,6 +48,9 @@ let attempted = false;
 /** Whether this isolate has already reported that no owner exists nor can be created. */
 let reportedNoOwner = false;
 
+/** Whether this isolate has already reported that no Subsonic user exists nor will be created. */
+let reportedNoSubsonicUser = false;
+
 /**
  * Runs the bootstrap at most once per isolate. Called from both Worker entry
  * points — the first request an isolate serves, and a scheduled run — because
@@ -156,10 +159,18 @@ async function markInitialSetupDone(db: Database): Promise<void> {
 async function createInitialAdmin(env: Env, db: Database): Promise<boolean> {
   const { INITIAL_USER: userName, INITIAL_PASSWORD: password } = env;
 
-  // Without the password the deprecated bootstrap is simply not in use:
+  // Without the password the deprecated bootstrap is not in use:
   // `INITIAL_USER` is a plain var in wrangler.jsonc, so it being set says
-  // nothing.
+  // nothing. It is still the only way to a Subsonic user until the console
+  // manages them (#82), and this is only reached while there is none, so
+  // that is worth a line, once per isolate.
   if (!password) {
+    if (!reportedNoSubsonicUser) {
+      reportedNoSubsonicUser = true;
+      console.log(
+        "no Subsonic user exists: set INITIAL_USER and INITIAL_PASSWORD to create one (the console will manage Subsonic users in a later release)",
+      );
+    }
     return false;
   }
 

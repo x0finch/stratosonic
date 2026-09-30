@@ -7,9 +7,9 @@ import { seedUser, testEnv } from "./support";
 
 /**
  * What the first run logs for each way a deployment can be configured (#97,
- * #99): a line when the console has no owner and nothing can create one, and a
- * warning when the deprecated INITIAL_* bootstrap of the Subsonic admin is
- * half configured.
+ * #99): a line when the console has no owner and nothing can create one, a
+ * line when there is no Subsonic user and the deprecated INITIAL_* bootstrap
+ * is not in use, and a warning when that bootstrap is half configured.
  *
  * This file owns its database, so it makes no requests: a request would
  * bootstrap `admin` from the test bindings before any test could look at an
@@ -22,6 +22,9 @@ const TOKEN = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 const NO_OWNER =
   "no owner exists: set SETUP_TOKEN (wrangler secret put SETUP_TOKEN) to create one in the console";
+
+const NO_SUBSONIC_USER =
+  "no Subsonic user exists: set INITIAL_USER and INITIAL_PASSWORD to create one (the console will manage Subsonic users in a later release)";
 
 /**
  * The recommended configuration: `INITIAL_USER` is still there, as the plain
@@ -57,6 +60,11 @@ function lines(mock: { mock: { calls: unknown[][] } }): string[] {
   return mock.mock.calls.map((call) => String(call[0]));
 }
 
+/** The lines about the console's owner, leaving the Subsonic user's out. */
+function ownerLines(): string[] {
+  return lines(log).filter((line) => line !== NO_SUBSONIC_USER);
+}
+
 beforeEach(() => {
   log = vi.spyOn(console, "log").mockImplementation(() => {});
   warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -78,7 +86,7 @@ describe("when no owner exists", () => {
 
     await runInitialSetup(recommended({ SETUP_TOKEN: TOKEN }));
 
-    expect(lines(log)).toEqual([]);
+    expect(ownerLines()).toEqual([]);
     expect(lines(warn)).toEqual([]);
   });
 
@@ -88,7 +96,7 @@ describe("when no owner exists", () => {
     await runInitialSetup(recommended());
     await runInitialSetup(recommended());
 
-    expect(lines(log)).toEqual([NO_OWNER]);
+    expect(ownerLines()).toEqual([NO_OWNER]);
     expect(lines(warn)).toEqual([]);
     expect(await database(testEnv).select().from(subsonicUser)).toHaveLength(0);
   });
@@ -97,7 +105,7 @@ describe("when no owner exists", () => {
     await (await inFreshIsolate())(recommended());
     await (await inFreshIsolate())(recommended());
 
-    expect(lines(log)).toEqual([NO_OWNER, NO_OWNER]);
+    expect(ownerLines()).toEqual([NO_OWNER, NO_OWNER]);
   });
 
   it("says so whatever Subsonic users exist, since they cannot sign in to the console", async () => {
@@ -106,7 +114,7 @@ describe("when no owner exists", () => {
 
     await runInitialSetup(recommended());
 
-    expect(lines(log)).toEqual([NO_OWNER]);
+    expect(ownerLines()).toEqual([NO_OWNER]);
   });
 
   it("says so while console users exist but none is the owner", async () => {
@@ -114,7 +122,7 @@ describe("when no owner exists", () => {
 
     await (await inFreshIsolate())(recommended());
 
-    expect(lines(log)).toEqual([NO_OWNER]);
+    expect(ownerLines()).toEqual([NO_OWNER]);
   });
 
   it("treats a SETUP_TOKEN too short to use as no token", async () => {
@@ -123,7 +131,7 @@ describe("when no owner exists", () => {
     await runInitialSetup(recommended({ SETUP_TOKEN: TOKEN.slice(0, 31) }));
 
     // The short token is reported on its own by setup-token.ts.
-    expect(lines(log)).toEqual([NO_OWNER]);
+    expect(ownerLines()).toEqual([NO_OWNER]);
     expect(lines(warn)).toEqual([
       "setup: SETUP_TOKEN is shorter than 32 characters and is ignored",
     ]);
@@ -137,8 +145,35 @@ describe("once the owner exists", () => {
     await (await inFreshIsolate())(recommended());
     await (await inFreshIsolate())(recommended({ SETUP_TOKEN: TOKEN }));
 
-    expect(lines(log)).toEqual([]);
+    expect(ownerLines()).toEqual([]);
     expect(lines(warn)).toEqual([]);
+  });
+});
+
+describe("when no Subsonic user exists and INITIAL_PASSWORD is unset", () => {
+  it("says so once per isolate, and again in the next", async () => {
+    const runInitialSetup = await inFreshIsolate();
+
+    await runInitialSetup(recommended({ SETUP_TOKEN: TOKEN }));
+    await runInitialSetup(recommended({ SETUP_TOKEN: TOKEN }));
+    await (await inFreshIsolate())(recommended({ SETUP_TOKEN: TOKEN }));
+
+    expect(lines(log)).toEqual([NO_SUBSONIC_USER, NO_SUBSONIC_USER]);
+    expect(lines(warn)).toEqual([]);
+  });
+
+  it("says nothing once a Subsonic user exists", async () => {
+    await seedUser("admin", "sesame", true);
+
+    await (await inFreshIsolate())(recommended({ SETUP_TOKEN: TOKEN }));
+
+    expect(lines(log)).toEqual([]);
+  });
+
+  it("says nothing of it when INITIAL_PASSWORD is set", async () => {
+    await (await inFreshIsolate())(without("INITIAL_USER"));
+
+    expect(lines(log)).toEqual([]);
   });
 });
 
