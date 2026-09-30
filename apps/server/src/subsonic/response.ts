@@ -12,8 +12,16 @@ export const SUBSONIC_API_VERSION = "1.16.1";
 /** The `type` attribute clients use to detect the server implementation. */
 export const SERVER_TYPE = "stratosonic";
 
-/** The `serverVersion` attribute. OpenSubsonic requires a strict `X.Y.Z`. */
-export const SERVER_VERSION = "0.1.0";
+/**
+ * The `serverVersion` attribute: the release this Worker was deployed from.
+ * The deploy workflow substitutes `__SERVER_VERSION__` at build time
+ * (`wrangler deploy --define`), after checking that the release tag, less its
+ * leading `v`, is a strict `X.Y.Z`, as OpenSubsonic requires. A local or test
+ * build defines nothing and reports the fixed fallback, so what tests see does
+ * not depend on the release.
+ */
+export const SERVER_VERSION: string =
+  typeof __SERVER_VERSION__ === "string" ? __SERVER_VERSION__ : "0.0.0";
 
 const XML_NAMESPACE = "http://subsonic.org/restapi";
 
