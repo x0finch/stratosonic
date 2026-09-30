@@ -19,8 +19,8 @@ export interface Me {
   permissions: string[];
 }
 
-/** What `GET /api/setup` says the setup token may do now. */
-export type SetupState = "needs-setup" | "reset-available" | "closed";
+/** What `GET /api/setup` says: whether the setup token can set the server up now. */
+export type SetupState = "needs-setup" | "closed";
 
 /**
  * A refused or failed call. `code` is the API's `error`, Better Auth's `code`
@@ -160,11 +160,6 @@ export interface SetupRequest extends Credentials {
 /** Creates the owner account with the setup token, while there is no console user. */
 export async function setUp(request: SetupRequest): Promise<void> {
   await call("POST", "/api/setup", request);
-}
-
-/** Sets a console user's password with an unspent setup token, signing it out everywhere. */
-export async function resetConsolePassword(request: SetupRequest): Promise<void> {
-  await call("POST", "/api/setup/reset", request);
 }
 
 /** Changes the signed-in console user's password, signing out its other sessions. */
