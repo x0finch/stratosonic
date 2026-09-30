@@ -13,8 +13,10 @@
  *
  * A role this map does not know, one the database holds anyway (written by a
  * newer release, or by hand), grants nothing: failing closed means a typo or a
- * downgrade can lock a console user out, which a setup token recovers
- * (setup/setup-token.ts), but can never let one do more than intended.
+ * downgrade can lock a console user out, but can never let one do more than
+ * intended. The way back is by hand in D1: fix the row's role, or delete the
+ * console users (`user` rows), since setup reopens, with a new setup token,
+ * only once none is left (apps/server/README.md).
  */
 
 /**

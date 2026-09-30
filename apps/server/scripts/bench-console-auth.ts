@@ -328,25 +328,12 @@ async function expecting(status: number, response: Promise<Response>): Promise<v
   }
 }
 
-// Setup, recovery and the password change (#90). Recovery needs the token
-// unspent, so each run forgets it first, untimed.
+// The setup state and the password change (#90). Setup itself is last.
 await bench(
-  "GET /api/setup (reset-available)",
+  "GET /api/setup (closed)",
   1000,
   async () => () => expecting(200, send(request("/api/setup"))),
 );
-await bench("POST /api/setup/reset", 300, async () => {
-  sqlite.exec("DELETE FROM property WHERE id LIKE 'SetupTokenSpent:%'");
-  return () =>
-    expecting(
-      200,
-      send(
-        request("/api/setup/reset", {
-          body: { token: SETUP_TOKEN, username: "alice", password: "wonderland" },
-        }),
-      ),
-    );
-});
 await bench("POST /api/account/password", 300, async () => {
   const signedIn = await signIn();
   return () =>

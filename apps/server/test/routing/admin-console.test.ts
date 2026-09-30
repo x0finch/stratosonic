@@ -76,7 +76,7 @@ describe.each([
     });
 
     // The auth screens (#91), which a link or a reload opens directly.
-    it.each(["/login", "/login?redirect=%2Faccount", "/setup", "/setup/reset", "/account"])(
+    it.each(["/login", "/login?redirect=%2Faccount", "/setup", "/account"])(
       "is served for %s",
       async (path) => {
         await expectConsole(await server.fetch(path, NAVIGATION));

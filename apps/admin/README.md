@@ -99,19 +99,27 @@ the Worker's `SETUP_TOKEN`. `GET /api/me` answers the role's permissions too,
 and the console leaves out what they do not grant; the server checks them on
 every route regardless.
 
+`SETUP_TOKEN` is used once, at first run, and does nothing else: the console
+has no password reset, and `GET /api/setup` answers only `needs-setup` or
+`closed`. Deleting the secret afterwards (`wrangler secret delete
+SETUP_TOKEN`) is optional; leaving it has no effect. The owner changes their
+password at `/account`. A lost owner password is the server's last resort:
+delete the owner in D1 and set up again with a new `SETUP_TOKEN`
+(apps/server/README.md, "Lost owner password").
+
 Every page under the sidebar shell (`src/routes/_shell`) needs a session:
 without one, a visit goes to `/login?redirect=…` and returns there once signed
-in. The sign-in and setup screens (`/login`, `/setup`, `/setup/reset`) render
-full-screen, without the shell. `src/lib/api.ts` is the console's whole client
+in. The sign-in and setup screens (`/login`, `/setup`) render full-screen,
+without the shell. `src/lib/api.ts` is the console's whole client
 of the Worker's `/api`: plain same-origin `fetch` calls, the session being
 Better Auth's HttpOnly cookie. Better Auth's own client would add about
 11.5 kB gzipped for the two calls the console makes to it.
 
 What a form did, or why it failed, shows as a toast: shadcn/ui's toast for
 Base UI (`src/components/ui/toast.tsx`), raised through `src/lib/toasts.ts`.
-Its toaster sits above the router in `src/main.tsx`, so the toast a setup or
-a reset raises before going to `/login` is still there when the sign-in
-screen opens. Field-level validation, such as a wrong current password or a
+Its toaster sits above the router in `src/main.tsx`, so the toast setup
+raises before going to `/login` is still there when the sign-in screen
+opens. Field-level validation, such as a wrong current password or a
 confirmation mismatch, stays beside its field; one the server reported, such
 as the wrong current password, belongs to the value it was reported for, and
 goes as soon as that field changes and at the start of the next submit
@@ -123,10 +131,11 @@ setup is closed, stays on the page (`src/components/error-alert.tsx`).
 ## The walkthrough
 
 `scripts/walkthrough.mjs` creates the owner, signs out and back in,
-refuses a wrong password, changes the password, resets it with a second setup
-token, and checks dark mode, a phone-sized viewport and the browser console.
-After each of setup, the change and the reset it checks that a Subsonic
-`ping` with the owner's console credentials fails with error 40. Given the
+refuses a wrong password, checks that a set-up server offers neither setup
+nor a password reset, changes the password, and checks dark mode, a
+phone-sized viewport and the browser console. After both setup and the
+change it checks that a Subsonic `ping` with the owner's console credentials
+fails with error 40. Given the
 `INITIAL_*` Subsonic user as `SUBSONIC_USER` and `SUBSONIC_PASSWORD`, it also
 checks that this user cannot sign in to the console and that its `ping` stays
 ok throughout. It needs Chromium in Playwright's browser cache
@@ -134,11 +143,9 @@ ok throughout. It needs Chromium in Playwright's browser cache
 chromium`). Start the Worker on an empty database with a `SETUP_TOKEN`, then:
 
 ```sh
-BASE_URL=http://localhost:8787 SETUP_TOKEN=… RESET_TOKEN=… \
+BASE_URL=http://localhost:8787 SETUP_TOKEN=… \
   SUBSONIC_USER=admin SUBSONIC_PASSWORD=… \
   pnpm --filter @stratosonic/admin walkthrough
 ```
 
-When it reaches the reset it waits for you to put `RESET_TOKEN` in
-`SETUP_TOKEN` and restart `wrangler dev`. The script's header lists the rest
-of its options.
+The script's header lists the rest of its options.

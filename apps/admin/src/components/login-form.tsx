@@ -14,8 +14,9 @@ import { toastError } from "@/lib/toasts";
 
 /**
  * The login-01 block's form, signing in with a username rather than an email.
- * Its "Forgot your password?" link is the setup token's reset, and its sign-up
- * line the first-run setup, each shown only while `GET /api/setup` allows it.
+ * It has no "Forgot your password?" link: the setup token only sets the server
+ * up (#105). Its sign-up line is the first-run setup, shown only while
+ * `GET /api/setup` allows it.
  * A failed sign-in says why in a toast; a server that cannot say what the
  * setup token may do says why on the page, for as long as that lasts.
  */
@@ -78,17 +79,7 @@ export function LoginForm({
                 />
               </Field>
               <Field>
-                <div className="flex items-center">
-                  <FieldLabel htmlFor="password">Password</FieldLabel>
-                  {setupState.data === "reset-available" && (
-                    <Link
-                      to="/setup/reset"
-                      className="ml-auto inline-block text-sm underline-offset-4 hover:underline"
-                    >
-                      Reset with a setup token
-                    </Link>
-                  )}
-                </div>
+                <FieldLabel htmlFor="password">Password</FieldLabel>
                 <Input
                   id="password"
                   name="password"

@@ -16,7 +16,7 @@ import type { Role } from "./permissions";
  *
  * Console users are separate from Subsonic users: nothing here reads or writes
  * the `subsonic_user` table, and no Subsonic password is ever written by the
- * console's sign-in, setup, recovery or password change. Better Auth's own
+ * console's sign-in, setup or password change. Better Auth's own
  * writers of users and passwords (sign-up, change-password, reset-password,
  * update-user) are disabled (console-auth/auth.ts), so these are the only
  * ones. This module imports nothing from Better Auth, so the first-run
@@ -198,13 +198,6 @@ export interface SetConsolePasswordOptions {
    * session of the console user is revoked.
    */
   readonly keepSessionId?: string;
-  /**
-   * Statements to run in the same batch, after the password is written and
-   * the sessions are revoked. One that fails rolls the whole batch back:
-   * recovery marks its setup token spent with a plain insert, so a token that
-   * a racing request has already spent leaves the password as it was.
-   */
-  readonly alongside?: readonly CredentialStatement[];
 }
 
 /**
@@ -246,7 +239,6 @@ export async function setConsolePassword(
           ? theirs
           : and(theirs, ne(consoleSession.id, options.keepSessionId)),
       ),
-    ...(options.alongside ?? []),
   ]);
 
   return updated.meta.changes > 0;

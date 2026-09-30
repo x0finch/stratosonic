@@ -16,8 +16,8 @@ and never written to `wrangler.jsonc`. For `wrangler dev`, copy
   and of the pepper console passwords are hashed with (ADR-0007). Without it
   Subsonic logins fail and every `/api` route answers 503. Changing it after
   users exist locks everyone out.
-- `SETUP_TOKEN`: a one-time token for creating the console's owner and
-  recovering a console password, described below.
+- `SETUP_TOKEN`: a one-time token for creating the console's owner on first
+  run, described below. It does nothing else.
 
 ## Console users and Subsonic users
 
@@ -58,6 +58,22 @@ While there is no owner and no usable token is set, the Worker logs `no owner
 exists: set SETUP_TOKEN (wrangler secret put SETUP_TOKEN) to create one in
 the console` once per isolate.
 
+`SETUP_TOKEN` is used once, at first run: setup records the value as spent,
+and a spent value can never set the server up again. Deleting the secret
+afterwards (`wrangler secret delete SETUP_TOKEN`) is optional; leaving it set
+has no effect. It is not a way to reset a password.
+
+The route behind `/setup` is `POST /api/setup`, which takes `{"token",
+"username", "password"}` as JSON. Like every write under `/api`, it refuses a
+request whose `Origin` is not the Worker's own, so a script calling it has to
+send it:
+
+```sh
+curl https://<worker>/api/setup \
+  -H 'Origin: https://<worker>' -H 'Content-Type: application/json' \
+  -d '{"token":"...","username":"owner","password":"..."}'
+```
+
 ## Upgrading a deployed server to the console's own users
 
 The release that brings console users (#99) ships migration 0008, which
@@ -82,30 +98,39 @@ deploy workflow applies the migration and then deploys the Worker, so:
   with the same name and password; they are Subsonic users, not console users,
   and cannot sign in to the console.
 
-## Recovering the owner
+## Lost owner password (last resort)
 
-If the owner's password is forgotten, set a **new** token value (a value that
-has been used once is refused from then on) and open `/setup/reset`:
+The owner changes their password at `/account` while they can sign in. The
+console has no password reset: if the owner's password is lost, the owner is
+deleted and the server set up again. This needs Cloudflare access to the
+account the Worker runs in.
 
-```sh
-openssl rand -hex 32
-wrangler secret put SETUP_TOKEN
-```
+1. Delete the owner's row. The owner's sessions and credential account are
+   deleted with it (their foreign keys cascade):
 
-The reset asks for the token, the owner's name and a new password, and ends
-every console session of the owner; the role stays as it is. It cannot reset a
-Subsonic user's password.
+   ```sh
+   wrangler d1 execute stratosonic_db --remote \
+     --command "DELETE FROM user WHERE role = 'owner'"
+   ```
 
-The routes behind these pages are `POST /api/setup` and
-`POST /api/setup/reset`, which take `{"token", "username", "password"}` as
-JSON. Like every write under `/api`, they refuse a request whose `Origin` is not
-the Worker's own, so a script calling them has to send it:
+   Setup reopens only when no console user is left at all. Today the owner
+   is the only console user, so this one row is enough; once there are
+   others, they have to be deleted too (`DELETE FROM user`).
 
-```sh
-curl https://<worker>/api/setup/reset \
-  -H 'Origin: https://<worker>' -H 'Content-Type: application/json' \
-  -d '{"token":"...","username":"owner","password":"..."}'
-```
+   A browser still signed in as the deleted owner may go on reading
+   `/api/me` for up to the 5-minute session cookie cache; every write is
+   refused at once.
+
+2. Set a **new** `SETUP_TOKEN` (the value used before is spent and stays
+   refused) and set the server up again at `/setup`, as on first run:
+
+   ```sh
+   openssl rand -hex 32
+   wrangler secret put SETUP_TOKEN
+   ```
+
+3. Subsonic users, the library and playlists are unaffected: `user` holds
+   console users only, and Subsonic users live in `subsonic_user`.
 
 ## Deprecated: `INITIAL_USER` / `INITIAL_PASSWORD`
 

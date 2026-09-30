@@ -121,14 +121,12 @@ describe("describeError", () => {
       "not_configured",
       "insecure_origin",
       "forbidden_origin",
-      // The setup, recovery and password change API's (#90).
+      // The setup and password change API's (#90).
       "payload_too_large",
       "invalid_request",
       "invalid_username",
       "invalid_password",
       "already_set_up",
-      "not_set_up",
-      "unknown_user",
       // Any route's: requirePermission's, the unknown path's, a handler that
       // threw.
       "forbidden",

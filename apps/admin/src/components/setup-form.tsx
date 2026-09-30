@@ -1,60 +1,36 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useRouter } from "@tanstack/react-router";
+import { Link, useRouter } from "@tanstack/react-router";
 import { cn } from "cn";
-import { type ComponentProps, type FormEvent, type ReactNode, useState } from "react";
+import { type ComponentProps, type FormEvent, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { type SetupRequest, setupStateQuery } from "@/lib/api";
+import { setUp, setupStateQuery } from "@/lib/api";
 import { MAX_PASSWORD_LENGTH, MAX_USERNAME_LENGTH } from "@/lib/errors";
 import { toastError, toastSuccess } from "@/lib/toasts";
 
-/** The words that tell first-run setup and recovery apart. */
-export interface SetupFormText {
-  title: string;
-  description: string;
-  usernameLabel: string;
-  passwordLabel: string;
-  submit: string;
-  pending: string;
-  /** The toast that says what was done, shown on the sign-in screen. */
-  doneTitle: string;
-  doneDescription: string;
-}
-
 /**
- * The login-01 block's form with the setup token's fields: the first-run
- * setup and the owner's password reset. Both take the token, a username and a
- * password twice. Neither signs anybody in (#90), so both then go to the
- * sign-in screen, with a toast that says what was done; a refusal is a toast
- * too, and only the confirmation mismatch stays beside its field.
+ * The login-01 block's form with the setup token's fields, for the first-run
+ * setup (#81, #105): the token, a username and a password twice. Setup signs
+ * nobody in (#90), so it then goes to the sign-in screen, with a toast that
+ * says what was done; a refusal is a toast too, and only the confirmation
+ * mismatch stays beside its field.
  */
-export function SetupForm({
-  text,
-  submit,
-  footer,
-  className,
-  ...props
-}: ComponentProps<"div"> & {
-  text: SetupFormText;
-  /** `POST /api/setup` or `POST /api/setup/reset`. */
-  submit: (request: SetupRequest) => Promise<void>;
-  footer?: ReactNode;
-}) {
+export function SetupForm({ className, ...props }: ComponentProps<"div">) {
   const queryClient = useQueryClient();
   const router = useRouter();
   const [mismatch, setMismatch] = useState(false);
 
   const mutation = useMutation({
-    mutationFn: submit,
+    mutationFn: setUp,
     onSuccess: async () => {
       // The token is spent now; whatever the sign-in screen knew is stale.
       queryClient.removeQueries({ queryKey: setupStateQuery.queryKey });
       // Raised before navigating: the toaster sits above the router, so the
       // toast stays on screen as the sign-in screen opens.
-      toastSuccess(text.doneTitle, text.doneDescription);
+      toastSuccess("The owner account is created", "Sign in with its username and password.");
       await router.navigate({ to: "/login", replace: true });
     },
     onError: (error) => toastError(error),
@@ -80,8 +56,8 @@ export function SetupForm({
     <div className={cn("flex flex-col gap-6", className)} {...props}>
       <Card>
         <CardHeader>
-          <CardTitle>{text.title}</CardTitle>
-          <CardDescription>{text.description}</CardDescription>
+          <CardTitle>Set up Stratosonic</CardTitle>
+          <CardDescription>Create the owner account with the setup token</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={onSubmit}>
@@ -99,7 +75,7 @@ export function SetupForm({
                 <FieldDescription>The SETUP_TOKEN secret set on the Worker.</FieldDescription>
               </Field>
               <Field>
-                <FieldLabel htmlFor="username">{text.usernameLabel}</FieldLabel>
+                <FieldLabel htmlFor="username">Username</FieldLabel>
                 <Input
                   id="username"
                   name="username"
@@ -111,7 +87,7 @@ export function SetupForm({
                 />
               </Field>
               <Field>
-                <FieldLabel htmlFor="password">{text.passwordLabel}</FieldLabel>
+                <FieldLabel htmlFor="password">Password</FieldLabel>
                 <Input
                   id="password"
                   name="password"
@@ -136,9 +112,11 @@ export function SetupForm({
               </Field>
               <Field>
                 <Button type="submit" disabled={mutation.isPending}>
-                  {mutation.isPending ? text.pending : text.submit}
+                  {mutation.isPending ? "Creating owner account…" : "Create owner account"}
                 </Button>
-                {footer && <FieldDescription className="text-center">{footer}</FieldDescription>}
+                <FieldDescription className="text-center">
+                  Already set up? <Link to="/login">Sign in</Link>
+                </FieldDescription>
               </Field>
             </FieldGroup>
           </form>

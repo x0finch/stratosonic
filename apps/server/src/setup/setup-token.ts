@@ -6,11 +6,10 @@ import type { Database } from "../db";
 import type { Env } from "../env";
 
 /**
- * The setup token (#81, "Setup and recovery"): a Worker secret,
- * `SETUP_TOKEN`, that creates the console's owner, its first user, while
- * there is no console user, and resets a console user's password once there
- * is. Console users are the console's own accounts (#99); Subsonic users play
- * no part here.
+ * The setup token (#81, "Setup", #105): a Worker secret, `SETUP_TOKEN`, that
+ * creates the console's owner, its first user, while there is no console user,
+ * and does nothing else. Console users are the console's own accounts (#99);
+ * Subsonic users play no part here.
  *
  * Navidrome's `POST /auth/createAdmin` guards only on there being no user
  * yet (server/auth.go). A Worker is on a public `workers.dev` URL from its
@@ -19,11 +18,13 @@ import type { Env } from "../env";
  *
  * Each value works once. Using it records `sha256(token)` in the `property`
  * table, under a key of its own (`SetupTokenSpent:<hex digest>`), in the same
- * D1 batch as the password it set, and a value whose digest is recorded is
- * refused from then on. Recovering again means setting a new value with
- * `wrangler secret put SETUP_TOKEN`. A row per value, rather than one row
- * holding the last digest, keeps an old value spent after a newer one is
- * used, so putting the old secret back cannot reopen it.
+ * D1 batch as the owner it created, and a value whose digest is recorded is
+ * refused from then on, so leaving the secret set after setup is harmless. A
+ * row per value, rather than one row holding the last digest, keeps every
+ * used value spent: once the owner is deleted by hand to set up again (the
+ * last resort for a lost password, apps/server/README.md), only a new value
+ * set with `wrangler secret put SETUP_TOKEN` opens setup, and putting an old
+ * one back cannot.
  */
 
 /**
@@ -36,7 +37,7 @@ export const MIN_SETUP_TOKEN_LENGTH = 32;
 export const SETUP_TOKEN_SPENT_KEY = "SetupTokenSpent";
 
 /** What `GET /api/setup` answers, and what the console shows for it. */
-export type SetupState = "needs-setup" | "reset-available" | "closed";
+export type SetupState = "needs-setup" | "closed";
 
 /** Whether this isolate has already reported a token too short to use. */
 let warnedAboutShortToken = false;
@@ -96,86 +97,48 @@ function spentKey(digest: string): string {
   return `${SETUP_TOKEN_SPENT_KEY}:${digest}`;
 }
 
-/** What setup and recovery decide on, read in one statement. */
+/** What setup decides on, read in one statement. */
 export interface SetupFacts {
   /** Whether any console user exists. Subsonic users do not count. */
   readonly hasConsoleUsers: boolean;
   /** Whether the token with this digest has been used. */
   readonly spent: boolean;
-  /** The console user a recovery names, matched as sign-in matches a name. */
-  readonly target: {
-    readonly id: string;
-    readonly username: string;
-    readonly role: string;
-  } | null;
 }
 
 interface SetupFactsRow {
   has_console_users: number;
   spent: number;
-  target_id: string | null;
-  target_username: string | null;
-  target_role: string | null;
 }
 
-/**
- * Reads whether any console user exists, whether the token is spent and, for
- * a recovery, the console user it names, all in one statement. The name is
- * folded the way sign-in folds it, SQLite's ASCII-only `lower()`, and looked up by
- * the generated `username` column, whose unique index serves the lookup;
- * without a name the target is `null`.
- */
-export async function readSetupFacts(
-  db: Database,
-  digest: string,
-  username: string | null = null,
-): Promise<SetupFacts> {
+/** Reads whether any console user exists and whether the token is spent, in one statement. */
+export async function readSetupFacts(db: Database, digest: string): Promise<SetupFacts> {
   const row =
     await db.get<SetupFactsRow>(sql`select exists (select 1 from ${consoleUser}) as has_console_users,
-    exists (select 1 from ${property} where ${property.id} = ${spentKey(digest)}) as spent,
-    target.id as target_id,
-    target.display_username as target_username,
-    target.role as target_role
-  from (select 1)
-  left join (
-    select ${consoleUser.id} as id, ${consoleUser.displayUsername} as display_username,
-      ${consoleUser.role} as role
-    from ${consoleUser}
-    where ${consoleUser.username} = lower(${username})
-  ) as target on true`);
+    exists (select 1 from ${property} where ${property.id} = ${spentKey(digest)}) as spent`);
 
   return {
     hasConsoleUsers: row?.has_console_users === 1,
     spent: row?.spent === 1,
-    target:
-      row?.target_id != null
-        ? { id: row.target_id, username: row.target_username ?? "", role: row.target_role ?? "" }
-        : null,
   };
 }
 
 /**
  * The state the console shows. Setup needs a usable token that is unspent,
- * and no console user; recovery the same token and at least one console user.
+ * and no console user; anything else is closed.
  */
 export function setupState(facts: SetupFacts | null): SetupState {
-  if (facts === null || facts.spent) {
-    return "closed";
-  }
-
-  return facts.hasConsoleUsers ? "reset-available" : "needs-setup";
+  return facts !== null && !facts.spent && !facts.hasConsoleUsers ? "needs-setup" : "closed";
 }
 
 /**
- * Records the token as spent, for a setup's or a recovery's batch, but only
- * if the console user it wrote is there when the batch runs: when another
- * setup won the race, the console user was not inserted, and when a
- * recovery's console user was deleted after its check, there is none to
- * reset, and this writes nothing either, so the token stays unspent.
+ * Records the token as spent, for a setup's batch, but only if the console
+ * user it wrote is there when the batch runs: when another setup won the
+ * race, the console user was not inserted, and this writes nothing either,
+ * so the token stays unspent.
  *
  * It is a plain insert, so when a racing request has spent the same value
  * first the key exists, the insert fails, and D1 rolls the whole batch back,
- * the password with it (`isSpentTokenConflict`).
+ * the console user with it (`isSpentTokenConflict`).
  */
 export function markSpentFor(
   db: Database,
