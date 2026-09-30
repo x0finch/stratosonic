@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 
 import "./index.css";
 import { ThemeProvider } from "@/components/theme-provider.tsx";
+import { Toaster } from "@/components/ui/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiError, meQuery } from "@/lib/api";
 import { routeTree } from "./routeTree.gen";
@@ -44,9 +45,12 @@ createRoot(root).render(
   <StrictMode>
     <ThemeProvider>
       <QueryClientProvider client={queryClient}>
-        <TooltipProvider>
-          <RouterProvider router={router} />
-        </TooltipProvider>
+        {/* Above the router, so a toast outlives the navigation after it. */}
+        <Toaster>
+          <TooltipProvider>
+            <RouterProvider router={router} />
+          </TooltipProvider>
+        </Toaster>
       </QueryClientProvider>
     </ThemeProvider>
   </StrictMode>,

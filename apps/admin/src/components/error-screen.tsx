@@ -7,7 +7,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 /**
  * What the console shows when it cannot load at all, e.g. a Worker without
- * its encryption key or a plain-http origin: the reason, and a retry.
+ * its encryption key or a plain-http origin: the reason, and a retry. It is
+ * the whole page, so it stays on the page rather than in a toast.
  */
 export function ErrorScreen({ error }: ErrorComponentProps) {
   const router = useRouter();

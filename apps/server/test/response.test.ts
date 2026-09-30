@@ -36,6 +36,12 @@ describe("XML rendering", () => {
     expect(SUBSONIC_API_VERSION).toBe("1.16.1");
   });
 
+  // Only a deploy defines the release (test/routing/server-version.test.ts
+  // shows it reaching the envelope); every test build reports the same value.
+  it("reports the fixed fallback when the build defines no release", () => {
+    expect(SERVER_VERSION).toBe("0.0.0");
+  });
+
   it("renders the envelope with the Subsonic namespace and attributes", async () => {
     const xml = await renderOk({});
 

@@ -58,9 +58,11 @@ function Reset() {
           passwordLabel: "New password",
           submit: "Reset password",
           pending: "Resetting password…",
+          doneTitle: "The password is reset",
+          doneDescription:
+            "Sign in with the new password. All sessions of that account are signed out.",
         }}
         submit={resetConsolePassword}
-        notice="reset"
         footer={
           <>
             Remembered it? <Link to="/login">Sign in</Link>

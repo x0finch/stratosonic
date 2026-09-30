@@ -3,14 +3,13 @@ import { useRouter } from "@tanstack/react-router";
 import { cn } from "cn";
 import { type ComponentProps, type FormEvent, type ReactNode, useState } from "react";
 
-import { ErrorAlert } from "@/components/error-alert";
-import type { LoginNotice } from "@/components/login-form";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { type SetupRequest, setupStateQuery } from "@/lib/api";
 import { MAX_PASSWORD_LENGTH, MAX_USERNAME_LENGTH } from "@/lib/errors";
+import { toastError, toastSuccess } from "@/lib/toasts";
 
 /** The words that tell first-run setup and recovery apart. */
 export interface SetupFormText {
@@ -20,18 +19,21 @@ export interface SetupFormText {
   passwordLabel: string;
   submit: string;
   pending: string;
+  /** The toast that says what was done, shown on the sign-in screen. */
+  doneTitle: string;
+  doneDescription: string;
 }
 
 /**
  * The login-01 block's form with the setup token's fields: the first-run
  * setup and the owner's password reset. Both take the token, a username and a
  * password twice. Neither signs anybody in (#90), so both then go to the
- * sign-in screen, which says what was done.
+ * sign-in screen, with a toast that says what was done; a refusal is a toast
+ * too, and only the confirmation mismatch stays beside its field.
  */
 export function SetupForm({
   text,
   submit,
-  notice,
   footer,
   className,
   ...props
@@ -39,8 +41,6 @@ export function SetupForm({
   text: SetupFormText;
   /** `POST /api/setup` or `POST /api/setup/reset`. */
   submit: (request: SetupRequest) => Promise<void>;
-  /** What the sign-in screen reports once `submit` has succeeded. */
-  notice: LoginNotice;
   footer?: ReactNode;
 }) {
   const queryClient = useQueryClient();
@@ -52,8 +52,12 @@ export function SetupForm({
     onSuccess: async () => {
       // The token is spent now; whatever the sign-in screen knew is stale.
       queryClient.removeQueries({ queryKey: setupStateQuery.queryKey });
-      await router.navigate({ to: "/login", search: { notice }, replace: true });
+      // Raised before navigating: the toaster sits above the router, so the
+      // toast stays on screen as the sign-in screen opens.
+      toastSuccess(text.doneTitle, text.doneDescription);
+      await router.navigate({ to: "/login", replace: true });
     },
+    onError: (error) => toastError(error),
   });
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
@@ -82,7 +86,6 @@ export function SetupForm({
         <CardContent>
           <form onSubmit={onSubmit}>
             <FieldGroup>
-              {mutation.error && <ErrorAlert error={mutation.error} />}
               <Field>
                 <FieldLabel htmlFor="token">Setup token</FieldLabel>
                 <Input

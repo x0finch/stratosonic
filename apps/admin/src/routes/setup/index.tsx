@@ -54,9 +54,10 @@ function Setup() {
           passwordLabel: "Password",
           submit: "Create owner account",
           pending: "Creating owner account…",
+          doneTitle: "The owner account is created",
+          doneDescription: "Sign in with its username and password.",
         }}
         submit={setUp}
-        notice="set-up"
         footer={
           <>
             Already set up? <Link to="/login">Sign in</Link>

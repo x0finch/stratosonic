@@ -1,16 +1,18 @@
 import { useMutation } from "@tanstack/react-query";
 import { cn } from "cn";
-import { CircleCheckIcon } from "lucide-react";
 import { type ComponentProps, type FormEvent, useState } from "react";
 
-import { ErrorAlert } from "@/components/error-alert";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { ApiError, changePassword } from "@/lib/api";
 import { describeError, MAX_PASSWORD_LENGTH } from "@/lib/errors";
+import { toastError, toastSuccess } from "@/lib/toasts";
+
+function isWrongPassword(error: unknown): boolean {
+  return error instanceof ApiError && error.code === "wrong_password";
+}
 
 /**
  * The login-01 block's form with the change-password fields (#81): the
@@ -24,7 +26,17 @@ export function ChangePasswordForm({
 }: ComponentProps<"div"> & { username: string }) {
   const [mismatch, setMismatch] = useState(false);
 
-  const mutation = useMutation({ mutationFn: changePassword });
+  // A wrong current password belongs to its field; any other outcome is a
+  // toast.
+  const mutation = useMutation({
+    mutationFn: changePassword,
+    onSuccess: () => toastSuccess("Password changed", "Your other sessions are signed out."),
+    onError: (error) => {
+      if (!isWrongPassword(error)) {
+        toastError(error);
+      }
+    },
+  });
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -42,9 +54,7 @@ export function ChangePasswordForm({
     );
   }
 
-  // A wrong current password belongs to its field; anything else, to the form.
-  const wrongPassword =
-    mutation.error instanceof ApiError && mutation.error.code === "wrong_password";
+  const wrongPassword = isWrongPassword(mutation.error);
 
   return (
     <div className={cn("flex flex-col gap-6", className)} {...props}>
@@ -58,14 +68,6 @@ export function ChangePasswordForm({
         <CardContent>
           <form onSubmit={onSubmit}>
             <FieldGroup>
-              {mutation.isSuccess && (
-                <Alert>
-                  <CircleCheckIcon />
-                  <AlertTitle>Password changed</AlertTitle>
-                  <AlertDescription>Your other sessions are signed out.</AlertDescription>
-                </Alert>
-              )}
-              {mutation.error && !wrongPassword && <ErrorAlert error={mutation.error} />}
               {/* For password managers, which file a password under a username. */}
               <input
                 type="text"
