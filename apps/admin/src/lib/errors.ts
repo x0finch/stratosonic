@@ -74,6 +74,10 @@ const MESSAGES: Record<string, ErrorMessage> = {
     title: "The request is too large",
     description: "Shorten what you entered and try again.",
   },
+  forbidden: {
+    title: "Your role does not allow that",
+    description: "Sign in with a console account whose role allows it.",
+  },
   not_found: {
     title: "Not found",
     description: "The server has nothing at this address. Reload this page and try again.",
