@@ -51,25 +51,6 @@ export const user = sqliteTable(
     lastAccessAt: integer("last_access_at", { mode: "timestamp_ms" }),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
-    // The columns Better Auth's user model needs beyond Navidrome's, for the
-    // admin console's sessions (#81). Nothing above changes type or meaning.
-    //
-    // `username` is what the username plugin looks a sign-in up by. It is
-    // derived and never written: SQLite's `lower()` folds ASCII letters only,
-    // exactly as `userNamesMatch` and the unique index below do, so the console
-    // and the Subsonic API agree on whom a name refers to. `user_name` keeps
-    // the name as it was entered, and is what `getUser` still returns.
-    username: text("username").generatedAlwaysAs(sql`lower("user_name")`, { mode: "virtual" }),
-    // Better Auth's `email`, which its schema requires and keeps unique. The
-    // Subsonic `email` above is optional and not unique, and is what `getUser`
-    // answers with, so the console gets a placeholder of its own that no mail
-    // can reach (RFC 2606 reserves `.invalid`). No route that uses it is
-    // enabled.
-    authEmail: text("auth_email").generatedAlwaysAs(sql`lower("user_name") || '@users.invalid'`, {
-      mode: "virtual",
-    }),
-    emailVerified: integer("email_verified", { mode: "boolean" }).notNull().default(false),
-    image: text("image"),
   },
   (table) => [
     // Usernames are matched case-insensitively (Navidrome queries them
@@ -77,11 +58,6 @@ export const user = sqliteTable(
     // this, "Admin" and "admin" could both be created and a login would be
     // ambiguous.
     uniqueIndex("user_user_name_unique").on(sql`lower(${table.userName})`),
-    // The same rule over the generated columns. The first is the index the
-    // username plugin's `WHERE username = ?` is served from; the second is
-    // Better Auth's own uniqueness rule for `email`.
-    uniqueIndex("user_username_unique").on(table.username),
-    uniqueIndex("user_auth_email_unique").on(table.authEmail),
   ],
 );
 
@@ -89,19 +65,66 @@ export type User = typeof user.$inferSelect;
 export type NewUser = typeof user.$inferInsert;
 
 /**
- * The admin console's sessions and credentials, in Better Auth's core schema
- * (v1.7: `session`, `account`, `verification`), plus the table its
- * database-backed rate limiter keeps. Column names follow the snake_case of the
- * tables above, and timestamps are epoch milliseconds like theirs.
+ * The admin console's own accounts, the operators', with their sessions and
+ * credentials (#99): Better Auth's core schema (v1.7: `user`, `session`,
+ * `account`, `verification`) under names of their own, which
+ * console-auth/auth.ts maps its models to through `modelName`, plus the table
+ * its database-backed rate limiter keeps. Column names follow the snake_case
+ * of the tables above, and timestamps are epoch milliseconds like theirs.
  *
- * Better Auth reads and writes these rows itself, with one exception: the
- * password. `account.password` holds the same AES-GCM ciphertext as
- * `user.password`, and only apps/server's `console-auth/credentials.ts` writes
- * either, both in one batch, so the console and the Subsonic API can never
- * disagree about a user's password.
+ * An operator is not a Subsonic user. The console is for administration only:
+ * an operator never signs in to Subsonic, and a Subsonic user never signs in
+ * to the console, so nothing here refers to `user`. Operators have no roles:
+ * each can do all the console does.
+ *
+ * Better Auth reads these rows and writes the sessions itself. Operators and
+ * their passwords are written only by apps/server's
+ * `console-auth/credentials.ts`, and a password is stored as a peppered
+ * HMAC-SHA256 digest, not reversibly (ADR-0007).
  */
-export const session = sqliteTable(
-  "session",
+export const operator = sqliteTable(
+  "operator",
+  {
+    id: text("id").primaryKey(),
+    // Better Auth's required display name: the name as entered.
+    name: text("name").notNull(),
+    // The username plugin's `displayUsername`, the name as entered, which is
+    // what the console shows and what `GET /api/me` answers.
+    displayUsername: text("display_username").notNull(),
+    // The username plugin's `username`, what a sign-in is looked up by. It is
+    // derived and never written: SQLite's `lower()` folds ASCII letters only,
+    // exactly as the plugin's `usernameNormalization` does
+    // (console-auth/auth.ts), so a name is found in any ASCII case.
+    username: text("username")
+      .notNull()
+      .generatedAlwaysAs(sql`lower("display_username")`, { mode: "virtual" }),
+    // Better Auth's `email`, which its schema requires and keeps unique. An
+    // operator has no address, so it gets a placeholder that no mail can
+    // reach (RFC 2606 reserves `.invalid`). No route that uses it is
+    // enabled.
+    email: text("email")
+      .notNull()
+      .generatedAlwaysAs(sql`lower("display_username") || '@console.invalid'`, {
+        mode: "virtual",
+      }),
+    emailVerified: integer("email_verified", { mode: "boolean" }).notNull().default(false),
+    image: text("image"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    // One account per folded name, which is also the index the username
+    // plugin's `WHERE username = ?` is served from.
+    uniqueIndex("operator_username_unique").on(table.username),
+    // Better Auth's own uniqueness rule for `email`.
+    uniqueIndex("operator_email_unique").on(table.email),
+  ],
+);
+
+export type Operator = typeof operator.$inferSelect;
+
+export const operatorSession = sqliteTable(
+  "operator_session",
   {
     id: text("id").primaryKey(),
     expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
@@ -112,15 +135,15 @@ export const session = sqliteTable(
     userAgent: text("user_agent"),
     userId: text("user_id")
       .notNull()
-      .references(() => user.id, { onDelete: "cascade" }),
+      .references(() => operator.id, { onDelete: "cascade" }),
   },
-  (table) => [index("session_user_id_idx").on(table.userId)],
+  (table) => [index("operator_session_user_id_idx").on(table.userId)],
 );
 
-export type Session = typeof session.$inferSelect;
+export type OperatorSession = typeof operatorSession.$inferSelect;
 
-export const account = sqliteTable(
-  "account",
+export const operatorAccount = sqliteTable(
+  "operator_account",
   {
     id: text("id").primaryKey(),
     // For the `credential` provider, Better Auth looks the account up by
@@ -129,33 +152,34 @@ export const account = sqliteTable(
     providerId: text("provider_id").notNull(),
     userId: text("user_id")
       .notNull()
-      .references(() => user.id, { onDelete: "cascade" }),
+      .references(() => operator.id, { onDelete: "cascade" }),
     accessToken: text("access_token"),
     refreshToken: text("refresh_token"),
     idToken: text("id_token"),
     accessTokenExpiresAt: integer("access_token_expires_at", { mode: "timestamp_ms" }),
     refreshTokenExpiresAt: integer("refresh_token_expires_at", { mode: "timestamp_ms" }),
     scope: text("scope"),
+    // `hmac-sha256$v1$<salt>$<digest>` (ADR-0007).
     password: text("password"),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
   },
   (table) => [
-    index("account_user_id_idx").on(table.userId),
-    // At most one credential account per user, so the password writers'
-    // `WHERE user_id = ? AND provider_id = 'credential'` names one row.
-    uniqueIndex("account_provider_account_unique").on(table.providerId, table.accountId),
+    index("operator_account_user_id_idx").on(table.userId),
+    // At most one credential account per operator, so the password
+    // writer's `WHERE user_id = ? AND provider_id = 'credential'` names one row.
+    uniqueIndex("operator_account_provider_account_unique").on(table.providerId, table.accountId),
   ],
 );
 
-export type Account = typeof account.$inferSelect;
+export type OperatorAccount = typeof operatorAccount.$inferSelect;
 
 /**
  * Unused by the console's flows (it holds email-verification and reset
  * tokens), but part of the core schema Better Auth checks its adapter against.
  */
-export const verification = sqliteTable(
-  "verification",
+export const operatorVerification = sqliteTable(
+  "operator_verification",
   {
     id: text("id").primaryKey(),
     identifier: text("identifier").notNull(),
@@ -164,7 +188,7 @@ export const verification = sqliteTable(
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
   },
-  (table) => [index("verification_identifier_idx").on(table.identifier)],
+  (table) => [index("operator_verification_identifier_idx").on(table.identifier)],
 );
 
 /**

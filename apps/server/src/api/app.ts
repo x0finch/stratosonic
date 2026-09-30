@@ -37,11 +37,11 @@ export function createApiApp(): ApiApp {
     api.on(method, `/auth${path}`, (c) => c.var.consoleAuth.handler(c.req.raw));
   }
 
-  // Who am I (#81): the signed-in user, from a session the cookie cache may
-  // vouch for.
+  // Who am I (#81, #99): the signed-in operator, from a session the cookie
+  // cache may vouch for. Operators have no roles, so there is none to answer.
   api.get("/me", requireSession, (c) => {
-    const { userId, userName, isAdmin } = c.var.session;
-    return c.json({ id: userId, userName, isAdmin });
+    const { userId, username } = c.var.session;
+    return c.json({ id: userId, username });
   });
 
   // Every route below that writes goes behind `requireSameOrigin`

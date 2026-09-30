@@ -2,8 +2,14 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app";
 import { consoleAuth, deriveSessionSecret, MAX_CACHED_INSTANCES } from "../src/console-auth/auth";
 import type { Env } from "../src/env";
-import { CookieJar, consoleRequest, SESSION_DATA_COOKIE, signIn } from "./console-auth-support";
-import { BASE, encryptionKey, seedUser, testEnv } from "./support";
+import {
+  CookieJar,
+  consoleRequest,
+  SESSION_DATA_COOKIE,
+  seedOperator,
+  signIn,
+} from "./console-auth-support";
+import { BASE, encryptionKey, testEnv } from "./support";
 
 /**
  * How the console's Better Auth is configured and built (#81, #89): the key it
@@ -15,7 +21,7 @@ const app = createApp();
 const sendWith = (env: Env) => (request: Request) => app.request(request, undefined, env);
 
 beforeAll(async () => {
-  await seedUser("Alice", "wonderland");
+  await seedOperator("Alice", "wonderland");
 });
 
 afterEach(() => {

@@ -1,13 +1,16 @@
-import { account, user } from "@stratosonic/db";
+import { operatorAccount } from "@stratosonic/db";
 import { eq } from "drizzle-orm";
 import { expect } from "vitest";
-import { decryptPassword } from "../src/auth/crypto";
+import { subsonicToken } from "../src/auth/crypto";
+import { createOperator } from "../src/console-auth/credentials";
+import { verifyOperatorPassword } from "../src/console-auth/password-hash";
 import { database } from "../src/db";
-import { encryptionKey, testEnv } from "./support";
+import { encryptionKey, type JsonEnvelope, testEnv } from "./support";
 
 /**
- * Helpers for the admin console's auth tests (#89): a D1 binding that records
- * every statement it runs, a cookie jar, and the password invariant.
+ * Helpers for the admin console's auth tests (#89, #99): a D1 binding that
+ * records every statement it runs, a cookie jar, the console's operators and
+ * their stored passwords.
  */
 
 export interface RecordedStatement {
@@ -126,23 +129,34 @@ export function cost(statements: readonly RecordedStatement[]) {
 }
 
 /**
- * The password invariant (#81): `user.password` and `account.password` hold
- * the same ciphertext, and it decrypts to `plaintext`.
+ * Creates an operator with a known password, the way setup does: through the
+ * one writer of operators (console-auth/credentials.ts). An operator is not a
+ * Subsonic user; `seedUser` (test/support.ts) creates those.
  */
-export async function expectPasswordInvariant(userId: string, plaintext: string): Promise<void> {
-  const db = database(testEnv);
-  const users = await db.select({ password: user.password }).from(user).where(eq(user.id, userId));
-  const accounts = await db
-    .select({ password: account.password, providerId: account.providerId })
-    .from(account)
-    .where(eq(account.userId, userId));
+export async function seedOperator(username: string, password: string): Promise<string> {
+  const id = await createOperator(database(testEnv), encryptionKey(), { username, password });
+  if (id === null) {
+    throw new Error(`an operator named ${username} already exists`);
+  }
 
-  expect(users).toHaveLength(1);
-  expect(accounts).toEqual([{ password: users[0]?.password, providerId: "credential" }]);
-  await expect(decryptPassword(encryptionKey(), users[0]?.password ?? "")).resolves.toBe(plaintext);
-  await expect(decryptPassword(encryptionKey(), accounts[0]?.password ?? "")).resolves.toBe(
-    plaintext,
-  );
+  return id;
+}
+
+/**
+ * That an operator has exactly one credential account, holding a peppered
+ * hash (ADR-0007) of `plaintext` and of nothing else.
+ */
+export async function expectOperatorPassword(operatorId: string, plaintext: string): Promise<void> {
+  const accounts = await database(testEnv)
+    .select({ password: operatorAccount.password, providerId: operatorAccount.providerId })
+    .from(operatorAccount)
+    .where(eq(operatorAccount.userId, operatorId));
+
+  expect(accounts).toMatchObject([{ providerId: "credential" }]);
+  const stored = accounts[0]?.password ?? "";
+  expect(stored).toMatch(/^hmac-sha256\$v1\$/);
+  expect(await verifyOperatorPassword(encryptionKey(), stored, plaintext)).toBe(true);
+  expect(await verifyOperatorPassword(encryptionKey(), stored, `${plaintext}?`)).toBe(false);
 }
 
 /** The session cookies Better Auth sets for an `https` origin. */
@@ -235,4 +249,35 @@ export async function signIn(
   jar.absorb(response);
 
   return { response, jar };
+}
+
+/**
+ * What a Subsonic `ping` with these credentials answers: `"ok"`, or the
+ * Subsonic error code, 40 for a wrong username or password. Both of
+ * Subsonic's ways to send a password are tried, the token (`t` and `s`) and
+ * the plain `p`, and they must agree.
+ */
+export async function subsonicPing(
+  send: Send,
+  origin: string,
+  username: string,
+  password: string,
+): Promise<"ok" | number> {
+  const salt = "5a17c0de";
+  const answers: ("ok" | number)[] = [];
+  for (const credentials of [
+    { t: await subsonicToken(password, salt), s: salt },
+    { p: password },
+  ]) {
+    const query = new URLSearchParams({ u: username, v: "1.16.1", c: "test", f: "json" });
+    for (const [name, value] of Object.entries(credentials)) {
+      query.set(name, value);
+    }
+    const response = await send(new Request(`${origin}/rest/ping?${query}`));
+    const body = ((await response.json()) as JsonEnvelope)["subsonic-response"];
+    answers.push(body.status === "ok" ? "ok" : (body.error?.code ?? -1));
+  }
+
+  expect(answers[1], "p= and t/s disagree").toBe(answers[0]);
+  return answers[0] ?? -1;
 }

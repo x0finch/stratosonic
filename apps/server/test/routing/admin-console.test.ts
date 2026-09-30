@@ -18,6 +18,9 @@ import { createTestHarness } from "wrangler";
 // Worker even then, not the console.
 const NAVIGATION = { headers: { "Sec-Fetch-Mode": "navigate" } };
 
+/** A setup token long enough to be used, for the console's first operator. */
+const SETUP_TOKEN = "0123456789abcdef0123456789abcdef";
+
 /** The harness answers with Miniflare's `Response`, not the Workers one. */
 type HarnessResponse = Awaited<ReturnType<ReturnType<typeof createTestHarness>["fetch"]>>;
 
@@ -41,13 +44,15 @@ describe.each([
         secrets: {
           INITIAL_PASSWORD: "sesame",
           PASSWORD_ENCRYPTION_KEY: "test-password-encryption-key",
+          SETUP_TOKEN: SETUP_TOKEN,
         },
       },
     ],
   });
+  let origin: string;
 
   beforeAll(async () => {
-    await server.listen();
+    origin = (await server.listen()).url.origin;
     await server.getWorker().applyD1Migrations("DB");
   });
 
@@ -121,18 +126,28 @@ describe.each([
     });
 
     // Better Auth in Wrangler's own bundle, rather than in Vitest's module
-    // graph.
-    it("keep /api/auth signing the first-run admin in", async () => {
-      const response = await server.fetch("/api/auth/sign-in/username", {
+    // graph: setup creates an operator, who signs in, and the Subsonic admin
+    // the first run made does not.
+    it("keep /api/auth signing an operator in, and no Subsonic user", async () => {
+      const setUp = await server.fetch("/api/setup", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "CF-Connecting-IP": "192.0.2.1" },
-        body: JSON.stringify({ username: "admin", password: "sesame" }),
+        headers: { "Content-Type": "application/json", Origin: origin },
+        body: JSON.stringify({ token: SETUP_TOKEN, username: "owner", password: "console" }),
       });
+      expect(setUp.status).toBe(201);
 
-      expect(response.status).toBe(200);
-      expect(await response.json()).toMatchObject({
-        user: { displayUsername: "admin", isAdmin: true },
-      });
+      const signIn = (username: string, password: string, address: string) =>
+        server.fetch("/api/auth/sign-in/username", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "CF-Connecting-IP": address },
+          body: JSON.stringify({ username, password }),
+        });
+      const operator = await signIn("owner", "console", "192.0.2.1");
+      const subsonicAdmin = await signIn("admin", "sesame", "192.0.2.2");
+
+      expect(operator.status).toBe(200);
+      expect(await operator.json()).toMatchObject({ user: { displayUsername: "owner" } });
+      expect(subsonicAdmin.status).toBe(401);
     });
   });
 });

@@ -1,45 +1,46 @@
 import { SELF } from "cloudflare:test";
-import { account, newRandomId, property, session, user } from "@stratosonic/db";
+import {
+  newRandomId,
+  operator,
+  operatorAccount,
+  operatorSession,
+  property,
+  user,
+} from "@stratosonic/db";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { beforeAll, describe, expect, it } from "vitest";
-import { subsonicToken } from "../src/auth/crypto";
-import { createUserWithPassword, setPassword } from "../src/console-auth/credentials";
+import { createOperator, setOperatorPassword } from "../src/console-auth/credentials";
 import { database } from "../src/db";
 import { findUserByUsername } from "../src/users/repository";
-import { countingD1, expectPasswordInvariant, shape } from "./console-auth-support";
-import { BASE, encryptionKey, type JsonEnvelope, testEnv } from "./support";
+import {
+  countingD1,
+  expectOperatorPassword,
+  seedOperator,
+  shape,
+  subsonicPing,
+} from "./console-auth-support";
+import { BASE, encryptionKey, testEnv } from "./support";
 
 /**
- * The one credential writer (#81, #89): every way a password is written keeps
- * `user.password` and `account.password` equal, in one D1 batch, and the
- * Subsonic API logs in with whatever was written last.
+ * The one writer of operators and their passwords (#99): each write is one D1
+ * batch over `operator`, `operator_account` and `operator_session`, and never
+ * touches a Subsonic user. The first-run bootstrap has created the Subsonic
+ * admin `admin` / `sesame` from the bindings in vitest.config.ts.
  */
 
-async function subsonicStatus(userName: string, password: string): Promise<string> {
-  const query = new URLSearchParams({
-    u: userName,
-    t: await subsonicToken(password, "c0ffee"),
-    s: "c0ffee",
-    v: "1.16.1",
-    c: "test",
-    f: "json",
-  });
-  const response = await SELF.fetch(`${BASE}/rest/ping?${query}`);
+const send = (request: Request) => SELF.fetch(request);
 
-  return ((await response.json()) as JsonEnvelope)["subsonic-response"].status;
-}
-
-/** Writes a console session row for a user, as a sign-in would. */
-async function insertSession(userId: string): Promise<string> {
+/** Writes a console session row for an operator, as a sign-in would. */
+async function insertSession(operatorId: string): Promise<string> {
   const id = newRandomId();
   const now = new Date();
   await database(testEnv)
-    .insert(session)
+    .insert(operatorSession)
     .values({
       id,
       token: newRandomId(),
-      userId,
+      userId: operatorId,
       expiresAt: new Date(now.getTime() + 60_000),
       createdAt: now,
       updatedAt: now,
@@ -48,13 +49,17 @@ async function insertSession(userId: string): Promise<string> {
   return id;
 }
 
-async function sessionIds(userId: string): Promise<string[]> {
+async function sessionIds(operatorId: string): Promise<string[]> {
   const rows = await database(testEnv)
-    .select({ id: session.id })
-    .from(session)
-    .where(eq(session.userId, userId));
+    .select({ id: operatorSession.id })
+    .from(operatorSession)
+    .where(eq(operatorSession.userId, operatorId));
 
   return rows.map((row) => row.id).sort();
+}
+
+function subsonicUsers() {
+  return database(testEnv).select().from(user);
 }
 
 beforeAll(async () => {
@@ -63,239 +68,232 @@ beforeAll(async () => {
 });
 
 describe("the first-run bootstrap", () => {
-  it("creates the admin with a credential account carrying the same password", async () => {
-    const admin = await findUserByUsername(database(testEnv), "admin");
-
-    expect(admin?.isAdmin).toBe(true);
-    await expectPasswordInvariant(admin?.id ?? "", "sesame");
+  it("creates the Subsonic admin and no operator", async () => {
+    expect((await findUserByUsername(database(testEnv), "admin"))?.isAdmin).toBe(true);
+    expect(await database(testEnv).select().from(operator)).toEqual([]);
+    expect(await database(testEnv).select().from(operatorAccount)).toEqual([]);
   });
 });
 
-describe("createUserWithPassword", () => {
-  it("writes the user and the credential account in one batch", async () => {
+describe("createOperator", () => {
+  it("writes the operator and its credential account in one batch, and no Subsonic user", async () => {
+    const before = await subsonicUsers();
     const d1 = countingD1(testEnv.DB);
 
-    const id = await createUserWithPassword(drizzle(d1.binding), encryptionKey(), {
-      userName: "Alice",
+    const id = await createOperator(drizzle(d1.binding), encryptionKey(), {
+      username: "Alice",
       password: "wonderland",
-      isAdmin: false,
-      email: "alice@example.com",
     });
 
     expect(id).toMatch(/^[0-9a-zA-Z]{22}$/);
     expect(d1.roundTrips()).toBe(1);
-    expect(d1.statements.map(shape)).toEqual(["insert user", "insert account"]);
-    await expectPasswordInvariant(id ?? "", "wonderland");
+    expect(d1.statements.map(shape)).toEqual(["insert operator", "insert operator_account"]);
+    await expectOperatorPassword(id ?? "", "wonderland");
+    expect(await subsonicUsers()).toEqual(before);
 
     const [created] = await database(testEnv)
       .select()
-      .from(user)
-      .where(eq(user.id, id ?? ""));
+      .from(operator)
+      .where(eq(operator.id, id ?? ""));
     expect(created).toMatchObject({
-      userName: "Alice",
       name: "Alice",
-      email: "alice@example.com",
-      isAdmin: false,
+      displayUsername: "Alice",
       username: "alice",
-      authEmail: "alice@users.invalid",
+      email: "alice@console.invalid",
+      emailVerified: false,
+      image: null,
     });
   });
 
-  it("gives the new user a Subsonic login", async () => {
-    await createUserWithPassword(database(testEnv), encryptionKey(), {
-      userName: "Bob",
-      password: "builder",
-      isAdmin: false,
-    });
+  it("gives the operator no Subsonic login", async () => {
+    await seedOperator("Bob", "builder");
 
-    expect(await subsonicStatus("bob", "builder")).toBe("ok");
+    expect(await subsonicPing(send, BASE, "bob", "builder")).toBe(40);
   });
 
-  it("writes nothing, and answers null, when the name is taken in any case", async () => {
-    const before = await database(testEnv).select().from(account);
+  it("names an operator after a Subsonic user without touching that user", async () => {
+    const [before] = await subsonicUsers();
 
-    const id = await createUserWithPassword(database(testEnv), encryptionKey(), {
-      userName: "ALICE",
+    const id = await createOperator(database(testEnv), encryptionKey(), {
+      username: "admin",
+      password: "operator's own",
+    });
+
+    expect(id).not.toBeNull();
+    expect(await subsonicUsers()).toEqual([before]);
+    expect(await subsonicPing(send, BASE, "admin", "sesame")).toBe("ok");
+    expect(await subsonicPing(send, BASE, "admin", "operator's own")).toBe(40);
+  });
+
+  it("writes nothing, and answers null, when the name is taken in any ASCII case", async () => {
+    const before = await database(testEnv).select().from(operatorAccount);
+
+    const id = await createOperator(database(testEnv), encryptionKey(), {
+      username: "ALICE",
       password: "impostor",
-      isAdmin: true,
     });
 
     expect(id).toBeNull();
-    expect(await database(testEnv).select().from(account)).toEqual(before);
-    expect(await subsonicStatus("alice", "wonderland")).toBe("ok");
+    expect(await database(testEnv).select().from(operatorAccount)).toEqual(before);
   });
 
-  it("with onlyIfFirstUser, writes nothing once any user exists, whatever the name", async () => {
+  it("with onlyIfFirstOperator, writes nothing once any operator exists, whatever the name", async () => {
     const d1 = countingD1(testEnv.DB);
 
-    const id = await createUserWithPassword(
+    const id = await createOperator(
       drizzle(d1.binding),
       encryptionKey(),
-      { userName: "Mallory", password: "second-admin", isAdmin: true },
-      { onlyIfFirstUser: true },
+      { username: "Mallory", password: "second" },
+      { onlyIfFirstOperator: true },
     );
 
     expect(id).toBeNull();
     expect(d1.roundTrips()).toBe(1);
     expect(d1.statements.reduce((sum, statement) => sum + statement.rowsWritten, 0)).toBe(0);
-    expect(await findUserByUsername(database(testEnv), "mallory")).toBeNull();
   });
 
   it("runs the statements alongside in its batch, and rolls back with them", async () => {
     const db = database(testEnv);
     await db.insert(property).values({ id: "credentials-test", value: "taken" });
 
-    // A plain insert of a key that exists fails, and takes the user with it.
+    // A plain insert of a key that exists fails, and takes the operator with it.
     await expect(
-      createUserWithPassword(
+      createOperator(
         db,
         encryptionKey(),
-        { userName: "Erin", password: "rolled-back", isAdmin: false },
+        { username: "Erin", password: "rolled-back" },
         { alongside: () => [db.insert(property).values({ id: "credentials-test", value: "" })] },
       ),
     ).rejects.toThrow();
-    expect(await findUserByUsername(db, "erin")).toBeNull();
+    expect(await db.select().from(operator).where(eq(operator.username, "erin"))).toEqual([]);
 
-    const id = await createUserWithPassword(
+    const id = await createOperator(
       db,
       encryptionKey(),
-      { userName: "Erin", password: "kept", isAdmin: false },
-      { alongside: (userId) => [db.insert(property).values({ id: `created-${userId}` })] },
+      { username: "Erin", password: "kept" },
+      { alongside: (operatorId) => [db.insert(property).values({ id: `created-${operatorId}` })] },
     );
     const marks = await db
       .select()
       .from(property)
       .where(eq(property.id, `created-${id}`));
     expect(marks).toHaveLength(1);
-    await expectPasswordInvariant(id ?? "", "kept");
+    await expectOperatorPassword(id ?? "", "kept");
   });
 });
 
-describe("setPassword", () => {
+describe("setOperatorPassword", () => {
   let carolId: string;
 
   beforeAll(async () => {
-    carolId =
-      (await createUserWithPassword(database(testEnv), encryptionKey(), {
-        userName: "Carol",
-        password: "first",
-        isAdmin: false,
-      })) ?? "";
+    carolId = await seedOperator("Carol", "first");
   });
 
-  it("updates both copies, bumps token_epoch and revokes every session, in one batch", async () => {
+  it("rehashes the password and revokes every session, in one batch", async () => {
     await insertSession(carolId);
     await insertSession(carolId);
+    const [before] = await database(testEnv)
+      .select({ password: operatorAccount.password })
+      .from(operatorAccount)
+      .where(eq(operatorAccount.userId, carolId));
     const d1 = countingD1(testEnv.DB);
 
-    await setPassword(drizzle(d1.binding), encryptionKey(), carolId, "second");
+    await expect(
+      setOperatorPassword(drizzle(d1.binding), encryptionKey(), carolId, "first"),
+    ).resolves.toBe(true);
 
     expect(d1.roundTrips()).toBe(1);
-    expect(d1.statements.map(shape)).toEqual(["update user", "insert account", "delete session"]);
-    await expectPasswordInvariant(carolId, "second");
+    expect(d1.statements.map(shape)).toEqual([
+      "update operator_account",
+      "delete operator_session",
+    ]);
+    // The same password, under a fresh salt.
+    await expectOperatorPassword(carolId, "first");
+    const [after] = await database(testEnv)
+      .select({ password: operatorAccount.password })
+      .from(operatorAccount)
+      .where(eq(operatorAccount.userId, carolId));
+    expect(after?.password).not.toBe(before?.password);
     expect(await sessionIds(carolId)).toEqual([]);
-
-    const [row] = await database(testEnv)
-      .select({ tokenEpoch: user.tokenEpoch })
-      .from(user)
-      .where(eq(user.id, carolId));
-    expect(row?.tokenEpoch).toBe(1);
   });
 
-  it("moves the Subsonic login to the new password, and the old one fails", async () => {
-    await setPassword(database(testEnv), encryptionKey(), carolId, "third");
+  it("moves the console to the new password", async () => {
+    await setOperatorPassword(database(testEnv), encryptionKey(), carolId, "second");
 
-    expect(await subsonicStatus("Carol", "third")).toBe("ok");
-    expect(await subsonicStatus("Carol", "second")).toBe("failed");
+    await expectOperatorPassword(carolId, "second");
   });
 
   it("keeps the one session it is told to keep", async () => {
     const kept = await insertSession(carolId);
     await insertSession(carolId);
 
-    await setPassword(database(testEnv), encryptionKey(), carolId, "fourth", {
+    await setOperatorPassword(database(testEnv), encryptionKey(), carolId, "third", {
       keepSessionId: kept,
     });
 
     expect(await sessionIds(carolId)).toEqual([kept]);
-    await expectPasswordInvariant(carolId, "fourth");
+    await expectOperatorPassword(carolId, "third");
   });
 
-  it("leaves every other user's password and sessions alone", async () => {
-    const [alice] = await database(testEnv).select().from(user).where(eq(user.userName, "Alice"));
+  it("leaves every other operator's password and sessions alone", async () => {
+    const [alice] = await database(testEnv)
+      .select()
+      .from(operator)
+      .where(eq(operator.username, "alice"));
     const aliceSession = await insertSession(alice?.id ?? "");
 
-    await setPassword(database(testEnv), encryptionKey(), carolId, "fifth");
+    await setOperatorPassword(database(testEnv), encryptionKey(), carolId, "fourth");
 
     expect(await sessionIds(alice?.id ?? "")).toEqual([aliceSession]);
-    await expectPasswordInvariant(alice?.id ?? "", "wonderland");
+    await expectOperatorPassword(alice?.id ?? "", "wonderland");
   });
 
-  it("gives a user without a credential account one", async () => {
-    // A user row written without the credential writer: code older than
-    // migration 0008, running between the migration and the deploy.
-    const id = newRandomId();
-    const now = new Date();
-    await database(testEnv)
-      .insert(user)
-      .values({ id, userName: "Dave", password: "", createdAt: now, updatedAt: now });
+  it("leaves every Subsonic password alone, a namesake's too", async () => {
+    const [namesake] = await database(testEnv)
+      .select()
+      .from(operator)
+      .where(eq(operator.username, "admin"));
+    const before = await subsonicUsers();
 
-    await setPassword(database(testEnv), encryptionKey(), id, "recovered");
+    await setOperatorPassword(database(testEnv), encryptionKey(), namesake?.id ?? "", "sesame");
 
-    await expectPasswordInvariant(id, "recovered");
-    expect(await subsonicStatus("dave", "recovered")).toBe("ok");
+    expect(await subsonicUsers()).toEqual(before);
+    expect(await subsonicPing(send, BASE, "admin", "sesame")).toBe("ok");
+    await expectOperatorPassword(namesake?.id ?? "", "sesame");
   });
 
   it("rolls the password and the revocation back when a statement alongside fails", async () => {
     const db = database(testEnv);
-    await setPassword(db, encryptionKey(), carolId, "before");
+    await setOperatorPassword(db, encryptionKey(), carolId, "before");
     const kept = await insertSession(carolId);
     await db.insert(property).values({ id: "set-password-test", value: "taken" });
 
     await expect(
-      setPassword(db, encryptionKey(), carolId, "after", {
+      setOperatorPassword(db, encryptionKey(), carolId, "after", {
         alongside: [db.insert(property).values({ id: "set-password-test", value: "" })],
       }),
     ).rejects.toThrow();
 
-    await expectPasswordInvariant(carolId, "before");
+    await expectOperatorPassword(carolId, "before");
     expect(await sessionIds(carolId)).toEqual([kept]);
   });
 
-  it("writes nothing for a user that does not exist", async () => {
-    const before = await database(testEnv).select().from(account);
+  it("writes nothing, and answers false, for an operator that does not exist", async () => {
+    const before = await database(testEnv).select().from(operatorAccount);
 
     await expect(
-      setPassword(database(testEnv), encryptionKey(), newRandomId(), "nobody"),
+      setOperatorPassword(database(testEnv), encryptionKey(), newRandomId(), "nobody"),
     ).resolves.toBe(false);
 
-    expect(await database(testEnv).select().from(account)).toEqual(before);
+    expect(await database(testEnv).select().from(operatorAccount)).toEqual(before);
   });
 
-  it("with onlyIfAdmin, writes nothing of a user who is not an admin", async () => {
-    await setPassword(database(testEnv), encryptionKey(), carolId, "unchanged");
-    const kept = await insertSession(carolId);
-    const d1 = countingD1(testEnv.DB);
+  it("does not take a Subsonic user's id for an operator's", async () => {
+    const admin = await findUserByUsername(database(testEnv), "admin");
 
-    const changed = await setPassword(drizzle(d1.binding), encryptionKey(), carolId, "admin-only", {
-      onlyIfAdmin: true,
-      alongside: [],
-    });
-
-    expect(changed).toBe(false);
-    expect(d1.statements.reduce((sum, statement) => sum + statement.rowsWritten, 0)).toBe(0);
-    await expectPasswordInvariant(carolId, "unchanged");
-    expect(await sessionIds(carolId)).toEqual([kept]);
-  });
-
-  it("with onlyIfAdmin, sets an admin's password", async () => {
-    const [admin] = await database(testEnv).select().from(user).where(eq(user.userName, "admin"));
-
-    const changed = await setPassword(database(testEnv), encryptionKey(), admin?.id ?? "", "new", {
-      onlyIfAdmin: true,
-    });
-
-    expect(changed).toBe(true);
-    await expectPasswordInvariant(admin?.id ?? "", "new");
+    await expect(
+      setOperatorPassword(database(testEnv), encryptionKey(), admin?.id ?? "", "taken-over"),
+    ).resolves.toBe(false);
+    expect(await subsonicPing(send, BASE, "admin", "sesame")).toBe("ok");
   });
 });

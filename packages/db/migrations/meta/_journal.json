@@ -61,7 +61,7 @@
     {
       "idx": 8,
       "version": "6",
-      "when": 1790675072863,
+      "when": 1790762254818,
       "tag": "0008_add_better_auth_tables",
       "breakpoints": true
     }

@@ -12,19 +12,21 @@
  */
 export interface Env extends Cloudflare.Env {
   /**
-   * Password of the admin user created on first run. Deprecated: the setup
-   * token below creates the first admin without a password in the secrets.
+   * Password of the Subsonic admin user created on first run. Deprecated: it
+   * keeps a password in the secrets, and the console will create Subsonic
+   * users (#82).
    */
   readonly INITIAL_PASSWORD?: string;
   /**
-   * The one-time token that creates the first admin in the console, or later
-   * resets an admin's password (setup/setup-token.ts). At least 32 characters,
-   * or it counts as unset; each value works once.
+   * The one-time token that creates the console's first operator, or later
+   * resets an operator's password (setup/setup-token.ts). At least 32
+   * characters, or it counts as unset; each value works once.
    */
   readonly SETUP_TOKEN?: string;
   /**
    * Passphrase the AES-GCM password-encryption key is derived from, and the
-   * admin console's session secret too (console-auth/auth.ts). Without it
+   * admin console's session secret and operator-password pepper too
+   * (console-auth/auth.ts, console-auth/password-hash.ts). Without it
    * Subsonic logins fail and every `/api` route answers 503.
    */
   readonly PASSWORD_ENCRYPTION_KEY?: string;

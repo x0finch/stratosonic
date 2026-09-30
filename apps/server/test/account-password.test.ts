@@ -1,10 +1,9 @@
-import { account, rateLimit, session, user } from "@stratosonic/db";
+import { operator, operatorAccount, operatorSession, rateLimit, user } from "@stratosonic/db";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAX_JSON_BODY_BYTES } from "../src/api/json-body";
 import { createApp } from "../src/app";
-import { subsonicToken } from "../src/auth/crypto";
-import { MAX_PASSWORD_LENGTH, setPassword } from "../src/console-auth/credentials";
+import { MAX_PASSWORD_LENGTH, setOperatorPassword } from "../src/console-auth/credentials";
 import {
   MAX_PASSWORD_ATTEMPTS,
   PASSWORD_ATTEMPT_KEY_PREFIX,
@@ -22,20 +21,24 @@ import {
   consoleRequest,
   cost,
   countingD1,
-  expectPasswordInvariant,
+  expectOperatorPassword,
   type RecordedStatement,
   SESSION_TOKEN_COOKIE,
+  seedOperator,
   shape,
   signIn,
+  subsonicPing,
 } from "./console-auth-support";
-import { encryptionKey, type JsonEnvelope, seedUser, testEnv } from "./support";
+import { encryptionKey, seedUser, testEnv } from "./support";
 
 /**
- * `POST /api/account/password` (#81, #90): a signed-in user changes their own
- * password, which ends their other sessions and moves Subsonic to it.
+ * `POST /api/account/password` (#81, #90, #99): a signed-in operator changes
+ * their own console password, which ends their other sessions and changes no
+ * Subsonic password.
  *
- * Every test starts with Bob's password `builder`, no session of his and no
- * failed attempts counted.
+ * Bob is both an operator and, separately, a Subsonic user, with the same
+ * name and the same password `builder`. Every test starts with his console
+ * password `builder`, no session of his and no failed attempts counted.
  */
 
 const ORIGIN = "https://account.stratosonic.test";
@@ -47,13 +50,14 @@ const send = (request: Request) => app.request(request, undefined, env);
 let bobId: string;
 
 beforeAll(async () => {
-  bobId = await seedUser("Bob", "builder");
-  await seedUser("Alice", "wonderland", true);
+  bobId = await seedOperator("Bob", "builder");
+  await seedOperator("Alice", "wonderland");
+  await seedUser("Bob", "builder");
 });
 
 beforeEach(async () => {
   // Also ends every session of Bob's.
-  await setPassword(database(testEnv), encryptionKey(), bobId, "builder");
+  await setOperatorPassword(database(testEnv), encryptionKey(), bobId, "builder");
   await database(testEnv).delete(rateLimit);
 });
 
@@ -65,26 +69,18 @@ function changePassword(jar: CookieJar | undefined, body: unknown, headers = {})
   return send(consoleRequest(ORIGIN, "/api/account/password", { body, jar, headers }));
 }
 
-async function subsonicStatus(userName: string, password: string): Promise<string> {
-  const query = new URLSearchParams({
-    u: userName,
-    t: await subsonicToken(password, "b0b"),
-    s: "b0b",
-    v: "1.16.1",
-    c: "test",
-    f: "json",
-  });
-  const response = await app.request(`${ORIGIN}/rest/ping?${query}`, undefined, env);
-
-  return ((await response.json()) as JsonEnvelope)["subsonic-response"].status;
+/** What Subsonic says to Bob's Subsonic user with a password. */
+function subsonicBob(password: string) {
+  return subsonicPing(send, ORIGIN, "bob", password);
 }
 
 async function snapshot() {
   const db = database(testEnv);
   return {
-    users: await db.select().from(user),
-    accounts: await db.select().from(account),
-    sessions: await db.select().from(session),
+    subsonicUsers: await db.select().from(user),
+    operators: await db.select().from(operator),
+    accounts: await db.select().from(operatorAccount),
+    sessions: await db.select().from(operatorSession),
     rateLimits: await db.select().from(rateLimit),
   };
 }
@@ -97,9 +93,9 @@ async function measured(action: () => unknown): Promise<RecordedStatement[]> {
 
 async function sessionIds(userId: string): Promise<string[]> {
   const rows = await database(testEnv)
-    .select({ id: session.id })
-    .from(session)
-    .where(eq(session.userId, userId));
+    .select({ id: operatorSession.id })
+    .from(operatorSession)
+    .where(eq(operatorSession.userId, userId));
   return rows.map((row) => row.id).sort();
 }
 
@@ -107,9 +103,9 @@ async function sessionIds(userId: string): Promise<string[]> {
 async function sessionIdOf(jar: CookieJar): Promise<string | undefined> {
   const token = decodeURIComponent(jar.get(SESSION_TOKEN_COOKIE) ?? "").split(".")[0];
   const [row] = await database(testEnv)
-    .select({ id: session.id })
-    .from(session)
-    .where(eq(session.token, token ?? ""));
+    .select({ id: operatorSession.id })
+    .from(operatorSession)
+    .where(eq(operatorSession.token, token ?? ""));
   return row?.id;
 }
 
@@ -149,11 +145,14 @@ describe("POST /api/account/password", () => {
 
     expect(response?.status).toBe(400);
     expect(await response?.json()).toEqual({ error: "wrong_password" });
-    expect(statements.map(shape).slice(-2)).toEqual(["insert rate_limit", "select user"]);
+    expect(statements.map(shape).slice(-2)).toEqual([
+      "insert rate_limit",
+      "select operator_account",
+    ]);
     const after = await snapshot();
     expect({ ...after, rateLimits: [] }).toEqual({ ...before, rateLimits: [] });
     expect(await attemptRows(jar)).toMatchObject([{ count: 1 }]);
-    expect(await subsonicStatus("bob", "builder")).toBe("ok");
+    expect(await subsonicBob("builder")).toBe("ok");
   });
 
   it("refuses a request without a session", async () => {
@@ -216,42 +215,43 @@ describe("POST /api/account/password", () => {
     expect(response?.status).toBe(200);
     expect(await response?.json()).toEqual({ ok: true });
     expect(statements.map(shape)).toEqual([
-      "select session", // requireFreshSession, past the cookie cache
-      "select user",
+      "select operator_session", // requireFreshSession, past the cookie cache
+      "select operator",
       "insert rate_limit", // the attempt, counted first, and in one batch
-      "select user", // the stored password
-      "update user",
-      "insert account",
-      "delete session",
+      "select operator_account", // the stored hash
+      "update operator_account",
+      "delete operator_session",
     ]);
     expect(cost(statements).roundTrips).toBe(4);
-    // The session's new counter, with its two keys; the user row and the
-    // account; and the one other session.
-    expect(cost(statements).rowsWritten).toBe(3 + 2 + 1);
+    // The session's new counter, with its two keys; the credential account;
+    // and the one other session. No Subsonic user row.
+    expect(cost(statements).rowsWritten).toBe(3 + 1 + 1);
     expect(await attemptRows(here)).toMatchObject([{ count: 1 }]);
 
     expect(await sessionIds(bobId)).toEqual([kept]);
-    await expectPasswordInvariant(bobId, "fixer");
+    await expectOperatorPassword(bobId, "fixer");
 
     // This session still writes; the other one is refused at once; another
-    // user's session is untouched.
+    // operator's session is untouched.
     const again = await changePassword(here, { currentPassword: "fixer", newPassword: "fixer2" });
     expect(again.status).toBe(200);
     const stale = await changePassword(elsewhere, { currentPassword: "fixer2", newPassword: "x" });
     expect(stale.status).toBe(401);
     expect((await send(consoleRequest(ORIGIN, "/api/me", { jar: alice }))).status).toBe(200);
-    await expectPasswordInvariant(bobId, "fixer2");
+    await expectOperatorPassword(bobId, "fixer2");
   });
 
-  it("moves Subsonic and the console to the new password, and the old one fails", async () => {
+  it("moves the console to the new password, and leaves Subsonic's as it was", async () => {
     const { jar } = await signIn(send, ORIGIN, "bob", "builder");
+    const [subsonicBefore] = await database(testEnv).select().from(user);
 
     await changePassword(jar, { currentPassword: "builder", newPassword: "carpenter" });
 
-    expect(await subsonicStatus("bob", "carpenter")).toBe("ok");
-    expect(await subsonicStatus("bob", "builder")).toBe("failed");
     expect((await signIn(send, ORIGIN, "bob", "carpenter")).response.status).toBe(200);
     expect((await signIn(send, ORIGIN, "bob", "builder")).response.status).toBe(401);
+    expect(await database(testEnv).select().from(user)).toEqual([subsonicBefore]);
+    expect(await subsonicBob("builder")).toBe("ok");
+    expect(await subsonicBob("carpenter")).toBe(40);
   });
 
   it("takes the largest body two legal passwords can make", async () => {
@@ -259,7 +259,7 @@ describe("POST /api/account/password", () => {
     // unit: the most a password of MAX_PASSWORD_LENGTH units can take.
     const current = "\u0001".repeat(MAX_PASSWORD_LENGTH);
     const next = "\u0002".repeat(MAX_PASSWORD_LENGTH);
-    await setPassword(database(testEnv), encryptionKey(), bobId, current);
+    await setOperatorPassword(database(testEnv), encryptionKey(), bobId, current);
     const { jar } = await signIn(send, ORIGIN, "bob", current);
     const body = { currentPassword: current, newPassword: next };
     expect(JSON.stringify(body).length).toBeGreaterThan(12 * 1024);
@@ -268,7 +268,7 @@ describe("POST /api/account/password", () => {
     const response = await changePassword(jar, body);
 
     expect(response.status).toBe(200);
-    await expectPasswordInvariant(bobId, next);
+    await expectOperatorPassword(bobId, next);
   });
 });
 
@@ -290,10 +290,10 @@ describe("the limit on attempts", () => {
       429,
       "rate_limited",
     );
-    expect(await subsonicStatus("bob", "builder")).toBe("ok");
+    expect(await subsonicBob("builder")).toBe("ok");
   });
 
-  it("counts per session, so a stolen one cannot lock its user out", async () => {
+  it("counts per session, so a stolen one cannot lock its operator out", async () => {
     const { jar: thief } = await signIn(send, ORIGIN, "bob", "builder");
     const { jar: victim } = await signIn(send, ORIGIN, "bob", "builder");
     for (let attempt = 0; attempt < MAX_PASSWORD_ATTEMPTS; attempt++) {

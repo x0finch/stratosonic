@@ -3,8 +3,8 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app";
 import { database } from "../src/db";
 import type { Env } from "../src/env";
-import { consoleRequest, countingD1, signIn } from "./console-auth-support";
-import { seedUser, testEnv } from "./support";
+import { consoleRequest, countingD1, seedOperator, signIn } from "./console-auth-support";
+import { testEnv } from "./support";
 
 /**
  * The sign-in rate limit (#81): 5 attempts a minute per client address, kept
@@ -27,7 +27,7 @@ function attempt(address: string, password = "wrong") {
 }
 
 beforeAll(async () => {
-  await seedUser("Alice", "wonderland");
+  await seedOperator("Alice", "wonderland");
 });
 
 afterEach(() => {

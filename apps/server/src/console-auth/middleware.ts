@@ -12,14 +12,18 @@ import { type ConsoleAuth, consoleAuth, isUnauthorizedError } from "./auth";
  * and the scan driver's alarm never build one (console-auth/auth.ts).
  */
 
-/** Who a console request is from, as a route sees it. */
+/**
+ * Who a console request is from, as a route sees it: an operator, the
+ * console's own kind of account (#99). Operators have no roles, so a session
+ * is all a route needs to check.
+ */
 export interface ConsoleSession {
-  /** Better Auth's session id: what `setPassword`'s `keepSessionId` names. */
+  /** Better Auth's session id: what `setOperatorPassword`'s `keepSessionId` names. */
   readonly id: string;
+  /** The operator's id, in `operator`. */
   readonly userId: string;
-  /** `user_name`, as entered: the name Subsonic's `getUser` answers with. */
-  readonly userName: string;
-  readonly isAdmin: boolean;
+  /** The name as entered, `display_username`. */
+  readonly username: string;
 }
 
 /**
@@ -88,8 +92,9 @@ export const loadConsoleAuth = createMiddleware<ConsoleEnv>(async (c, next) => {
 });
 
 /**
- * Requires a signed-in user, trusting the cookie cache: within its 5 minutes a
- * check makes no D1 query at all. For reads, which may be that stale (#81).
+ * Requires a signed-in operator, trusting the cookie cache: within its 5
+ * minutes a check makes no D1 query at all. For reads, which may be that
+ * stale (#81).
  */
 export const requireSession = createMiddleware<SessionEnv>(async (c, next) => {
   const session = await readSession(c, { fresh: false });
@@ -102,9 +107,9 @@ export const requireSession = createMiddleware<SessionEnv>(async (c, next) => {
 });
 
 /**
- * Requires a signed-in user, read from D1 past the cookie cache: the session
- * row and the user's `is_admin` as they are now, so a revoked session or a
- * demoted admin is refused at once. For every route that writes (#81).
+ * Requires a signed-in operator, read from D1 past the cookie cache: the
+ * session row and its operator as they are now, so a revoked session is
+ * refused at once. For every route that writes (#81).
  */
 export const requireFreshSession = createMiddleware<SessionEnv>(async (c, next) => {
   const session = await readSession(c, { fresh: true });
@@ -113,19 +118,6 @@ export const requireFreshSession = createMiddleware<SessionEnv>(async (c, next) 
   }
 
   c.set("session", session);
-  await next();
-});
-
-/**
- * Requires the signed-in user to be an admin, answering
- * `403 {"error":"forbidden"}` otherwise. It goes after `requireSession` or,
- * for a write, `requireFreshSession`, whose `is_admin` it reads.
- */
-export const requireAdmin = createMiddleware<SessionEnv>(async (c, next) => {
-  if (!c.var.session.isAdmin) {
-    return c.json({ error: "forbidden" }, 403);
-  }
-
   await next();
 });
 
@@ -187,9 +179,8 @@ async function readSession(
   return {
     id: response.session.id,
     userId: response.user.id,
-    // The plugin types `displayUsername` as optional; it is `user_name`,
-    // which is never null.
-    userName: response.user.displayUsername ?? response.user.name,
-    isAdmin: response.user.isAdmin === true,
+    // The plugin types `displayUsername` as optional; the column is never
+    // null.
+    username: response.user.displayUsername ?? response.user.name,
   };
 }

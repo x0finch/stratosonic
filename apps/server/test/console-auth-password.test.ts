@@ -1,13 +1,21 @@
-import { account, rateLimit, session, user, verification } from "@stratosonic/db";
+import {
+  operator,
+  operatorAccount,
+  operatorSession,
+  operatorVerification,
+  rateLimit,
+} from "@stratosonic/db";
 import { drizzle } from "drizzle-orm/d1";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { type Send, signIn } from "./console-auth-support";
-import { seedUser, testEnv } from "./support";
+import { OPERATOR_MODEL_NAMES } from "../src/console-auth/auth";
+import { verifyOperatorPassword } from "../src/console-auth/password-hash";
+import { consoleRequest, type Send, seedOperator, signIn } from "./console-auth-support";
+import { encryptionKey, testEnv } from "./support";
 
 /**
- * Better Auth's password hooks are bound to the AES-GCM routine the Subsonic
- * API already uses (#81): its default hasher, scrypt, must never run. Each
- * call costs about 100 ms of CPU against the Free plan's 10 ms.
+ * Better Auth's password hooks are bound to the operators' peppered
+ * HMAC-SHA256 (#99, ADR-0007): its default hasher, scrypt, must never run.
+ * Each call costs about 100 ms of CPU against the Free plan's 10 ms.
  *
  * The default hasher is `@better-auth/utils/password`, whose `workerd` build
  * runs `node:crypto`'s scrypt. It is replaced here by spies that forward to the
@@ -33,6 +41,7 @@ let send: Send;
 let scrypt: typeof import("@better-auth/utils/password");
 let betterAuth: typeof import("better-auth/minimal").betterAuth;
 let drizzleAdapter: typeof import("@better-auth/drizzle-adapter").drizzleAdapter;
+let createConsoleAuth: typeof import("../src/console-auth/auth").createConsoleAuth;
 
 function scryptCalls(): number {
   return (
@@ -47,10 +56,11 @@ beforeAll(async () => {
   scrypt = await import("@better-auth/utils/password");
   ({ betterAuth } = await import("better-auth/minimal"));
   ({ drizzleAdapter } = await import("@better-auth/drizzle-adapter"));
+  ({ createConsoleAuth } = await import("../src/console-auth/auth"));
 
   const app = createApp();
   send = (request) => app.request(request, undefined, testEnv);
-  await seedUser("Alice", "wonderland");
+  await seedOperator("Alice", "wonderland");
 });
 
 beforeEach(() => {
@@ -71,6 +81,37 @@ describe("the password hooks", () => {
     expect(scryptCalls()).toBe(0);
   });
 
+  it("change the password without running scrypt either", async () => {
+    const { jar } = await signIn(send, ORIGIN, "alice", "wonderland");
+
+    const response = await send(
+      consoleRequest(ORIGIN, "/api/account/password", {
+        body: { currentPassword: "wonderland", newPassword: "wonderland" },
+        jar,
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(scryptCalls()).toBe(0);
+  });
+
+  it("hash to the operators' format, which verifies with the console's own routine", async () => {
+    const auth = await createConsoleAuth({
+      db: testEnv.DB,
+      passphrase: encryptionKey(),
+      origin: ORIGIN,
+    });
+    const context = await auth.$context;
+
+    const hashed = await context.password.hash("looking-glass");
+
+    expect(hashed).toMatch(/^hmac-sha256\$v1\$/);
+    expect(await verifyOperatorPassword(encryptionKey(), hashed, "looking-glass")).toBe(true);
+    expect(await context.password.verify({ hash: hashed, password: "looking-glass" })).toBe(true);
+    expect(await context.password.verify({ hash: hashed, password: "wrong" })).toBe(false);
+    expect(scryptCalls()).toBe(0);
+  });
+
   it("control: the same spies see scrypt when the hooks are left out", async () => {
     const plain = betterAuth({
       baseURL: ORIGIN,
@@ -78,9 +119,18 @@ describe("the password hooks", () => {
       secret: "a-secret-for-the-control-instance-only",
       database: drizzleAdapter(drizzle(testEnv.DB), {
         provider: "sqlite",
-        schema: { user, session, account, verification, rateLimit },
+        schema: {
+          [OPERATOR_MODEL_NAMES.user]: operator,
+          [OPERATOR_MODEL_NAMES.session]: operatorSession,
+          [OPERATOR_MODEL_NAMES.account]: operatorAccount,
+          [OPERATOR_MODEL_NAMES.verification]: operatorVerification,
+          rateLimit,
+        },
       }),
-      user: { fields: { email: "authEmail" } },
+      user: { modelName: OPERATOR_MODEL_NAMES.user },
+      session: { modelName: OPERATOR_MODEL_NAMES.session },
+      account: { modelName: OPERATOR_MODEL_NAMES.account },
+      verification: { modelName: OPERATOR_MODEL_NAMES.verification },
       emailAndPassword: { enabled: true },
     });
 

@@ -9,6 +9,7 @@ import {
   annotation,
   artist,
   artistId,
+  newRandomId,
   type Playlist,
   playlist,
   playlistId,
@@ -17,12 +18,13 @@ import {
   track,
   trackId,
 } from "@stratosonic/db";
-import { createUserWithPassword } from "../src/console-auth/credentials";
+import { encryptPassword } from "../src/auth/crypto";
 import { database } from "../src/db";
 import type { Env } from "../src/env";
 import { suffixOf } from "../src/library/audio-formats";
 import { type ByteSource, bytesSource } from "../src/library/byte-source";
 import { SCAN_VERSION } from "../src/scanner/version";
+import { insertUser } from "../src/users/repository";
 import {
   type FixtureAlbum,
   fixtureBytes,
@@ -50,25 +52,26 @@ export function encryptionKey(): string {
   return key;
 }
 
-/**
- * Creates a user with a known password, the way the bootstrap would: through
- * the one credential writer, so the user can sign in to the console as well.
- */
+/** Creates a user with a known password, the way the bootstrap would. */
 export async function seedUser(
   userName: string,
   password: string,
   isAdmin = false,
   email = "",
 ): Promise<string> {
-  const id = await createUserWithPassword(database(testEnv), encryptionKey(), {
+  const id = newRandomId();
+  const now = new Date();
+
+  await insertUser(database(testEnv), {
+    id,
     userName,
-    password,
-    isAdmin,
+    name: userName,
     email,
+    password: await encryptPassword(encryptionKey(), password),
+    isAdmin,
+    createdAt: now,
+    updatedAt: now,
   });
-  if (id === null) {
-    throw new Error(`a user named ${userName} already exists`);
-  }
 
   return id;
 }
