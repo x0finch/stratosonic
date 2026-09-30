@@ -37,18 +37,25 @@ const data: { navMain: NavItem[]; navSecondary: NavItem[] } = {
   navSecondary: [{ title: "Settings", icon: <Settings2Icon /> }],
 };
 
+/**
+ * The sidebar-08 block's inset sidebar: the console's name in the header,
+ * its pages, the secondary entries at the bottom, and the signed-in user in
+ * the footer. The block's projects group has no counterpart here.
+ */
 export function AppSidebar({ user, ...props }: ComponentProps<typeof Sidebar> & { user: Me }) {
   return (
-    <Sidebar collapsible="offcanvas" {...props}>
+    <Sidebar variant="inset" {...props}>
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton
-              className="data-[slot=sidebar-menu-button]:p-1.5!"
-              render={<Link to="/" />}
-            >
-              <AudioWaveformIcon className="size-5!" />
-              <span className="text-base font-semibold">Stratosonic</span>
+            <SidebarMenuButton size="lg" render={<Link to="/" />}>
+              <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
+                <AudioWaveformIcon className="size-4" />
+              </div>
+              <div className="grid flex-1 text-left text-sm leading-tight">
+                <span className="truncate font-medium">Stratosonic</span>
+                <span className="truncate text-xs">Console</span>
+              </div>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>

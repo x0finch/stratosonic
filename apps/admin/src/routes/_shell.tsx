@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Outlet, redirect, useRouter } from "@tanstack/react-router";
-import { type CSSProperties, useEffect } from "react";
+import { useEffect } from "react";
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { NotFound } from "@/components/not-found";
@@ -26,7 +26,7 @@ export const Route = createFileRoute("/_shell")({
 });
 
 /**
- * The dashboard-01 block's layout, with each route rendered where its content
+ * The sidebar-08 block's layout, with each route rendered where its content
  * was, in one centered column: every page gets the block's padding and the
  * same width, which fills the content area on a laptop and stops at
  * `max-w-7xl` on a wider screen (#107).
@@ -51,23 +51,12 @@ function Shell() {
   }
 
   return (
-    <SidebarProvider
-      style={
-        {
-          "--sidebar-width": "calc(var(--spacing) * 72)",
-          "--header-height": "calc(var(--spacing) * 12)",
-        } as CSSProperties
-      }
-    >
-      <AppSidebar variant="inset" user={me} />
+    <SidebarProvider>
+      <AppSidebar user={me} />
       <SidebarInset>
         <SiteHeader />
-        <div className="flex flex-1 flex-col">
-          <div className="@container/main flex flex-1 flex-col gap-2">
-            <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-4 py-4 md:gap-6 md:py-6 lg:px-6">
-              <Outlet />
-            </div>
-          </div>
+        <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-4 p-4 pt-0">
+          <Outlet />
         </div>
       </SidebarInset>
     </SidebarProvider>
