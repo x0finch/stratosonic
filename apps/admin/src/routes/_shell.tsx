@@ -25,7 +25,12 @@ export const Route = createFileRoute("/_shell")({
   notFoundComponent: NotFound,
 });
 
-/** The dashboard-01 block's layout, with each route rendered where its content was. */
+/**
+ * The dashboard-01 block's layout, with each route rendered where its content
+ * was, in one centered column: every page gets the block's padding and the
+ * same width, which fills the content area on a laptop and stops at
+ * `max-w-7xl` on a wider screen (#107).
+ */
 function Shell() {
   const { data: me } = useQuery(meQuery);
   const router = useRouter();
@@ -59,7 +64,7 @@ function Shell() {
         <SiteHeader />
         <div className="flex flex-1 flex-col">
           <div className="@container/main flex flex-1 flex-col gap-2">
-            <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
+            <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-4 py-4 md:gap-6 md:py-6 lg:px-6">
               <Outlet />
             </div>
           </div>
