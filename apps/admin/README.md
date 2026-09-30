@@ -111,7 +111,10 @@ Base UI (`src/components/ui/toast.tsx`), raised through `src/lib/toasts.ts`.
 Its toaster sits above the router in `src/main.tsx`, so the toast a setup or
 a reset raises before going to `/login` is still there when the sign-in
 screen opens. Field-level validation, such as a wrong current password or a
-confirmation mismatch, stays beside its field, and a state that is the whole
+confirmation mismatch, stays beside its field; one the server reported, such
+as the wrong current password, belongs to the value it was reported for, and
+goes as soon as that field changes and at the start of the next submit
+(`src/lib/field-errors.ts`). A state that is the whole
 page, such as the error screen of a server that is not configured, the
 sign-in screen's word that the setup state cannot be read, or the notice that
 setup is closed, stays on the page (`src/components/error-alert.tsx`).
