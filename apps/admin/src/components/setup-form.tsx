@@ -24,7 +24,7 @@ export interface SetupFormText {
 
 /**
  * The login-01 block's form with the setup token's fields: the first-run
- * setup and the admin password reset. Both take the token, a username and a
+ * setup and the operator password reset. Both take the token, a username and a
  * password twice. Neither signs anybody in (#90), so both then go to the
  * sign-in screen, which says what was done.
  */

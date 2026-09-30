@@ -4,7 +4,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { AuthLayout } from "@/components/auth-layout";
 import { SetupForm } from "@/components/setup-form";
 import { SetupNotice } from "@/components/setup-notice";
-import { resetAdminPassword, setupStateQuery } from "@/lib/api";
+import { resetOperatorPassword, setupStateQuery } from "@/lib/api";
 
 export const Route = createFileRoute("/setup/reset")({
   component: Reset,
@@ -12,8 +12,8 @@ export const Route = createFileRoute("/setup/reset")({
 });
 
 /**
- * Recovery (#81): an unspent setup token sets an admin's password and signs
- * that admin out everywhere. Each token value works once.
+ * Recovery (#81, #99): an unspent setup token sets an operator's password and
+ * signs that operator out everywhere. Each token value works once.
  */
 function Reset() {
   const state = useQuery(setupStateQuery);
@@ -26,9 +26,9 @@ function Reset() {
     return (
       <AuthLayout>
         <SetupNotice
-          heading="Reset an admin password"
-          title="There is no admin yet"
-          description="Create the first admin with the setup token instead."
+          heading="Reset an operator's password"
+          title="There is no operator yet"
+          description="Create the first operator account with the setup token instead."
           links={[{ to: "/setup", label: "Set up the server" }]}
         />
       </AuthLayout>
@@ -39,7 +39,7 @@ function Reset() {
     return (
       <AuthLayout>
         <SetupNotice
-          heading="Reset an admin password"
+          heading="Reset an operator's password"
           title="No setup token to use"
           description="The setup token is unset or already spent. Set a new one with wrangler secret put SETUP_TOKEN, then reload this page."
           links={[{ to: "/login", label: "Back to sign in" }]}
@@ -52,14 +52,15 @@ function Reset() {
     <AuthLayout>
       <SetupForm
         text={{
-          title: "Reset an admin password",
-          description: "Set a new password with the setup token, signing the admin out everywhere",
-          usernameLabel: "Admin username",
+          title: "Reset an operator's password",
+          description:
+            "Set a new password with the setup token, signing the operator out everywhere",
+          usernameLabel: "Operator username",
           passwordLabel: "New password",
           submit: "Reset password",
           pending: "Resetting password…",
         }}
-        submit={resetAdminPassword}
+        submit={resetOperatorPassword}
         notice="reset"
         footer={
           <>

@@ -22,15 +22,16 @@ import {
 import { type Me, meQuery, signOut } from "@/lib/api";
 import { leaveSignedOut } from "@/lib/sign-out";
 
-/** The first two characters of the name, for the avatar a user has none of. */
+/** The first two characters of the name, for the avatar an operator has none of. */
 function initials(name: string): string {
   return Array.from(name).slice(0, 2).join("").toUpperCase();
 }
 
 /**
- * The dashboard-01 block's nav-user: the signed-in user's name and role, the
- * account page and sign-out. Users have no avatar or email, so the avatar is
- * the name's initials and the second line the role.
+ * The dashboard-01 block's nav-user: the signed-in operator's name, the
+ * account page and sign-out. Operators have no avatar or email, so the avatar
+ * is the name's initials and the second line says what kind of account it is:
+ * an operator's, not a Subsonic user's.
  */
 export function NavUser({ user }: { user: Me }) {
   const { isMobile } = useSidebar();
@@ -47,8 +48,6 @@ export function NavUser({ user }: { user: Me }) {
     onError: () => queryClient.invalidateQueries({ queryKey: meQuery.queryKey }),
   });
 
-  const role = user.isAdmin ? "Admin" : "User";
-
   return (
     <SidebarMenu>
       {logOut.error && (
@@ -62,11 +61,11 @@ export function NavUser({ user }: { user: Me }) {
             render={<SidebarMenuButton size="lg" className="aria-expanded:bg-muted" />}
           >
             <Avatar className="size-8 rounded-lg grayscale">
-              <AvatarFallback className="rounded-lg">{initials(user.userName)}</AvatarFallback>
+              <AvatarFallback className="rounded-lg">{initials(user.username)}</AvatarFallback>
             </Avatar>
             <div className="grid flex-1 text-left text-sm leading-tight">
-              <span className="truncate font-medium">{user.userName}</span>
-              <span className="truncate text-xs text-foreground/70">{role}</span>
+              <span className="truncate font-medium">{user.username}</span>
+              <span className="truncate text-xs text-foreground/70">Operator</span>
             </div>
             <EllipsisVerticalIcon className="ml-auto size-4" />
           </DropdownMenuTrigger>
@@ -81,12 +80,12 @@ export function NavUser({ user }: { user: Me }) {
                 <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
                   <Avatar className="size-8">
                     <AvatarFallback className="rounded-lg">
-                      {initials(user.userName)}
+                      {initials(user.username)}
                     </AvatarFallback>
                   </Avatar>
                   <div className="grid flex-1 text-left text-sm leading-tight">
-                    <span className="truncate font-medium">{user.userName}</span>
-                    <span className="truncate text-xs text-muted-foreground">{role}</span>
+                    <span className="truncate font-medium">{user.username}</span>
+                    <span className="truncate text-xs text-muted-foreground">Operator</span>
                   </div>
                 </div>
               </DropdownMenuLabel>

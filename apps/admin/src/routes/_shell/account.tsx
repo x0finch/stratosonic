@@ -9,13 +9,13 @@ export const Route = createFileRoute("/_shell/account")({
   staticData: { title: "Account" },
 });
 
-/** The signed-in user's own account: for now, its password. */
+/** The signed-in operator's own account: for now, its password. */
 function Account() {
   const { data: me } = useQuery(meQuery);
 
   return (
     <div className="px-4 lg:px-6">
-      <ChangePasswordForm className="max-w-md" userName={me?.userName ?? ""} />
+      <ChangePasswordForm className="max-w-md" username={me?.username ?? ""} />
     </div>
   );
 }

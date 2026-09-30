@@ -15,13 +15,13 @@ import { describeError, MAX_PASSWORD_LENGTH } from "@/lib/errors";
 /**
  * The login-01 block's form with the change-password fields (#81): the
  * current password, then the new one twice. The server keeps this session
- * and signs the user's others out.
+ * and signs the operator's others out.
  */
 export function ChangePasswordForm({
-  userName,
+  username,
   className,
   ...props
-}: ComponentProps<"div"> & { userName: string }) {
+}: ComponentProps<"div"> & { username: string }) {
   const [mismatch, setMismatch] = useState(false);
 
   const mutation = useMutation({ mutationFn: changePassword });
@@ -51,7 +51,9 @@ export function ChangePasswordForm({
       <Card>
         <CardHeader>
           <CardTitle>Change password</CardTitle>
-          <CardDescription>Your Subsonic clients use the same password</CardDescription>
+          <CardDescription>
+            The password of your operator account. Subsonic passwords do not change.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={onSubmit}>
@@ -60,10 +62,7 @@ export function ChangePasswordForm({
                 <Alert>
                   <CircleCheckIcon />
                   <AlertTitle>Password changed</AlertTitle>
-                  <AlertDescription>
-                    Your other sessions are signed out. Use the new password in your Subsonic
-                    clients too.
-                  </AlertDescription>
+                  <AlertDescription>Your other sessions are signed out.</AlertDescription>
                 </Alert>
               )}
               {mutation.error && !wrongPassword && <ErrorAlert error={mutation.error} />}
@@ -72,7 +71,7 @@ export function ChangePasswordForm({
                 type="text"
                 name="username"
                 autoComplete="username"
-                value={userName}
+                value={username}
                 readOnly
                 hidden
               />
