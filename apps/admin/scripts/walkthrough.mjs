@@ -14,9 +14,12 @@
  * It walks, in order: the router guard; first-run setup, with a wrong token
  * and a mismatched confirmation on the way, then the first sign-in;
  * sign-out and sign-in; a wrong
- * password; the account page's validation and a password change, after which
- * a Subsonic `ping` with the new password is ok and the old one fails; a
- * reset with a new setup token; dark mode; and a phone-sized viewport. The
+ * password; a deep link opened while signed out, which sign-in returns to;
+ * the account page's validation and a password change, after which a
+ * Subsonic `ping` with the new password is ok and the old one fails; signing
+ * out from the account page, which lands on plain `/login` and signs in to
+ * the overview; a session that ends while on a page, which sign-in returns
+ * to; a reset with a new setup token; dark mode; and a phone-sized viewport. The
  * reset needs a token the first run did not spend, so the script waits, up to
  * five minutes, for `GET /api/setup` to say `reset-available`: put
  * `RESET_TOKEN` in `SETUP_TOKEN` (apps/server/.dev.vars) and restart
@@ -52,7 +55,7 @@ const EXPECTED_REFUSALS = {
   "/api/me": [401],
   "/api/auth/sign-in/username": [401, 429],
   "/api/setup": [403],
-  "/api/account/password": [400],
+  "/api/account/password": [400, 401],
 };
 
 const results = [];
@@ -168,10 +171,16 @@ async function openUserMenu(page) {
   await page.getByRole("button", { name: new RegExp(USERNAME) }).click();
 }
 
+/**
+ * Signs out through the user menu, which lands on plain `/login`: a
+ * deliberate sign-out leaves no page for the next sign-in to return to.
+ */
 async function signOut(page) {
   await openUserMenu(page);
   await page.getByRole("menuitem", { name: "Sign out" }).click();
   await page.waitForURL((url) => url.pathname === "/login");
+  const { search } = new URL(page.url());
+  check(search === "", `signing out landed on /login${search}`);
 }
 
 async function main() {
@@ -254,6 +263,8 @@ async function main() {
     await step("sign-in returns to the page that asked for it", async () => {
       await page.goto(`${BASE_URL}/account`);
       await page.waitForURL((url) => url.pathname === "/login");
+      const url = new URL(page.url());
+      check(url.searchParams.get("redirect") === "/account", `redirect is ${url.search}`);
       await signIn(page, password, { expectAt: "/account" });
       await page.getByRole("heading", { name: "Account" }).waitFor();
     });
@@ -285,6 +296,30 @@ async function main() {
       check((await ping(old)) === "failed", "ping with the old password still works");
       // This session was kept.
       await page.reload();
+      await page.getByRole("heading", { name: "Account" }).waitFor();
+    });
+
+    await step("sign-out from a page goes to plain /login, then sign-in to the overview", async () => {
+      check(new URL(page.url()).pathname === "/account", `on ${page.url()}, not /account`);
+      await signOut(page);
+      await signIn(page, password, { expectAt: "/" });
+      await page.getByRole("button", { name: new RegExp(USERNAME) }).waitFor();
+    });
+
+    await step("a session that ends while on a page returns there after sign-in", async () => {
+      await page.goto(`${BASE_URL}/account`);
+      await page.getByRole("heading", { name: "Account" }).waitFor();
+      // As if the session ran out, or was revoked elsewhere: the next write
+      // is refused, and the console asks for a sign-in on the way back here.
+      await context.clearCookies();
+      await page.getByLabel("Current password").fill(password);
+      await page.getByLabel("New password", { exact: true }).fill(passwords.changed);
+      await page.getByLabel("Confirm new password").fill(passwords.changed);
+      await page.getByRole("button", { name: "Change password" }).click();
+      await page.waitForURL((url) => url.pathname === "/login");
+      const url = new URL(page.url());
+      check(url.searchParams.get("redirect") === "/account", `redirect is ${url.search}`);
+      await signIn(page, password, { expectAt: "/account" });
       await page.getByRole("heading", { name: "Account" }).waitFor();
     });
 
@@ -334,7 +369,7 @@ async function main() {
         "the sign-in screen is not dark",
       );
       await shot(page, "login-dark");
-      await signIn(page, password, { expectAt: "/account" });
+      await signIn(page, password, { expectAt: "/" });
       await page.getByRole("button", { name: "Toggle theme" }).click();
       await page.getByRole("menuitem", { name: "Light" }).click();
     });
