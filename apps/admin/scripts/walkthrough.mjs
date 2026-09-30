@@ -7,25 +7,32 @@
  *
  * Not part of the test suite or CI. It needs a Worker serving the built
  * console (`pnpm --filter @stratosonic/server dev`) on a database with no
- * users and `SETUP_TOKEN` set, or, for a database that already has its admin,
- * `ADMIN_USER` and `ADMIN_PASSWORD` for it (the first-run setup is skipped). Chromium comes from Playwright's browser
- * cache (`PLAYWRIGHT_BROWSERS_PATH`, or `playwright-core install chromium`).
+ * operator and `SETUP_TOKEN` set, or, for a database that already has its
+ * operator, `OPERATOR_USER` and `OPERATOR_PASSWORD` for it (the first-run
+ * setup is skipped). Chromium comes from Playwright's browser cache
+ * (`PLAYWRIGHT_BROWSERS_PATH`, or `playwright-core install chromium`).
+ *
+ * Operators are the console's own accounts, separate from Subsonic users
+ * (#99), so every Subsonic `ping` with the operator's credentials must fail
+ * with error 40, by `p=` and by token. With `SUBSONIC_USER` and
+ * `SUBSONIC_PASSWORD` (the `INITIAL_*` Subsonic user, say) it also checks
+ * that the Subsonic user cannot sign in to the console, and that its `ping`
+ * stays ok through every change of the operator's password.
  *
  * It walks, in order: the router guard; first-run setup, with a wrong token
  * and a mismatched confirmation on the way, then the first sign-in;
- * sign-out and sign-in; a wrong
- * password; a deep link opened while signed out, which sign-in returns to;
- * the account page's validation and a password change, after which a
- * Subsonic `ping` with the new password is ok and the old one fails; signing
- * out from the account page, which lands on plain `/login` and signs in to
- * the overview; a session that ends while on a page, which sign-in returns
- * to; a reset with a new setup token; dark mode; and a phone-sized viewport. The
- * reset needs a token the first run did not spend, so the script waits, up to
- * five minutes, for `GET /api/setup` to say `reset-available`: put
- * `RESET_TOKEN` in `SETUP_TOKEN` (apps/server/.dev.vars) and restart
- * `wrangler dev` when it asks. Without `RESET_TOKEN` the reset is skipped.
- * It signs in more often than the server's limit of 5 a minute allows, so it
- * meets the rate limit's message on the way, and waits it out.
+ * sign-out and sign-in; a wrong password, and a Subsonic user's; a deep link
+ * opened while signed out, which sign-in returns to; the account page's
+ * validation and a password change, after which a Subsonic `ping` with
+ * neither password is ok; signing out from the account page, which lands on
+ * plain `/login` and signs in to the overview; a session that ends while on a
+ * page, which sign-in returns to; a reset with a new setup token; dark mode;
+ * and a phone-sized viewport. The reset needs a token the first run did not
+ * spend, so the script waits, up to five minutes, for `GET /api/setup` to say
+ * `reset-available`: put `RESET_TOKEN` in `SETUP_TOKEN` (apps/server/.dev.vars)
+ * and restart `wrangler dev` when it asks. Without `RESET_TOKEN` the reset is
+ * skipped. It signs in more often than the server's limit of 5 a minute
+ * allows, so it meets the rate limit's message on the way, and waits it out.
  *
  * Any console error or uncaught exception on a page fails the walkthrough,
  * except the browser's own "Failed to load resource" line for a response the
@@ -34,6 +41,7 @@
  * screenshot of each step there.
  */
 
+import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
@@ -41,11 +49,13 @@ import { chromium } from "playwright-core";
 const BASE_URL = (process.env.BASE_URL ?? "http://localhost:8787").replace(/\/$/, "");
 const SETUP_TOKEN = process.env.SETUP_TOKEN;
 const RESET_TOKEN = process.env.RESET_TOKEN;
-const USERNAME = process.env.ADMIN_USER ?? "admin";
+const USERNAME = process.env.OPERATOR_USER ?? "operator";
+const SUBSONIC_USER = process.env.SUBSONIC_USER;
+const SUBSONIC_PASSWORD = process.env.SUBSONIC_PASSWORD;
 const SCREENSHOTS = process.env.SCREENSHOTS;
 
 const passwords = {
-  first: process.env.ADMIN_PASSWORD ?? "first-run password",
+  first: process.env.OPERATOR_PASSWORD ?? "first-run password",
   changed: "changed in the console",
   reset: "reset with a setup token",
 };
@@ -105,11 +115,42 @@ async function setupState() {
   return response.ok ? (await response.json()).state : `http_${response.status}`;
 }
 
-async function ping(password) {
-  const query = new URLSearchParams({ u: USERNAME, p: password, v: "1.16.1", c: "walkthrough" });
-  query.set("f", "json");
-  const response = await fetch(`${BASE_URL}/rest/ping?${query}`);
-  return (await response.json())["subsonic-response"].status;
+/**
+ * What a Subsonic `ping` answers with these credentials, by `p=` and by token
+ * (`t` = md5(password + salt)): "ok", or the error code. Both must agree.
+ */
+async function ping(username, password) {
+  const salt = "walk5a17";
+  const token = createHash("md5")
+    .update(password + salt)
+    .digest("hex");
+  const answers = [];
+  for (const credentials of [{ p: password }, { t: token, s: salt }]) {
+    const query = new URLSearchParams({ u: username, v: "1.16.1", c: "walkthrough", f: "json" });
+    for (const [name, value] of Object.entries(credentials)) {
+      query.set(name, value);
+    }
+    const body = (await (await fetch(`${BASE_URL}/rest/ping?${query}`)).json())[
+      "subsonic-response"
+    ];
+    answers.push(body.status === "ok" ? "ok" : body.error?.code);
+  }
+  check(answers[0] === answers[1], `ping by p= answered ${answers[0]}, by token ${answers[1]}`);
+  return answers[0];
+}
+
+/** That Subsonic refuses the operator's credentials, as a wrong password. */
+async function checkOperatorCannotPing(password) {
+  const answer = await ping(USERNAME, password);
+  check(answer === 40, `Subsonic ping with the operator's credentials answered ${answer}, not 40`);
+}
+
+/** That the Subsonic user, when there is one to check, still pings. */
+async function checkSubsonicUserPings() {
+  if (SUBSONIC_USER && SUBSONIC_PASSWORD) {
+    const answer = await ping(SUBSONIC_USER, SUBSONIC_PASSWORD);
+    check(answer === "ok", `Subsonic ping as ${SUBSONIC_USER} answered ${answer}`);
+  }
 }
 
 function watch(page, label) {
@@ -145,8 +186,8 @@ async function shot(page, name) {
  * the server's limit of 5 a minute, so a 429 is met with its message on the
  * screen, then a wait and another try.
  */
-async function signIn(page, password, { expectAt } = {}) {
-  await page.getByLabel("Username").fill(USERNAME);
+async function signIn(page, password, { expectAt, username = USERNAME } = {}) {
+  await page.getByLabel("Username").fill(username);
   await page.getByLabel("Password", { exact: true }).fill(password);
   for (;;) {
     const [response] = await Promise.all([
@@ -177,6 +218,11 @@ async function openUserMenu(page) {
  */
 async function signOut(page) {
   await openUserMenu(page);
+  await clickSignOut(page);
+}
+
+/** Clicks "Sign out" in the open user menu, and checks where it lands. */
+async function clickSignOut(page) {
   await page.getByRole("menuitem", { name: "Sign out" }).click();
   await page.waitForURL((url) => url.pathname === "/login");
   const { search } = new URL(page.url());
@@ -196,6 +242,9 @@ async function main() {
   const initialState = await setupState();
   console.log(`GET /api/setup: ${initialState}`);
   let password = passwords.first;
+  if (!SUBSONIC_USER || !SUBSONIC_PASSWORD) {
+    console.log("SUBSONIC_USER / SUBSONIC_PASSWORD unset: the Subsonic user's checks are skipped");
+  }
 
   try {
     await step("a signed-out visit to a shell page goes to /login?redirect=…", async () => {
@@ -211,7 +260,7 @@ async function main() {
       if (initialState !== "needs-setup") {
         return "skipped";
       }
-      check(SETUP_TOKEN, "the database has no users: set SETUP_TOKEN");
+      check(SETUP_TOKEN, "the database has no operator: set SETUP_TOKEN");
       await page.goto(`${BASE_URL}/login`);
       await page.getByRole("link", { name: "Set up the server" }).click();
       await page.waitForURL((url) => url.pathname === "/setup");
@@ -221,7 +270,7 @@ async function main() {
         await page.getByLabel("Username").fill(USERNAME);
         await page.getByLabel("Password", { exact: true }).fill(password);
         await page.getByLabel("Confirm password").fill(confirm);
-        await page.getByRole("button", { name: "Create admin" }).click();
+        await page.getByRole("button", { name: "Create operator account" }).click();
       };
 
       await fill(SETUP_TOKEN, `${password} (typo)`);
@@ -233,8 +282,10 @@ async function main() {
 
       await fill(SETUP_TOKEN, password);
       await page.waitForURL((url) => url.pathname === "/login");
-      await page.getByText("The admin is created").waitFor();
+      await page.getByText("The operator account is created").waitFor();
       check((await setupState()) === "closed", "the setup token is not spent");
+      await checkOperatorCannotPing(password);
+      await checkSubsonicUserPings();
       await shot(page, "login-after-setup");
       await signIn(page, password, { expectAt: "/" });
       await page.getByRole("button", { name: new RegExp(USERNAME) }).waitFor();
@@ -260,6 +311,17 @@ async function main() {
       await shot(page, "login-wrong-password");
     });
 
+    await step("a Subsonic user cannot sign in to the console", async () => {
+      if (!SUBSONIC_USER || !SUBSONIC_PASSWORD) {
+        return "skipped";
+      }
+      await page.goto(`${BASE_URL}/login`);
+      await signIn(page, SUBSONIC_PASSWORD, { username: SUBSONIC_USER });
+      await page.getByText("Wrong username or password").waitFor();
+      check(new URL(page.url()).pathname === "/login", "a Subsonic user left /login");
+      await checkSubsonicUserPings();
+    });
+
     await step("sign-in returns to the page that asked for it", async () => {
       await page.goto(`${BASE_URL}/account`);
       await page.waitForURL((url) => url.pathname === "/login");
@@ -283,7 +345,7 @@ async function main() {
       await shot(page, "account-wrong-password");
     });
 
-    await step("change password; Subsonic's ping takes the new one", async () => {
+    await step("change password; Subsonic's ping takes neither", async () => {
       await page.getByLabel("Current password").fill(password);
       await page.getByLabel("New password", { exact: true }).fill(passwords.changed);
       await page.getByLabel("Confirm new password").fill(passwords.changed);
@@ -292,8 +354,9 @@ async function main() {
       await shot(page, "account-changed");
       const old = password;
       password = passwords.changed;
-      check((await ping(password)) === "ok", "ping with the new password failed");
-      check((await ping(old)) === "failed", "ping with the old password still works");
+      await checkOperatorCannotPing(password);
+      await checkOperatorCannotPing(old);
+      await checkSubsonicUserPings();
       // This session was kept.
       await page.reload();
       await page.getByRole("heading", { name: "Account" }).waitFor();
@@ -341,7 +404,7 @@ async function main() {
       await page.getByRole("link", { name: "Reset with a setup token" }).click();
       await page.waitForURL((url) => url.pathname === "/setup/reset");
       await page.getByLabel("Setup token").fill(RESET_TOKEN);
-      await page.getByLabel("Admin username").fill(USERNAME);
+      await page.getByLabel("Operator username").fill(USERNAME);
       await page.getByLabel("New password", { exact: true }).fill(passwords.reset);
       await page.getByLabel("Confirm password").fill(passwords.reset);
       await shot(page, "reset");
@@ -350,7 +413,8 @@ async function main() {
       await page.getByText("The password is reset").waitFor();
       password = passwords.reset;
       await signIn(page, password, { expectAt: "/" });
-      check((await ping(password)) === "ok", "ping with the reset password failed");
+      await checkOperatorCannotPing(password);
+      await checkSubsonicUserPings();
       check((await setupState()) === "closed", "the reset token is not spent");
     });
 
@@ -397,8 +461,7 @@ async function main() {
       await openUserMenu(mobile);
       await mobile.getByRole("menuitem", { name: "Sign out" }).waitFor();
       await shot(mobile, "mobile-user-menu");
-      await mobile.getByRole("menuitem", { name: "Sign out" }).click();
-      await mobile.waitForURL((url) => url.pathname === "/login");
+      await clickSignOut(mobile);
       await phone.close();
     });
 
