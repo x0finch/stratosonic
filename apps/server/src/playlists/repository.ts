@@ -465,8 +465,8 @@ const playlistColumns = {
   duration: playlist.duration,
   createdAt: playlist.createdAt,
   changedAt: playlist.changedAt,
-  ownerName: sql<string>`coalesce((select user.user_name from user
-    where user.id = playlist.owner_id), '')`,
+  ownerName: sql<string>`coalesce((select subsonic_user.user_name from subsonic_user
+    where subsonic_user.id = playlist.owner_id), '')`,
   // The cover of the earliest entry whose album has one. A playlist has no
   // artwork of its own here - Navidrome answers with a `pl-` id and paints a
   // mosaic of its albums, which needs an image pipeline this server does not

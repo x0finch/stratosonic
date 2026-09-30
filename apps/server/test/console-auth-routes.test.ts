@@ -1,36 +1,48 @@
 import { SELF } from "cloudflare:test";
-import { user } from "@stratosonic/db";
+import { consoleAccount, consoleUser } from "@stratosonic/db";
 import { eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
-import { subsonicToken } from "../src/auth/crypto";
 import { CONSOLE_AUTH_ROUTES, consoleAuth, DISABLED_AUTH_PATHS } from "../src/console-auth/auth";
 import { MAX_PASSWORD_LENGTH } from "../src/console-auth/credentials";
+import { PERMISSIONS } from "../src/console-auth/permissions";
 import { database } from "../src/db";
-import { findUserByUsername } from "../src/users/repository";
 import {
   CookieJar,
   consoleRequest,
+  GUEST_ROLE,
   SESSION_DATA_COOKIE,
   SESSION_TOKEN_COOKIE,
+  seedConsoleUser,
   signIn,
+  subsonicPing,
 } from "./console-auth-support";
-import { BASE, encryptionKey, type JsonEnvelope, seedUser, testEnv } from "./support";
+import { BASE, encryptionKey, seedUser, testEnv } from "./support";
 
 /**
- * The console's Better Auth routes and `GET /api/me` (#89), through the Worker
- * itself. The first-run bootstrap creates `admin` / `sesame` from the bindings
- * in vitest.config.ts.
+ * The console's Better Auth routes and `GET /api/me` (#89, #99), through the
+ * Worker itself. They sign console users in, the console's own accounts, and no
+ * Subsonic user: the first-run bootstrap creates the Subsonic admin `admin` /
+ * `sesame` from the bindings in vitest.config.ts, and a console user named
+ * `admin` has a password of its own.
  */
 
 const send = (request: Request) => SELF.fetch(request);
 
+/** The console password of the console user named `admin`. */
+const CONSOLE_PASSWORD = "the console's own";
+
+let adminId: string;
+let aliceId: string;
+
 beforeAll(async () => {
-  // The first request bootstraps the admin, before any other user exists.
+  // The first request bootstraps the Subsonic admin.
   await send(consoleRequest(BASE, "/api/me"));
-  await seedUser("Alice", "wonderland", false, "alice@example.com");
-  await seedUser("Émile", "zola");
-  await seedUser("jo", "short-name");
-  await seedUser("DJ Shadow-7", "endtroducing");
+  await seedUser("listener", "music");
+  adminId = await seedConsoleUser("admin", CONSOLE_PASSWORD);
+  aliceId = await seedConsoleUser("Alice", "wonderland", GUEST_ROLE);
+  await seedConsoleUser("Émile", "zola", GUEST_ROLE);
+  await seedConsoleUser("jo", "short-name", GUEST_ROLE);
+  await seedConsoleUser("DJ Shadow-7", "endtroducing", GUEST_ROLE);
 });
 
 async function me(jar: CookieJar) {
@@ -41,8 +53,8 @@ async function me(jar: CookieJar) {
 }
 
 describe("sign-in", () => {
-  it("signs the first-run admin in, with __Secure- HttpOnly SameSite=Lax cookies", async () => {
-    const { response, jar } = await signIn(send, BASE, "admin", "sesame");
+  it("signs a console user in, with __Secure- HttpOnly SameSite=Lax cookies", async () => {
+    const { response, jar } = await signIn(send, BASE, "admin", CONSOLE_PASSWORD);
 
     expect(response.status).toBe(200);
     expect(jar.names()).toEqual([SESSION_DATA_COOKIE, SESSION_TOKEN_COOKIE]);
@@ -55,40 +67,49 @@ describe("sign-in", () => {
     }
   });
 
-  it("answers with the user as Better Auth maps it, is_admin included", async () => {
+  it("answers with the console user as Better Auth maps it, role included", async () => {
     const { response } = await signIn(send, BASE, "Alice", "wonderland");
     const body = (await response.json()) as { user: Record<string, unknown> };
 
     expect(body.user).toMatchObject({
+      id: aliceId,
       name: "Alice",
-      email: "alice@users.invalid",
+      email: "alice@console.invalid",
       emailVerified: false,
       image: null,
       username: "alice",
       displayUsername: "Alice",
-      isAdmin: false,
+      role: GUEST_ROLE,
     });
+    expect(body.user).not.toHaveProperty("isAdmin");
   });
 
-  it("matches the name in any ASCII case, as Subsonic's `u` does", async () => {
+  it("refuses a Subsonic user's credentials, even for a console user's namesake", async () => {
+    const namesake = await signIn(send, BASE, "admin", "sesame");
+    const subsonicOnly = await signIn(send, BASE, "listener", "music");
+
+    expect(namesake.response.status).toBe(401);
+    expect(subsonicOnly.response.status).toBe(401);
+    expect(await namesake.response.json()).toEqual(await subsonicOnly.response.json());
+    expect([...namesake.jar.names(), ...subsonicOnly.jar.names()]).toEqual([]);
+  });
+
+  it("matches the name in any ASCII case", async () => {
     for (const spelling of ["Alice", "alice", "ALICE", "aLiCe"]) {
       const { response } = await signIn(send, BASE, spelling, "wonderland");
       expect(response.status, spelling).toBe(200);
     }
   });
 
-  it("folds case exactly as the Subsonic lookup does, ASCII only", async () => {
-    // SQLite's lower() leaves "É" alone, so neither side finds "émile".
-    expect(await findUserByUsername(database(testEnv), "émile")).toBeNull();
+  it("folds case exactly as the generated `username` column does, ASCII only", async () => {
+    // SQLite's lower() leaves "É" alone, so "émile" names nobody.
     expect((await signIn(send, BASE, "émile", "zola")).response.status).toBe(401);
-
-    expect((await findUserByUsername(database(testEnv), "ÉMILE"))?.userName).toBe("Émile");
     expect((await signIn(send, BASE, "ÉMILE", "zola")).response.status).toBe(200);
   });
 
   it("accepts a password of up to MAX_PASSWORD_LENGTH characters, not Better Auth's 128", async () => {
     const longest = "p".repeat(MAX_PASSWORD_LENGTH);
-    await seedUser("Verbose", longest);
+    await seedConsoleUser("Verbose", longest, GUEST_ROLE);
 
     expect((await signIn(send, BASE, "verbose", longest)).response.status).toBe(200);
     const tooLong = await signIn(send, BASE, "verbose", `${longest}p`);
@@ -117,7 +138,7 @@ describe("sign-in", () => {
   it("refuses a sign-in posted from another origin", async () => {
     const response = await send(
       consoleRequest(BASE, "/api/auth/sign-in/username", {
-        body: { username: "admin", password: "sesame" },
+        body: { username: "admin", password: CONSOLE_PASSWORD },
         headers: { origin: "https://evil.example", cookie: "unrelated=1" },
       }),
     );
@@ -138,7 +159,7 @@ describe("sign-in", () => {
           "sec-fetch-site": "cross-site",
           "cf-connecting-ip": "198.51.100.254",
         },
-        body: "username=admin&password=sesame",
+        body: `username=admin&password=${encodeURIComponent(CONSOLE_PASSWORD)}`,
       }),
     );
 
@@ -150,16 +171,16 @@ describe("sign-in", () => {
   it("never puts the stored password in a response or in the cookie cache", async () => {
     const { response, jar } = await signIn(send, BASE, "Alice", "wonderland");
     const [row] = await database(testEnv)
-      .select({ password: user.password })
-      .from(user)
-      .where(eq(user.userName, "Alice"));
+      .select({ password: consoleAccount.password })
+      .from(consoleAccount)
+      .where(eq(consoleAccount.userId, aliceId));
     const session = await send(consoleRequest(BASE, "/api/auth/get-session", { jar }));
     const cached = decodeURIComponent(jar.get(SESSION_DATA_COOKIE) ?? "");
     const decoded = atob(cached.replace(/-/g, "+").replace(/_/g, "/"));
 
     expect(decoded).toContain('"displayUsername":"Alice"');
     for (const text of [await response.text(), await session.text(), decoded]) {
-      expect(text).not.toContain(row?.password);
+      expect(text).not.toContain(row?.password ?? "hmac-sha256$");
       expect(text).not.toMatch(/"password"/);
     }
   });
@@ -195,7 +216,7 @@ describe("the Better Auth routes", () => {
   });
 
   it("answer 404 over HTTP for every route and method the console does not use", async () => {
-    const { jar } = await signIn(send, BASE, "admin", "sesame");
+    const { jar } = await signIn(send, BASE, "admin", CONSOLE_PASSWORD);
     const refused: string[] = [];
 
     for (const { path, methods } of await registered()) {
@@ -209,7 +230,7 @@ describe("the Better Auth routes", () => {
         const response = await send(
           consoleRequest(BASE, concrete(path), {
             method,
-            body: method === "POST" ? { password: "sesame", token: "x" } : undefined,
+            body: method === "POST" ? { password: CONSOLE_PASSWORD, token: "x" } : undefined,
             jar,
           }),
         );
@@ -232,7 +253,7 @@ describe("the Better Auth routes", () => {
   });
 
   it("leave the console's own three reachable", async () => {
-    const { response, jar } = await signIn(send, BASE, "admin", "sesame");
+    const { response, jar } = await signIn(send, BASE, "admin", CONSOLE_PASSWORD);
     const session = await send(consoleRequest(BASE, "/api/auth/get-session", { jar }));
     const signOut = await send(consoleRequest(BASE, "/api/auth/sign-out", { body: {}, jar }));
 
@@ -240,21 +261,88 @@ describe("the Better Auth routes", () => {
   });
 });
 
+describe("the role", () => {
+  async function aliceRole() {
+    const [row] = await database(testEnv)
+      .select({ role: consoleUser.role })
+      .from(consoleUser)
+      .where(eq(consoleUser.id, aliceId));
+    return row?.role;
+  }
+
+  it("is read-only to Better Auth, so no route it serves can set it", async () => {
+    const auth = await consoleAuth({ db: testEnv.DB, passphrase: encryptionKey(), origin: BASE });
+    const { options } = await auth.$context;
+
+    expect(options.user?.additionalFields?.role).toMatchObject({ input: false });
+  });
+
+  it("is refused by Better Auth's own user update, which the console does not route anyway", async () => {
+    const auth = await consoleAuth({ db: testEnv.DB, passphrase: encryptionKey(), origin: BASE });
+    const { jar } = await signIn(send, BASE, "alice", "wonderland");
+    const headers = new Headers({ cookie: jar.header() });
+
+    // Called on the instance, past the route allow-list and `disabledPaths`.
+    await expect(
+      auth.api.updateUser({ headers, body: { role: "uploader" } as never }),
+    ).rejects.toThrow("role is not allowed to be set");
+    const overHttp = await send(
+      consoleRequest(BASE, "/api/auth/update-user", { body: { role: "uploader" }, jar }),
+    );
+
+    expect(overHttp.status).toBe(404);
+    expect(await aliceRole()).toBe(GUEST_ROLE);
+  });
+
+  it("is not taken from a sign-in's body", async () => {
+    const response = await send(
+      consoleRequest(BASE, "/api/auth/sign-in/username", {
+        body: { username: "alice", password: "wonderland", role: "uploader" },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ user: { role: GUEST_ROLE } });
+    expect(await aliceRole()).toBe(GUEST_ROLE);
+  });
+});
+
 describe("GET /api/me", () => {
-  it("answers who is signed in", async () => {
-    const { jar } = await signIn(send, BASE, "ADMIN", "sesame");
-    const admin = await findUserByUsername(database(testEnv), "admin");
+  it("answers which console user is signed in, their role and what it grants", async () => {
+    const { jar } = await signIn(send, BASE, "ADMIN", CONSOLE_PASSWORD);
 
     expect(await me(jar)).toEqual({
       status: 200,
-      body: { id: admin?.id, userName: "admin", isAdmin: true },
+      body: { id: adminId, username: "admin", role: "owner", permissions: [...PERMISSIONS] },
     });
   });
 
   it("answers with the name as stored, whatever case it was signed in with", async () => {
     const { jar } = await signIn(send, BASE, "alice", "wonderland");
 
-    expect((await me(jar)).body).toMatchObject({ userName: "Alice", isAdmin: false });
+    expect((await me(jar)).body).toMatchObject({ id: aliceId, username: "Alice" });
+  });
+
+  it("answers no permissions for a role this release does not know", async () => {
+    await database(testEnv)
+      .update(consoleUser)
+      .set({ role: "uploader" })
+      .where(eq(consoleUser.id, aliceId));
+    try {
+      const { jar } = await signIn(send, BASE, "alice", "wonderland");
+
+      expect((await me(jar)).body).toEqual({
+        id: aliceId,
+        username: "Alice",
+        role: "uploader",
+        permissions: [],
+      });
+    } finally {
+      await database(testEnv)
+        .update(consoleUser)
+        .set({ role: GUEST_ROLE })
+        .where(eq(consoleUser.id, aliceId));
+    }
   });
 
   it("answers 401 without a session", async () => {
@@ -298,22 +386,13 @@ describe("sign-out", () => {
 });
 
 describe("the Subsonic API", () => {
-  it("still answers getUser with the stored name and the Subsonic email", async () => {
-    const query = new URLSearchParams({
-      u: "ALICE",
-      t: await subsonicToken("wonderland", "abc"),
-      s: "abc",
-      v: "1.16.1",
-      c: "test",
-      f: "json",
-      username: "Alice",
-    });
-    const response = await SELF.fetch(`${BASE}/rest/getUser?${query}`);
-    const body = (await response.json()) as JsonEnvelope;
+  it("refuses every console user's credentials with error 40, by token and by p=", async () => {
+    expect(await subsonicPing(send, BASE, "admin", CONSOLE_PASSWORD)).toBe(40);
+    expect(await subsonicPing(send, BASE, "alice", "wonderland")).toBe(40);
+  });
 
-    expect(body["subsonic-response"]).toMatchObject({
-      status: "ok",
-      user: { username: "Alice", email: "alice@example.com", adminRole: false },
-    });
+  it("still signs its own users in, a console user's namesake too", async () => {
+    expect(await subsonicPing(send, BASE, "admin", "sesame")).toBe("ok");
+    expect(await subsonicPing(send, BASE, "listener", "music")).toBe("ok");
   });
 });

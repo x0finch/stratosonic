@@ -1,18 +1,26 @@
 import { applyD1Migrations, type D1Migration, env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
-import { decryptPassword, encryptPassword } from "../src/auth/crypto";
+import { encryptPassword } from "../src/auth/crypto";
 import { createConsoleAuth } from "../src/console-auth/auth";
+import { createConsoleUser } from "../src/console-auth/credentials";
+import { database } from "../src/db";
+import type { Env } from "../src/env";
+import { findUserByUsername } from "../src/users/repository";
 import { signIn } from "./console-auth-support";
-import { encryptionKey } from "./support";
+import { encryptionKey, testEnv } from "./support";
 
 /**
- * Migration 0008 (#89) over a database that already has users: the state a
- * deployed Stratosonic is in when the admin console arrives. It adds Better
- * Auth's columns and tables, and backfills a credential account per user.
+ * Migration 0008 (#89, rewritten by #99) over a database that already has
+ * Subsonic users: the state a deployed Stratosonic is in when the admin
+ * console arrives. It renames the Subsonic `user` table to `subsonic_user`,
+ * rows, foreign keys and all, and changes nothing else of it; then it creates
+ * Better Auth's standard tables, `user` among them, for the console's own
+ * users.
  *
  * The migration runs against `MIGRATION_DB`, a database of this file's own
- * that the setup file leaves empty (vitest.config.ts), so the users can be
- * written between 0007 and 0008.
+ * that the setup file leaves empty (vitest.config.ts), so the users and their
+ * rows can be written between 0007 and 0008, and the schema read on both
+ * sides of it.
  */
 
 interface MigrationBindings {
@@ -22,171 +30,271 @@ interface MigrationBindings {
 
 const { TEST_MIGRATIONS, MIGRATION_DB } = env as unknown as MigrationBindings;
 
-/** The users a server has before 0008: an admin and a listener. */
+/** The Subsonic users a server has before 0008: an admin and a listener. */
 const EXISTING_USERS = [
   { id: "user-admin", userName: "Admin", isAdmin: 1, password: "before-0008" },
   { id: "user-listener", userName: "Listener", isAdmin: 0, password: "also-before" },
 ] as const;
 
-beforeAll(async () => {
-  const before = TEST_MIGRATIONS.filter((migration) => migration.name < "0008");
-  expect(before).toHaveLength(TEST_MIGRATIONS.length - 1);
-  await applyD1Migrations(MIGRATION_DB, before);
+/** The tables whose rows belong to a Subsonic user, by a cascading foreign key. */
+const DEPENDENT_TABLES = ["annotation", "bookmark", "now_playing", "play_queue"] as const;
 
-  await MIGRATION_DB.batch(
-    await Promise.all(
-      EXISTING_USERS.map(async (seed, index) =>
-        MIGRATION_DB.prepare(
-          "INSERT INTO user (id, user_name, name, password, is_admin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ).bind(
-          seed.id,
-          seed.userName,
-          seed.userName,
-          await encryptPassword(encryptionKey(), seed.password),
-          seed.isAdmin,
-          1_000 + index,
-          2_000 + index,
-        ),
+async function all(sql: string): Promise<Record<string, unknown>[]> {
+  return (await MIGRATION_DB.prepare(sql).all<Record<string, unknown>>()).results;
+}
+
+/** What SQLite knows about the Subsonic user table, whatever it is called. */
+async function subsonicUserSchema(table: string) {
+  return {
+    columns: await all(`SELECT * FROM pragma_table_xinfo('${table}') ORDER BY cid`),
+    indexes: await all(
+      `SELECT l."unique", l.origin, l.partial, i.seqno, i.cid, i.name AS column
+         FROM pragma_index_list('${table}') l, pragma_index_info(l.name) i
+        ORDER BY l.origin, i.seqno`,
+    ),
+    indexDefinitions: await all(
+      `SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = '${table}' AND sql IS NOT NULL`,
+    ),
+  };
+}
+
+/** Every foreign key of the tables that belong to a Subsonic user. */
+async function dependentForeignKeys() {
+  return all(
+    `SELECT m.name AS "from", f."from" AS "column", f."table", f."to", f.on_update, f.on_delete
+       FROM sqlite_master m, pragma_foreign_key_list(m.name) f
+      WHERE m.name IN (${DEPENDENT_TABLES.map((name) => `'${name}'`).join(", ")})
+      ORDER BY m.name, f.id`,
+  );
+}
+
+async function dependentRows() {
+  const rows: Record<string, Record<string, unknown>[]> = {};
+  for (const table of DEPENDENT_TABLES) {
+    rows[table] = await all(`SELECT * FROM ${table} ORDER BY user_id`);
+  }
+  return rows;
+}
+
+let before: {
+  schema: Awaited<ReturnType<typeof subsonicUserSchema>>;
+  foreignKeys: Record<string, unknown>[];
+  users: Record<string, unknown>[];
+  dependents: Record<string, Record<string, unknown>[]>;
+};
+
+beforeAll(async () => {
+  const upTo0007 = TEST_MIGRATIONS.filter((migration) => migration.name < "0008");
+  expect(upTo0007).toHaveLength(TEST_MIGRATIONS.length - 1);
+  await applyD1Migrations(MIGRATION_DB, upTo0007);
+
+  const users = await Promise.all(
+    EXISTING_USERS.map(async (seed, index) =>
+      MIGRATION_DB.prepare(
+        "INSERT INTO user (id, user_name, name, password, is_admin, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ).bind(
+        seed.id,
+        seed.userName,
+        seed.userName,
+        await encryptPassword(encryptionKey(), seed.password),
+        seed.isAdmin,
+        1_000 + index,
+        2_000 + index,
       ),
     ),
   );
+  await MIGRATION_DB.batch([
+    ...users,
+    // A row of each kind that belongs to a user, which the rename must keep
+    // pointing at its user.
+    MIGRATION_DB.prepare(
+      "INSERT INTO annotation (user_id, item_id, item_type, starred, play_count) VALUES ('user-admin', 'tr-1', 'track', 1, 3)",
+    ),
+    MIGRATION_DB.prepare(
+      "INSERT INTO bookmark (user_id, track_id, position, created_at, changed_at) VALUES ('user-admin', 'tr-1', 42, 1, 1)",
+    ),
+    MIGRATION_DB.prepare(
+      "INSERT INTO now_playing (user_id, track_id, player_name, started_at, expires_at) VALUES ('user-listener', 'tr-1', 'test', 1, 2)",
+    ),
+    MIGRATION_DB.prepare(
+      "INSERT INTO play_queue (user_id, track_ids, position, changed_by, changed_at) VALUES ('user-listener', '[\"tr-1\"]', 0, 'test', 1)",
+    ),
+  ]);
+  before = {
+    schema: await subsonicUserSchema("user"),
+    foreignKeys: await dependentForeignKeys(),
+    users: await all("SELECT * FROM user ORDER BY id"),
+    dependents: await dependentRows(),
+  };
 
   await applyD1Migrations(MIGRATION_DB, TEST_MIGRATIONS);
 });
 
-describe("migration 0008 over existing users", () => {
-  it("adds only generated or defaulted columns, so no existing column changes", async () => {
-    const columns = await MIGRATION_DB.prepare(
-      "SELECT name, type, \"notnull\", dflt_value, hidden FROM pragma_table_xinfo('user')",
-    ).all();
+describe("migration 0008 over existing Subsonic users", () => {
+  it("renames user to subsonic_user, with the same columns", async () => {
+    const after = await subsonicUserSchema("subsonic_user");
 
-    // hidden = 2 marks a VIRTUAL generated column: stored nowhere, written by
-    // no one.
-    expect(columns.results).toEqual([
-      { name: "id", type: "TEXT", notnull: 1, dflt_value: null, hidden: 0 },
-      { name: "user_name", type: "TEXT", notnull: 1, dflt_value: null, hidden: 0 },
-      { name: "name", type: "TEXT", notnull: 1, dflt_value: "''", hidden: 0 },
-      { name: "email", type: "TEXT", notnull: 1, dflt_value: "''", hidden: 0 },
-      { name: "password", type: "TEXT", notnull: 1, dflt_value: "''", hidden: 0 },
-      { name: "is_admin", type: "INTEGER", notnull: 1, dflt_value: "false", hidden: 0 },
-      { name: "token_epoch", type: "INTEGER", notnull: 1, dflt_value: "0", hidden: 0 },
-      { name: "last_login_at", type: "INTEGER", notnull: 0, dflt_value: null, hidden: 0 },
-      { name: "last_access_at", type: "INTEGER", notnull: 0, dflt_value: null, hidden: 0 },
-      { name: "created_at", type: "INTEGER", notnull: 1, dflt_value: null, hidden: 0 },
-      { name: "updated_at", type: "INTEGER", notnull: 1, dflt_value: null, hidden: 0 },
-      { name: "username", type: "TEXT", notnull: 0, dflt_value: null, hidden: 2 },
-      { name: "auth_email", type: "TEXT", notnull: 0, dflt_value: null, hidden: 2 },
-      { name: "email_verified", type: "INTEGER", notnull: 1, dflt_value: "false", hidden: 0 },
-      { name: "image", type: "TEXT", notnull: 0, dflt_value: null, hidden: 0 },
+    expect(after.columns).toEqual(before.schema.columns);
+    expect(after.columns.map((column) => column.name)).toEqual([
+      "id",
+      "user_name",
+      "name",
+      "email",
+      "password",
+      "is_admin",
+      "token_epoch",
+      "last_login_at",
+      "last_access_at",
+      "created_at",
+      "updated_at",
     ]);
   });
 
-  it("derives the sign-in name and the placeholder email from user_name", async () => {
-    const users = await MIGRATION_DB.prepare(
-      "SELECT user_name, username, auth_email, email, email_verified, image FROM user ORDER BY id",
-    ).all();
+  it("keeps its indexes, the case-insensitive one on the same expression", async () => {
+    const after = await subsonicUserSchema("subsonic_user");
 
-    expect(users.results).toEqual([
+    expect(after.indexes).toEqual(before.schema.indexes);
+    expect(before.schema.indexDefinitions).toEqual([
+      { sql: 'CREATE UNIQUE INDEX `user_user_name_unique` ON `user` (lower("user_name"))' },
+    ]);
+    expect(after.indexDefinitions).toEqual([
       {
-        user_name: "Admin",
-        username: "admin",
-        auth_email: "admin@users.invalid",
-        email: "",
-        email_verified: 0,
-        image: null,
-      },
-      {
-        user_name: "Listener",
-        username: "listener",
-        auth_email: "listener@users.invalid",
-        email: "",
-        email_verified: 0,
-        image: null,
+        sql: 'CREATE UNIQUE INDEX `subsonic_user_user_name_unique` ON `subsonic_user` (lower("user_name"))',
       },
     ]);
   });
 
-  it("backfills one credential account per user, with the user's own ciphertext", async () => {
-    const accounts = await MIGRATION_DB.prepare(
-      `SELECT a.id, a.account_id, a.provider_id, a.user_id, a.password, u.password AS user_password,
-              a.created_at, a.updated_at
-         FROM account a JOIN user u ON u.id = a.user_id ORDER BY a.user_id`,
-    ).all<Record<string, unknown>>();
+  it("keeps every row, of the users and of what belongs to them", async () => {
+    expect(await all("SELECT * FROM subsonic_user ORDER BY id")).toEqual(before.users);
+    expect(await dependentRows()).toEqual(before.dependents);
+    expect(Object.values(before.dependents).every((rows) => rows.length === 1)).toBe(true);
+  });
 
-    expect(accounts.results.map(({ password, user_password, ...row }) => row)).toEqual([
-      {
-        id: "user-admin",
-        account_id: "user-admin",
-        provider_id: "credential",
-        user_id: "user-admin",
-        created_at: 1_000,
-        updated_at: 2_000,
-      },
-      {
-        id: "user-listener",
-        account_id: "user-listener",
-        provider_id: "credential",
-        user_id: "user-listener",
-        created_at: 1_001,
-        updated_at: 2_001,
-      },
+  it("points every foreign key that named user at subsonic_user, and changes nothing else", async () => {
+    const after = await dependentForeignKeys();
+
+    expect(before.foreignKeys.map((key) => key.table)).toEqual(DEPENDENT_TABLES.map(() => "user"));
+    expect(after).toEqual(before.foreignKeys.map((key) => ({ ...key, table: "subsonic_user" })));
+    expect(await all("PRAGMA foreign_key_check")).toEqual([]);
+  });
+
+  it("still cascades a Subsonic user's deletion to what belongs to them", async () => {
+    await MIGRATION_DB.batch([
+      MIGRATION_DB.prepare(
+        "INSERT INTO subsonic_user (id, user_name, created_at, updated_at) VALUES ('user-gone', 'Gone', 0, 0)",
+      ),
+      MIGRATION_DB.prepare(
+        "INSERT INTO annotation (user_id, item_id, item_type) VALUES ('user-gone', 'tr-2', 'track')",
+      ),
     ]);
 
-    for (const [index, row] of accounts.results.entries()) {
-      expect(row.password).toBe(row.user_password);
-      await expect(decryptPassword(encryptionKey(), String(row.password))).resolves.toBe(
-        EXISTING_USERS[index]?.password,
-      );
+    await MIGRATION_DB.prepare("DELETE FROM subsonic_user WHERE id = 'user-gone'").run();
+
+    expect(await all("SELECT * FROM annotation WHERE user_id = 'user-gone'")).toEqual([]);
+  });
+
+  it("leaves the Subsonic lookup finding its users by name, in any case", async () => {
+    const migrated: Env = { ...testEnv, DB: MIGRATION_DB };
+
+    expect((await findUserByUsername(database(migrated), "ADMIN"))?.id).toBe("user-admin");
+  });
+
+  it("creates Better Auth's standard tables, empty", async () => {
+    const tables = await all(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('user', 'session', 'account', 'verification', 'rate_limit') ORDER BY name",
+    );
+
+    expect(tables.map((row) => row.name)).toEqual([
+      "account",
+      "rate_limit",
+      "session",
+      "user",
+      "verification",
+    ]);
+    for (const { name } of tables) {
+      const count = await MIGRATION_DB.prepare(`SELECT count(*) AS n FROM ${name}`).first("n");
+      expect(count, String(name)).toBe(0);
     }
+    expect((await all("SELECT name FROM pragma_table_xinfo('user')")).map((c) => c.name)).toEqual([
+      "id",
+      "name",
+      "display_username",
+      "username",
+      "email",
+      "email_verified",
+      "image",
+      "role",
+      "created_at",
+      "updated_at",
+    ]);
   });
 
-  it("creates the session tables empty", async () => {
-    for (const table of ["session", "verification", "rate_limit"]) {
-      const count = await MIGRATION_DB.prepare(`SELECT count(*) AS n FROM ${table}`).first("n");
-      expect(count, table).toBe(0);
-    }
+  it("refers from the console's tables to user, and never to subsonic_user", async () => {
+    const references = await all(
+      `SELECT m.name AS "from", f."table" AS "to", f.on_delete FROM sqlite_master m, pragma_foreign_key_list(m.name) f
+        WHERE m.name IN ('user', 'session', 'account', 'verification', 'rate_limit') ORDER BY m.name`,
+    );
+
+    expect(references).toEqual([
+      { from: "account", to: "user", on_delete: "CASCADE" },
+      { from: "session", to: "user", on_delete: "CASCADE" },
+    ]);
   });
 
-  it("lets every existing user sign in to the console with their Subsonic password", async () => {
+  it("lets no Subsonic user sign in to the console", async () => {
     const origin = "https://migrated.stratosonic.test";
     const auth = await createConsoleAuth({ db: MIGRATION_DB, passphrase: encryptionKey(), origin });
     const send = (request: Request) => auth.handler(request);
 
-    const admin = await signIn(send, origin, "admin", "before-0008");
-    const listener = await signIn(send, origin, "LISTENER", "also-before");
-
-    expect(await admin.response.json()).toMatchObject({
-      user: { id: "user-admin", displayUsername: "Admin", isAdmin: true },
-    });
-    expect(await listener.response.json()).toMatchObject({
-      user: { id: "user-listener", displayUsername: "Listener", isAdmin: false },
-    });
-    expect((await signIn(send, origin, "admin", "wrong")).response.status).toBe(401);
+    expect((await signIn(send, origin, "admin", "before-0008")).response.status).toBe(401);
+    expect((await signIn(send, origin, "listener", "also-before")).response.status).toBe(401);
   });
 
-  it("serves the sign-in lookup from an index", async () => {
-    const plan = await MIGRATION_DB.prepare(
-      "EXPLAIN QUERY PLAN SELECT * FROM user WHERE username = ?",
-    )
-      .bind("admin")
-      .all<{ detail: string }>();
+  it("derives a console user's sign-in name and placeholder email, served from an index", async () => {
+    const migrated: Env = { ...testEnv, DB: MIGRATION_DB };
+    await createConsoleUser(database(migrated), encryptionKey(), {
+      username: "Owner",
+      password: "pw",
+      role: "owner",
+    });
 
-    expect(plan.results.map((row) => row.detail).join("\n")).toMatch(
+    const row = await MIGRATION_DB.prepare(
+      "SELECT name, display_username, username, email, role FROM user",
+    ).first();
+    const plan = await all("EXPLAIN QUERY PLAN SELECT * FROM user WHERE username = 'owner'");
+
+    expect(row).toEqual({
+      name: "Owner",
+      display_username: "Owner",
+      username: "owner",
+      email: "owner@console.invalid",
+      role: "owner",
+    });
+    expect(plan.map((result) => result.detail).join("\n")).toMatch(
       /USING INDEX user_username_unique/,
     );
+    expect(await all("SELECT * FROM subsonic_user ORDER BY id")).toEqual(before.users);
   });
 
-  it("follows a rename without a second write", async () => {
-    await MIGRATION_DB.prepare("UPDATE user SET user_name = 'Listening' WHERE id = ?")
-      .bind("user-listener")
-      .run();
-    const renamed = await MIGRATION_DB.prepare("SELECT username, auth_email FROM user WHERE id = ?")
-      .bind("user-listener")
-      .first();
-    await MIGRATION_DB.prepare("UPDATE user SET user_name = 'Listener' WHERE id = ?")
-      .bind("user-listener")
-      .run();
+  it("takes a role for every console user, and at most one owner", async () => {
+    const insert = (id: string, role: string | null) =>
+      MIGRATION_DB.prepare(
+        "INSERT INTO user (id, name, display_username, role, created_at, updated_at) VALUES (?, ?, ?, ?, 0, 0)",
+      )
+        .bind(id, id, id, role)
+        .run();
 
-    expect(renamed).toEqual({ username: "listening", auth_email: "listening@users.invalid" });
+    await expect(insert("no-role", null)).rejects.toThrow(/NOT NULL constraint failed: user\.role/);
+    await expect(insert("second-owner", "owner")).rejects.toThrow(/UNIQUE constraint failed/);
+    // Any other role can be stored, twice too: console-auth/permissions.ts
+    // decides what it grants.
+    await insert("reader-1", "read-only");
+    await insert("reader-2", "read-only");
+
+    expect(await all("SELECT display_username, role FROM user ORDER BY display_username")).toEqual([
+      { display_username: "Owner", role: "owner" },
+      { display_username: "reader-1", role: "read-only" },
+      { display_username: "reader-2", role: "read-only" },
+    ]);
   });
 });

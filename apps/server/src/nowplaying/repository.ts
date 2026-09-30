@@ -8,7 +8,7 @@
  * the free tier runs no cleaner.
  */
 
-import { album, annotation, nowPlaying, track, user } from "@stratosonic/db";
+import { album, annotation, nowPlaying, subsonicUser, track } from "@stratosonic/db";
 import { and, desc, eq, gte, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import type { Database } from "../db";
@@ -158,7 +158,7 @@ export async function listNowPlaying(
       track,
       albumName: album.name,
       albumCoverKey: album.coverKey,
-      username: user.userName,
+      username: subsonicUser.userName,
       session: {
         trackId: nowPlaying.trackId,
         playerName: nowPlaying.playerName,
@@ -174,7 +174,7 @@ export async function listNowPlaying(
     .from(nowPlaying)
     .innerJoin(track, eq(track.id, nowPlaying.trackId))
     .leftJoin(album, eq(album.id, track.albumId))
-    .innerJoin(user, eq(user.id, nowPlaying.userId))
+    .innerJoin(subsonicUser, eq(subsonicUser.id, nowPlaying.userId))
     .leftJoin(annotation, annotationJoin(callerId, "track", track.id))
     .where(gte(nowPlaying.expiresAt, now))
     .orderBy(desc(nowPlaying.startedAt));

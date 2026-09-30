@@ -1,4 +1,4 @@
-import { user } from "@stratosonic/db";
+import { subsonicUser } from "@stratosonic/db";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -99,7 +99,10 @@ describe("an endpoint that answers with bytes", () => {
   it("records the caller's last access, as every authenticated endpoint does", async () => {
     await call(appWithBinaryEndpoint(), `/rest/serveBytes?${credentials()}`);
 
-    const rows = await database(testEnv).select().from(user).where(eq(user.id, userId));
+    const rows = await database(testEnv)
+      .select()
+      .from(subsonicUser)
+      .where(eq(subsonicUser.id, userId));
 
     expect(rows[0]?.lastAccessAt).toBeInstanceOf(Date);
   });

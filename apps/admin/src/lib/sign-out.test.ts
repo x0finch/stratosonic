@@ -16,7 +16,7 @@ describe("leaving the console after signing out", () => {
 
   it("forgets what the user read, and is signed out before it navigates", async () => {
     const queryClient = new QueryClient();
-    const me: Me = { id: "1", userName: "admin", isAdmin: true };
+    const me: Me = { id: "1", username: "owner", role: "owner", permissions: [] };
     queryClient.setQueryData(meQuery.queryKey, me);
     queryClient.setQueryData(["users"], [{ id: "1" }]);
     let meWhenNavigating: unknown;

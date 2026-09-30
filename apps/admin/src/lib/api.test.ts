@@ -129,8 +129,8 @@ describe("describeError", () => {
       "already_set_up",
       "not_set_up",
       "unknown_user",
-      "not_admin",
-      // Any route's: requireAdmin's, the unknown path's, a handler that threw.
+      // Any route's: requirePermission's, the unknown path's, a handler that
+      // threw.
       "forbidden",
       "not_found",
       "internal",

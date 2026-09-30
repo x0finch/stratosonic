@@ -89,6 +89,15 @@ Vite dark-mode guide.
 
 ## Signing in
 
+The console signs in **console users**, its own accounts, which are separate
+from Subsonic users: a console user never signs in to Subsonic, a Subsonic
+user never signs in to the console, and changing a console password changes no
+Subsonic password (apps/server/README.md). Each console user has a role, shown
+in the user menu; the only one for now is the owner, created at `/setup` with
+the Worker's `SETUP_TOKEN`. `GET /api/me` answers the role's permissions too,
+and the console leaves out what they do not grant; the server checks them on
+every route regardless.
+
 Every page under the sidebar shell (`src/routes/_shell`) needs a session:
 without one, a visit goes to `/login?redirect=…` and returns there once signed
 in. The sign-in and setup screens (`/login`, `/setup`, `/setup/reset`) render
@@ -99,16 +108,20 @@ Better Auth's HttpOnly cookie. Better Auth's own client would add about
 
 ## The walkthrough
 
-`scripts/walkthrough.mjs` creates the first admin, signs out and back in,
-refuses a wrong password, changes the password (and checks that Subsonic's
-`ping` takes the new one), resets it with a second setup token, and checks
-dark mode, a phone-sized viewport and the browser console. It needs Chromium
-in Playwright's browser cache (`PLAYWRIGHT_BROWSERS_PATH`, or `pnpm exec
-playwright-core install chromium`). Start the Worker on an empty database with
-a `SETUP_TOKEN`, then:
+`scripts/walkthrough.mjs` creates the owner, signs out and back in,
+refuses a wrong password, changes the password, resets it with a second setup
+token, and checks dark mode, a phone-sized viewport and the browser console.
+After each of setup, the change and the reset it checks that a Subsonic
+`ping` with the owner's console credentials fails with error 40. Given the
+`INITIAL_*` Subsonic user as `SUBSONIC_USER` and `SUBSONIC_PASSWORD`, it also
+checks that this user cannot sign in to the console and that its `ping` stays
+ok throughout. It needs Chromium in Playwright's browser cache
+(`PLAYWRIGHT_BROWSERS_PATH`, or `pnpm exec playwright-core install
+chromium`). Start the Worker on an empty database with a `SETUP_TOKEN`, then:
 
 ```sh
 BASE_URL=http://localhost:8787 SETUP_TOKEN=… RESET_TOKEN=… \
+  SUBSONIC_USER=admin SUBSONIC_PASSWORD=… \
   pnpm --filter @stratosonic/admin walkthrough
 ```
 

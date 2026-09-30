@@ -1,4 +1,4 @@
-import { rateLimit, session, verification } from "@stratosonic/db";
+import { consoleSession, consoleVerification, rateLimit } from "@stratosonic/db";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createConsoleAuth } from "../src/console-auth/auth";
 import {
@@ -12,8 +12,8 @@ import { database } from "../src/db";
 import type { Env } from "../src/env";
 import worker from "../src/index";
 import { ensureInitialSetup } from "../src/setup/initial-setup";
-import { cost, countingD1, shape } from "./console-auth-support";
-import { BASE, encryptionKey, seedUser, testEnv } from "./support";
+import { cost, countingD1, seedConsoleUser, shape } from "./console-auth-support";
+import { BASE, encryptionKey, testEnv } from "./support";
 
 /**
  * The cron's prune of the console's expired auth rows (#93): what it deletes,
@@ -36,7 +36,7 @@ function id(prefix: string): string {
 }
 
 async function seedSessions(...expiresAt: number[]): Promise<void> {
-  await db.insert(session).values(
+  await db.insert(consoleSession).values(
     expiresAt.map((at) => {
       const sessionId = id("session");
       return {
@@ -66,7 +66,7 @@ async function seedRateLimits(...lastRequest: number[]): Promise<void> {
 }
 
 async function seedVerifications(...expiresAt: number[]): Promise<void> {
-  await db.insert(verification).values(
+  await db.insert(consoleVerification).values(
     expiresAt.map((at) => ({
       id: id("verification"),
       identifier: "reset-password",
@@ -79,9 +79,11 @@ async function seedVerifications(...expiresAt: number[]): Promise<void> {
 }
 
 async function remaining() {
-  const sessions = await db.select({ expiresAt: session.expiresAt }).from(session);
+  const sessions = await db.select({ expiresAt: consoleSession.expiresAt }).from(consoleSession);
   const rateLimits = await db.select({ lastRequest: rateLimit.lastRequest }).from(rateLimit);
-  const verifications = await db.select({ expiresAt: verification.expiresAt }).from(verification);
+  const verifications = await db
+    .select({ expiresAt: consoleVerification.expiresAt })
+    .from(consoleVerification);
 
   return {
     session: sessions.map((row) => row.expiresAt.getTime()).sort((a, b) => a - b),
@@ -95,11 +97,11 @@ const NOTHING: PrunedRows = { session: 0, rateLimit: 0, verification: 0 };
 beforeAll(async () => {
   // The cron's bootstrap, done once here, so no test's D1 sees it.
   await ensureInitialSetup(testEnv);
-  owner = await seedUser("prune-owner", "sesame");
+  owner = await seedConsoleUser("prune-owner", "sesame");
 });
 
 beforeEach(async () => {
-  await db.batch([db.delete(session), db.delete(rateLimit), db.delete(verification)]);
+  await db.batch([db.delete(consoleSession), db.delete(rateLimit), db.delete(consoleVerification)]);
 });
 
 afterEach(() => {

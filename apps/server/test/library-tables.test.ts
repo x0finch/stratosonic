@@ -1,5 +1,13 @@
 import { env } from "cloudflare:test";
-import { album, annotation, artist, playlist, playlistTrack, track, user } from "@stratosonic/db";
+import {
+  album,
+  annotation,
+  artist,
+  playlist,
+  playlistTrack,
+  subsonicUser,
+  track,
+} from "@stratosonic/db";
 import { and, eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import { database } from "../src/db";
@@ -337,7 +345,7 @@ describe("the library tables", () => {
     await db
       .insert(annotation)
       .values({ userId: goneId, itemId: "track-round-trip", itemType: "track" });
-    await db.delete(user).where(eq(user.id, goneId));
+    await db.delete(subsonicUser).where(eq(subsonicUser.id, goneId));
 
     expect(await db.select().from(annotation).where(eq(annotation.userId, goneId))).toEqual([]);
   });

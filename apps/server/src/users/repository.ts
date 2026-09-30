@@ -1,12 +1,11 @@
-import { type User, user } from "@stratosonic/db";
+import { type NewSubsonicUser, type SubsonicUser, subsonicUser } from "@stratosonic/db";
 import { asc, eq, sql } from "drizzle-orm";
 import type { Database } from "../db";
 
 /**
- * Reads and writes of the `user` table. Everything that touches users goes
- * through here, so the case-insensitive lookup and the column names live in one
- * place — except a password, and the user row created with one, which only
- * console-auth/credentials.ts writes, together with the console's copy.
+ * Reads and writes of the `subsonic_user` table. Everything that touches
+ * Subsonic users goes through here, so the case-insensitive lookup and the
+ * column names live in one place.
  */
 
 /**
@@ -14,11 +13,14 @@ import type { Database } from "../db";
  * `COLLATE NOCASE` (persistence/user_repository.go). The comparison is written
  * the same way as the table's unique index so the index can serve it.
  */
-export async function findUserByUsername(db: Database, userName: string): Promise<User | null> {
+export async function findUserByUsername(
+  db: Database,
+  userName: string,
+): Promise<SubsonicUser | null> {
   const rows = await db
     .select()
-    .from(user)
-    .where(sql`lower(${user.userName}) = lower(${userName})`)
+    .from(subsonicUser)
+    .where(sql`lower(${subsonicUser.userName}) = lower(${userName})`)
     .limit(1);
 
   return rows[0] ?? null;
@@ -34,12 +36,12 @@ export async function findUserByUsername(db: Database, userName: string): Promis
  * (scanner/phase_4_playlists.go). The id breaks a tie so two admins written
  * in the same millisecond still give one answer.
  */
-export async function findFirstAdmin(db: Database): Promise<User | null> {
+export async function findFirstAdmin(db: Database): Promise<SubsonicUser | null> {
   const rows = await db
     .select()
-    .from(user)
-    .where(eq(user.isAdmin, true))
-    .orderBy(asc(user.updatedAt), asc(user.id))
+    .from(subsonicUser)
+    .where(eq(subsonicUser.isAdmin, true))
+    .orderBy(asc(subsonicUser.updatedAt), asc(subsonicUser.id))
     .limit(1);
 
   return rows[0] ?? null;
@@ -55,22 +57,22 @@ export function userNamesMatch(left: string, right: string): boolean {
   return foldAsciiCase(left) === foldAsciiCase(right);
 }
 
-/**
- * A username folded the way SQLite's `lower()` folds it, ASCII letters only.
- * The console's sign-in looks names up under this key as well
- * (console-auth/auth.ts), against the generated `username` column.
- */
-export function foldAsciiCase(value: string): string {
+function foldAsciiCase(value: string): string {
   return value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+}
+
+/** Inserts a user. Fails if the name is taken, whatever its case. */
+export async function insertUser(db: Database, values: NewSubsonicUser): Promise<void> {
+  await db.insert(subsonicUser).values(values);
 }
 
 /** Counts every user, which is how the first-run bootstrap knows it is first. */
 export async function countUsers(db: Database): Promise<number> {
-  const rows = await db.select({ count: sql<number>`count(*)` }).from(user);
+  const rows = await db.select({ count: sql<number>`count(*)` }).from(subsonicUser);
 
   return rows[0]?.count ?? 0;
 }
 
 export async function updateLastAccessAt(db: Database, id: string, at: Date): Promise<void> {
-  await db.update(user).set({ lastAccessAt: at }).where(eq(user.id, id));
+  await db.update(subsonicUser).set({ lastAccessAt: at }).where(eq(subsonicUser.id, id));
 }

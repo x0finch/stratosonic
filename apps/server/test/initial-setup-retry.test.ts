@@ -1,4 +1,4 @@
-import { user } from "@stratosonic/db";
+import { subsonicUser } from "@stratosonic/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { database } from "../src/db";
 import type { Env } from "../src/env";
@@ -40,7 +40,7 @@ describe("a bootstrap that fails", () => {
 
     await ensureInitialSetup(testEnv);
 
-    const created = await database(testEnv).select().from(user);
+    const created = await database(testEnv).select().from(subsonicUser);
     expect(created).toHaveLength(1);
     expect(created[0]).toMatchObject({ userName: "admin", isAdmin: true });
   });
@@ -50,6 +50,6 @@ describe("a bootstrap that fails", () => {
 
     // The marker is set, so an unusable database is never even asked.
     await expect(ensureInitialSetup(unavailableDatabase)).resolves.toBeUndefined();
-    expect(await database(testEnv).select().from(user)).toHaveLength(1);
+    expect(await database(testEnv).select().from(subsonicUser)).toHaveLength(1);
   });
 });

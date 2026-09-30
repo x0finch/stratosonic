@@ -1,5 +1,5 @@
-import { property, user } from "@stratosonic/db";
-import { and, eq, type SQL, sql } from "drizzle-orm";
+import { consoleUser, property } from "@stratosonic/db";
+import { eq, sql } from "drizzle-orm";
 import { constantTimeEquals } from "../auth/crypto";
 import type { CredentialStatement } from "../console-auth/credentials";
 import type { Database } from "../db";
@@ -7,8 +7,10 @@ import type { Env } from "../env";
 
 /**
  * The setup token (#81, "Setup and recovery"): a Worker secret,
- * `SETUP_TOKEN`, that creates the first admin in the console while there are
- * no users, and resets an admin's password once there are.
+ * `SETUP_TOKEN`, that creates the console's owner, its first user, while
+ * there is no console user, and resets a console user's password once there
+ * is. Console users are the console's own accounts (#99); Subsonic users play
+ * no part here.
  *
  * Navidrome's `POST /auth/createAdmin` guards only on there being no user
  * yet (server/auth.go). A Worker is on a public `workers.dev` URL from its
@@ -96,116 +98,98 @@ function spentKey(digest: string): string {
 
 /** What setup and recovery decide on, read in one statement. */
 export interface SetupFacts {
-  readonly hasUsers: boolean;
+  /** Whether any console user exists. Subsonic users do not count. */
+  readonly hasConsoleUsers: boolean;
   /** Whether the token with this digest has been used. */
   readonly spent: boolean;
-  /** The user a recovery names, matched as Subsonic's `u` is, if there is one. */
+  /** The console user a recovery names, matched as sign-in matches a name. */
   readonly target: {
     readonly id: string;
-    readonly userName: string;
-    readonly isAdmin: boolean;
+    readonly username: string;
+    readonly role: string;
   } | null;
 }
 
 interface SetupFactsRow {
-  has_users: number;
+  has_console_users: number;
   spent: number;
   target_id: string | null;
-  target_user_name: string | null;
-  target_is_admin: number | null;
+  target_username: string | null;
+  target_role: string | null;
 }
 
 /**
- * Reads whether any user exists, whether the token is spent and, for a
- * recovery, the user it names, all in one statement. The name is matched the
- * way `findUserByUsername` matches it, which the unique index on
- * `lower(user_name)` serves; without a name the target is `null`.
+ * Reads whether any console user exists, whether the token is spent and, for
+ * a recovery, the console user it names, all in one statement. The name is
+ * folded the way sign-in folds it, SQLite's ASCII-only `lower()`, and looked up by
+ * the generated `username` column, whose unique index serves the lookup;
+ * without a name the target is `null`.
  */
 export async function readSetupFacts(
   db: Database,
   digest: string,
-  userName: string | null = null,
+  username: string | null = null,
 ): Promise<SetupFacts> {
-  const row = await db.get<SetupFactsRow>(sql`select exists (select 1 from ${user}) as has_users,
+  const row =
+    await db.get<SetupFactsRow>(sql`select exists (select 1 from ${consoleUser}) as has_console_users,
     exists (select 1 from ${property} where ${property.id} = ${spentKey(digest)}) as spent,
     target.id as target_id,
-    target.user_name as target_user_name,
-    target.is_admin as target_is_admin
+    target.display_username as target_username,
+    target.role as target_role
   from (select 1)
   left join (
-    select ${user.id} as id, ${user.userName} as user_name, ${user.isAdmin} as is_admin
-    from ${user}
-    where lower(${user.userName}) = lower(${userName})
+    select ${consoleUser.id} as id, ${consoleUser.displayUsername} as display_username,
+      ${consoleUser.role} as role
+    from ${consoleUser}
+    where ${consoleUser.username} = lower(${username})
   ) as target on true`);
 
   return {
-    hasUsers: row?.has_users === 1,
+    hasConsoleUsers: row?.has_console_users === 1,
     spent: row?.spent === 1,
     target:
       row?.target_id != null
-        ? {
-            id: row.target_id,
-            userName: row.target_user_name ?? "",
-            isAdmin: row.target_is_admin === 1,
-          }
+        ? { id: row.target_id, username: row.target_username ?? "", role: row.target_role ?? "" }
         : null,
   };
 }
 
 /**
  * The state the console shows. Setup needs a usable token that is unspent,
- * and no user; recovery the same token and at least one user.
+ * and no console user; recovery the same token and at least one console user.
  */
 export function setupState(facts: SetupFacts | null): SetupState {
   if (facts === null || facts.spent) {
     return "closed";
   }
 
-  return facts.hasUsers ? "reset-available" : "needs-setup";
+  return facts.hasConsoleUsers ? "reset-available" : "needs-setup";
 }
 
 /**
- * Records the token as spent for a recovery's batch, if the admin it resets
- * is still an admin when the batch runs: `setPassword`'s `onlyIfAdmin` holds
- * the rest of the batch to the same condition, so a user demoted after the
- * check writes nothing, and the token stays unspent.
+ * Records the token as spent, for a setup's or a recovery's batch, but only
+ * if the console user it wrote is there when the batch runs: when another
+ * setup won the race, the console user was not inserted, and when a
+ * recovery's console user was deleted after its check, there is none to
+ * reset, and this writes nothing either, so the token stays unspent.
  *
  * It is a plain insert, so when a racing request has spent the same value
  * first the key exists, the insert fails, and D1 rolls the whole batch back,
  * the password with it (`isSpentTokenConflict`).
  */
-export function markSpentIfStillAdmin(
+export function markSpentFor(
   db: Database,
   digest: string,
-  userId: string,
+  consoleUserId: string,
 ): CredentialStatement {
-  return markSpentFrom(db, digest, and(eq(user.id, userId), eq(user.isAdmin, true)));
-}
-
-/**
- * Records the token as spent for a setup's batch, but only if the user it
- * created is there: when another setup, or the first-run bootstrap, won the
- * race, the user was not inserted and this writes nothing either. It is a
- * plain insert too, for the same reason as `markSpentIfStillAdmin`.
- */
-export function markSpentIfCreated(
-  db: Database,
-  digest: string,
-  userId: string,
-): CredentialStatement {
-  return markSpentFrom(db, digest, eq(user.id, userId));
-}
-
-/** Inserts the spent key once for the user row `userRow` selects, if it selects one. */
-function markSpentFrom(db: Database, digest: string, userRow: SQL | undefined) {
   return db.insert(property).select(
     db
       .select({
         id: sql<string>`${spentKey(digest)}`.as("id"),
         value: sql<string>`${new Date().toISOString()}`.as("value"),
       })
-      .from(user)
-      .where(userRow),
+      .from(consoleUser)
+      .where(eq(consoleUser.id, consoleUserId)),
   );
 }
 

@@ -7,19 +7,23 @@
 #   wrangler secret put PASSWORD_ENCRYPTION_KEY
 #   wrangler secret put SETUP_TOKEN
 #
-# Passphrase the AES-GCM key that encrypts stored passwords is derived from
-# (ADR-0003), and the admin console's session secret too. Changing it after
-# users exist makes their passwords unreadable, and nobody can log in.
+# Passphrase the AES-GCM key that encrypts stored Subsonic passwords is derived
+# from (ADR-0003), and the admin console's session secret and the pepper of its
+# users' password hashes too (ADR-0007). Changing it after users exist makes
+# their passwords unreadable, and nobody can log in.
 PASSWORD_ENCRYPTION_KEY = "change-me-too"
 
-# One-time token that creates the first admin in the console (/setup) while
-# there are no users, and resets an admin's password (/setup/reset) once there
-# are. At least 32 characters, or it is ignored; generate one with
-# `openssl rand -hex 32`. Each value works once: to recover again, set a new one.
-# This placeholder is too short, so setup stays closed until it is replaced.
+# One-time token that creates the console's owner (/setup) while there is no
+# console user, and resets the owner's password (/setup/reset) once there is.
+# Console users are the console's own accounts, not Subsonic users. At least 32
+# characters, or it is ignored; generate one with `openssl rand -hex 32`. Each
+# value works once: to recover again, set a new one. This placeholder is too
+# short, so setup stays closed until it is replaced.
 SETUP_TOKEN = "change-me"
 
-# Deprecated: use SETUP_TOKEN. Password of the admin user created on first run,
+# Deprecated: password of the Subsonic admin user created on first run,
 # alongside the INITIAL_USER var in wrangler.jsonc. It is only read while the
-# user table is empty, and still works in this release.
+# Subsonic user table is empty. It still works in this release, and is how a
+# Subsonic user is created until the console manages them; it never makes a
+# console user.
 # INITIAL_PASSWORD = "change-me"

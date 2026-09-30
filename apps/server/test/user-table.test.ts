@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { encodeId, newRandomId, user } from "@stratosonic/db";
+import { encodeId, newRandomId, subsonicUser } from "@stratosonic/db";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { database } from "../src/db";
@@ -23,8 +23,8 @@ describe("the user table", () => {
     const db = database(env);
     const inserted = newUser("round-trip");
 
-    await db.insert(user).values(inserted);
-    const [stored] = await db.select().from(user).where(eq(user.id, inserted.id));
+    await db.insert(subsonicUser).values(inserted);
+    const [stored] = await db.select().from(subsonicUser).where(eq(subsonicUser.id, inserted.id));
 
     expect(stored).toMatchObject({
       id: inserted.id,
@@ -43,8 +43,10 @@ describe("the user table", () => {
     const now = new Date();
     const id = newRandomId();
 
-    await db.insert(user).values({ id, userName: "defaults", createdAt: now, updatedAt: now });
-    const [stored] = await db.select().from(user).where(eq(user.id, id));
+    await db
+      .insert(subsonicUser)
+      .values({ id, userName: "defaults", createdAt: now, updatedAt: now });
+    const [stored] = await db.select().from(subsonicUser).where(eq(subsonicUser.id, id));
 
     expect(stored).toMatchObject({
       name: "",
@@ -60,9 +62,9 @@ describe("the user table", () => {
   it("rejects a second user whose name differs only in case", async () => {
     const db = database(env);
 
-    await db.insert(user).values(newUser("Unique"));
+    await db.insert(subsonicUser).values(newUser("Unique"));
 
-    await expect(db.insert(user).values(newUser("uNIQUE"))).rejects.toThrow();
+    await expect(db.insert(subsonicUser).values(newUser("uNIQUE"))).rejects.toThrow();
   });
 });
 

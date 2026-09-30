@@ -60,16 +60,20 @@
   // The Worker's secrets are deliberately absent here. Set them once per
   // environment with `wrangler secret put`; `wrangler dev` reads them from
   // `.dev.vars` (see .dev.vars.example and README.md):
-  //   - `PASSWORD_ENCRYPTION_KEY`, which every stored password is encrypted
-  //     under;
+  //   - `PASSWORD_ENCRYPTION_KEY`, which every Subsonic password is encrypted
+  //     under, and which the console's session secret and the pepper of its
+  //     console users' password hashes are derived from;
   //   - `SETUP_TOKEN`, at least 32 characters (`openssl rand -hex 32`), which
-  //     creates the first admin in the console at `/setup` and, set to a new
-  //     value, resets an admin's password at `/setup/reset`. Each value works
-  //     once.
+  //     creates the console's owner at `/setup` and, set to a new value,
+  //     resets the owner's password at `/setup/reset`. Each value works once.
+  //     Console users are the console's own accounts, separate from Subsonic
+  //     users.
   //
-  // Deprecated: `INITIAL_USER` below and the `INITIAL_PASSWORD` secret still
-  // create the first admin on first run in this release, but they keep a
-  // password in the secrets; use `SETUP_TOKEN` instead.
+  // Deprecated: `INITIAL_USER` below and the `INITIAL_PASSWORD` secret create
+  // the first Subsonic user, an admin, on first run. They still work in this
+  // release, and are how a Subsonic user is created until the console manages
+  // them, but they keep a password in the secrets and never make a console
+  // user.
   "vars": {
     "INITIAL_USER": "admin"
   },
@@ -117,7 +121,7 @@
           "new_sqlite_classes": ["ScanDriver"]
         }
       ],
-      // Deprecated, as at the top level: use `SETUP_TOKEN`.
+      // Deprecated, as at the top level: the first Subsonic user only.
       "vars": {
         "INITIAL_USER": "admin"
       },

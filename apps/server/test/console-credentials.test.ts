@@ -1,45 +1,52 @@
 import { SELF } from "cloudflare:test";
-import { account, newRandomId, property, session, user } from "@stratosonic/db";
+import {
+  consoleAccount,
+  consoleSession,
+  consoleUser,
+  newRandomId,
+  property,
+  subsonicUser,
+} from "@stratosonic/db";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { beforeAll, describe, expect, it } from "vitest";
-import { subsonicToken } from "../src/auth/crypto";
-import { createUserWithPassword, setPassword } from "../src/console-auth/credentials";
+import { createConsoleUser, setConsolePassword } from "../src/console-auth/credentials";
+import type { Role } from "../src/console-auth/permissions";
 import { database } from "../src/db";
 import { findUserByUsername } from "../src/users/repository";
-import { countingD1, expectPasswordInvariant, shape } from "./console-auth-support";
-import { BASE, encryptionKey, type JsonEnvelope, testEnv } from "./support";
+import {
+  countingD1,
+  expectConsolePassword,
+  GUEST_ROLE,
+  seedConsoleUser,
+  shape,
+  subsonicPing,
+} from "./console-auth-support";
+import { BASE, encryptionKey, testEnv } from "./support";
 
 /**
- * The one credential writer (#81, #89): every way a password is written keeps
- * `user.password` and `account.password` equal, in one D1 batch, and the
- * Subsonic API logs in with whatever was written last.
+ * The one writer of console users and their passwords (#99): each write is one
+ * D1 batch over `user`, `account` and `session`, and never touches a Subsonic
+ * user. The first-run bootstrap has created the Subsonic admin `admin` /
+ * `sesame` from the bindings in vitest.config.ts. Alice is the console's
+ * owner; everyone else has a role that grants nothing.
  */
 
-async function subsonicStatus(userName: string, password: string): Promise<string> {
-  const query = new URLSearchParams({
-    u: userName,
-    t: await subsonicToken(password, "c0ffee"),
-    s: "c0ffee",
-    v: "1.16.1",
-    c: "test",
-    f: "json",
-  });
-  const response = await SELF.fetch(`${BASE}/rest/ping?${query}`);
+/** A role no release defines, as the writer's type takes it. */
+const GUEST = GUEST_ROLE as Role;
 
-  return ((await response.json()) as JsonEnvelope)["subsonic-response"].status;
-}
+const send = (request: Request) => SELF.fetch(request);
 
-/** Writes a console session row for a user, as a sign-in would. */
-async function insertSession(userId: string): Promise<string> {
+/** Writes a console session row for a console user, as a sign-in would. */
+async function insertSession(consoleUserId: string): Promise<string> {
   const id = newRandomId();
   const now = new Date();
   await database(testEnv)
-    .insert(session)
+    .insert(consoleSession)
     .values({
       id,
       token: newRandomId(),
-      userId,
+      userId: consoleUserId,
       expiresAt: new Date(now.getTime() + 60_000),
       createdAt: now,
       updatedAt: now,
@@ -48,13 +55,17 @@ async function insertSession(userId: string): Promise<string> {
   return id;
 }
 
-async function sessionIds(userId: string): Promise<string[]> {
+async function sessionIds(consoleUserId: string): Promise<string[]> {
   const rows = await database(testEnv)
-    .select({ id: session.id })
-    .from(session)
-    .where(eq(session.userId, userId));
+    .select({ id: consoleSession.id })
+    .from(consoleSession)
+    .where(eq(consoleSession.userId, consoleUserId));
 
   return rows.map((row) => row.id).sort();
+}
+
+function subsonicUsers() {
+  return database(testEnv).select().from(subsonicUser);
 }
 
 beforeAll(async () => {
@@ -63,239 +74,258 @@ beforeAll(async () => {
 });
 
 describe("the first-run bootstrap", () => {
-  it("creates the admin with a credential account carrying the same password", async () => {
-    const admin = await findUserByUsername(database(testEnv), "admin");
-
-    expect(admin?.isAdmin).toBe(true);
-    await expectPasswordInvariant(admin?.id ?? "", "sesame");
+  it("creates the Subsonic admin and no console user", async () => {
+    expect((await findUserByUsername(database(testEnv), "admin"))?.isAdmin).toBe(true);
+    expect(await database(testEnv).select().from(consoleUser)).toEqual([]);
+    expect(await database(testEnv).select().from(consoleAccount)).toEqual([]);
   });
 });
 
-describe("createUserWithPassword", () => {
-  it("writes the user and the credential account in one batch", async () => {
+describe("createConsoleUser", () => {
+  it("writes the console user and its credential account in one batch, and no Subsonic user", async () => {
+    const before = await subsonicUsers();
     const d1 = countingD1(testEnv.DB);
 
-    const id = await createUserWithPassword(drizzle(d1.binding), encryptionKey(), {
-      userName: "Alice",
+    const id = await createConsoleUser(drizzle(d1.binding), encryptionKey(), {
+      username: "Alice",
       password: "wonderland",
-      isAdmin: false,
-      email: "alice@example.com",
+      role: "owner",
     });
 
     expect(id).toMatch(/^[0-9a-zA-Z]{22}$/);
     expect(d1.roundTrips()).toBe(1);
     expect(d1.statements.map(shape)).toEqual(["insert user", "insert account"]);
-    await expectPasswordInvariant(id ?? "", "wonderland");
+    await expectConsolePassword(id ?? "", "wonderland");
+    expect(await subsonicUsers()).toEqual(before);
 
     const [created] = await database(testEnv)
       .select()
-      .from(user)
-      .where(eq(user.id, id ?? ""));
+      .from(consoleUser)
+      .where(eq(consoleUser.id, id ?? ""));
     expect(created).toMatchObject({
-      userName: "Alice",
       name: "Alice",
-      email: "alice@example.com",
-      isAdmin: false,
+      displayUsername: "Alice",
       username: "alice",
-      authEmail: "alice@users.invalid",
+      email: "alice@console.invalid",
+      emailVerified: false,
+      image: null,
+      role: "owner",
     });
   });
 
-  it("gives the new user a Subsonic login", async () => {
-    await createUserWithPassword(database(testEnv), encryptionKey(), {
-      userName: "Bob",
-      password: "builder",
-      isAdmin: false,
-    });
+  it("gives the console user no Subsonic login", async () => {
+    await seedConsoleUser("Bob", "builder", GUEST_ROLE);
 
-    expect(await subsonicStatus("bob", "builder")).toBe("ok");
+    expect(await subsonicPing(send, BASE, "bob", "builder")).toBe(40);
   });
 
-  it("writes nothing, and answers null, when the name is taken in any case", async () => {
-    const before = await database(testEnv).select().from(account);
+  it("names a console user after a Subsonic user without touching that user", async () => {
+    const [before] = await subsonicUsers();
 
-    const id = await createUserWithPassword(database(testEnv), encryptionKey(), {
-      userName: "ALICE",
+    const id = await createConsoleUser(database(testEnv), encryptionKey(), {
+      username: "admin",
+      password: "console's own",
+      role: GUEST,
+    });
+
+    expect(id).not.toBeNull();
+    expect(await subsonicUsers()).toEqual([before]);
+    expect(await subsonicPing(send, BASE, "admin", "sesame")).toBe("ok");
+    expect(await subsonicPing(send, BASE, "admin", "console's own")).toBe(40);
+  });
+
+  it("writes nothing, and answers null, when the name is taken in any ASCII case", async () => {
+    const before = await database(testEnv).select().from(consoleAccount);
+
+    const id = await createConsoleUser(database(testEnv), encryptionKey(), {
+      username: "ALICE",
       password: "impostor",
-      isAdmin: true,
+      role: GUEST,
     });
 
     expect(id).toBeNull();
-    expect(await database(testEnv).select().from(account)).toEqual(before);
-    expect(await subsonicStatus("alice", "wonderland")).toBe("ok");
+    expect(await database(testEnv).select().from(consoleAccount)).toEqual(before);
   });
 
-  it("with onlyIfFirstUser, writes nothing once any user exists, whatever the name", async () => {
+  it("writes nothing, and answers null, for a second owner: the database takes one", async () => {
+    const before = await database(testEnv).select().from(consoleUser);
     const d1 = countingD1(testEnv.DB);
 
-    const id = await createUserWithPassword(
+    const id = await createConsoleUser(drizzle(d1.binding), encryptionKey(), {
+      username: "Usurper",
+      password: "second-owner",
+      role: "owner",
+    });
+
+    expect(id).toBeNull();
+    expect(d1.statements.reduce((sum, statement) => sum + statement.rowsWritten, 0)).toBe(0);
+    expect(await database(testEnv).select().from(consoleUser)).toEqual(before);
+    const owners = await database(testEnv)
+      .select({ username: consoleUser.username })
+      .from(consoleUser)
+      .where(eq(consoleUser.role, "owner"));
+    expect(owners).toEqual([{ username: "alice" }]);
+  });
+
+  it("with onlyIfFirstUser, writes nothing once any console user exists, whatever the name", async () => {
+    const d1 = countingD1(testEnv.DB);
+
+    const id = await createConsoleUser(
       drizzle(d1.binding),
       encryptionKey(),
-      { userName: "Mallory", password: "second-admin", isAdmin: true },
+      { username: "Mallory", password: "second", role: "owner" },
       { onlyIfFirstUser: true },
     );
 
     expect(id).toBeNull();
     expect(d1.roundTrips()).toBe(1);
     expect(d1.statements.reduce((sum, statement) => sum + statement.rowsWritten, 0)).toBe(0);
-    expect(await findUserByUsername(database(testEnv), "mallory")).toBeNull();
   });
 
   it("runs the statements alongside in its batch, and rolls back with them", async () => {
     const db = database(testEnv);
     await db.insert(property).values({ id: "credentials-test", value: "taken" });
 
-    // A plain insert of a key that exists fails, and takes the user with it.
+    // A plain insert of a key that exists fails, and takes the console user
+    // with it.
     await expect(
-      createUserWithPassword(
+      createConsoleUser(
         db,
         encryptionKey(),
-        { userName: "Erin", password: "rolled-back", isAdmin: false },
+        { username: "Erin", password: "rolled-back", role: GUEST },
         { alongside: () => [db.insert(property).values({ id: "credentials-test", value: "" })] },
       ),
     ).rejects.toThrow();
-    expect(await findUserByUsername(db, "erin")).toBeNull();
+    expect(await db.select().from(consoleUser).where(eq(consoleUser.username, "erin"))).toEqual([]);
 
-    const id = await createUserWithPassword(
+    const id = await createConsoleUser(
       db,
       encryptionKey(),
-      { userName: "Erin", password: "kept", isAdmin: false },
-      { alongside: (userId) => [db.insert(property).values({ id: `created-${userId}` })] },
+      { username: "Erin", password: "kept", role: GUEST },
+      {
+        alongside: (consoleUserId) => [
+          db.insert(property).values({ id: `created-${consoleUserId}` }),
+        ],
+      },
     );
     const marks = await db
       .select()
       .from(property)
       .where(eq(property.id, `created-${id}`));
     expect(marks).toHaveLength(1);
-    await expectPasswordInvariant(id ?? "", "kept");
+    await expectConsolePassword(id ?? "", "kept");
   });
 });
 
-describe("setPassword", () => {
+describe("setConsolePassword", () => {
   let carolId: string;
 
   beforeAll(async () => {
-    carolId =
-      (await createUserWithPassword(database(testEnv), encryptionKey(), {
-        userName: "Carol",
-        password: "first",
-        isAdmin: false,
-      })) ?? "";
+    carolId = await seedConsoleUser("Carol", "first", GUEST_ROLE);
   });
 
-  it("updates both copies, bumps token_epoch and revokes every session, in one batch", async () => {
+  it("rehashes the password and revokes every session, in one batch", async () => {
     await insertSession(carolId);
     await insertSession(carolId);
+    const [before] = await database(testEnv)
+      .select({ password: consoleAccount.password })
+      .from(consoleAccount)
+      .where(eq(consoleAccount.userId, carolId));
     const d1 = countingD1(testEnv.DB);
 
-    await setPassword(drizzle(d1.binding), encryptionKey(), carolId, "second");
+    await expect(
+      setConsolePassword(drizzle(d1.binding), encryptionKey(), carolId, "first"),
+    ).resolves.toBe(true);
 
     expect(d1.roundTrips()).toBe(1);
-    expect(d1.statements.map(shape)).toEqual(["update user", "insert account", "delete session"]);
-    await expectPasswordInvariant(carolId, "second");
+    expect(d1.statements.map(shape)).toEqual(["update account", "delete session"]);
+    // The same password, under a fresh salt.
+    await expectConsolePassword(carolId, "first");
+    const [after] = await database(testEnv)
+      .select({ password: consoleAccount.password })
+      .from(consoleAccount)
+      .where(eq(consoleAccount.userId, carolId));
+    expect(after?.password).not.toBe(before?.password);
     expect(await sessionIds(carolId)).toEqual([]);
-
-    const [row] = await database(testEnv)
-      .select({ tokenEpoch: user.tokenEpoch })
-      .from(user)
-      .where(eq(user.id, carolId));
-    expect(row?.tokenEpoch).toBe(1);
   });
 
-  it("moves the Subsonic login to the new password, and the old one fails", async () => {
-    await setPassword(database(testEnv), encryptionKey(), carolId, "third");
+  it("moves the console to the new password", async () => {
+    await setConsolePassword(database(testEnv), encryptionKey(), carolId, "second");
 
-    expect(await subsonicStatus("Carol", "third")).toBe("ok");
-    expect(await subsonicStatus("Carol", "second")).toBe("failed");
+    await expectConsolePassword(carolId, "second");
   });
 
   it("keeps the one session it is told to keep", async () => {
     const kept = await insertSession(carolId);
     await insertSession(carolId);
 
-    await setPassword(database(testEnv), encryptionKey(), carolId, "fourth", {
+    await setConsolePassword(database(testEnv), encryptionKey(), carolId, "third", {
       keepSessionId: kept,
     });
 
     expect(await sessionIds(carolId)).toEqual([kept]);
-    await expectPasswordInvariant(carolId, "fourth");
+    await expectConsolePassword(carolId, "third");
   });
 
-  it("leaves every other user's password and sessions alone", async () => {
-    const [alice] = await database(testEnv).select().from(user).where(eq(user.userName, "Alice"));
+  it("leaves every other console user's password and sessions alone", async () => {
+    const [alice] = await database(testEnv)
+      .select()
+      .from(consoleUser)
+      .where(eq(consoleUser.username, "alice"));
     const aliceSession = await insertSession(alice?.id ?? "");
 
-    await setPassword(database(testEnv), encryptionKey(), carolId, "fifth");
+    await setConsolePassword(database(testEnv), encryptionKey(), carolId, "fourth");
 
     expect(await sessionIds(alice?.id ?? "")).toEqual([aliceSession]);
-    await expectPasswordInvariant(alice?.id ?? "", "wonderland");
+    await expectConsolePassword(alice?.id ?? "", "wonderland");
   });
 
-  it("gives a user without a credential account one", async () => {
-    // A user row written without the credential writer: code older than
-    // migration 0008, running between the migration and the deploy.
-    const id = newRandomId();
-    const now = new Date();
-    await database(testEnv)
-      .insert(user)
-      .values({ id, userName: "Dave", password: "", createdAt: now, updatedAt: now });
+  it("leaves every Subsonic password alone, a namesake's too", async () => {
+    const [namesake] = await database(testEnv)
+      .select()
+      .from(consoleUser)
+      .where(eq(consoleUser.username, "admin"));
+    const before = await subsonicUsers();
 
-    await setPassword(database(testEnv), encryptionKey(), id, "recovered");
+    await setConsolePassword(database(testEnv), encryptionKey(), namesake?.id ?? "", "sesame");
 
-    await expectPasswordInvariant(id, "recovered");
-    expect(await subsonicStatus("dave", "recovered")).toBe("ok");
+    expect(await subsonicUsers()).toEqual(before);
+    expect(await subsonicPing(send, BASE, "admin", "sesame")).toBe("ok");
+    await expectConsolePassword(namesake?.id ?? "", "sesame");
   });
 
   it("rolls the password and the revocation back when a statement alongside fails", async () => {
     const db = database(testEnv);
-    await setPassword(db, encryptionKey(), carolId, "before");
+    await setConsolePassword(db, encryptionKey(), carolId, "before");
     const kept = await insertSession(carolId);
     await db.insert(property).values({ id: "set-password-test", value: "taken" });
 
     await expect(
-      setPassword(db, encryptionKey(), carolId, "after", {
+      setConsolePassword(db, encryptionKey(), carolId, "after", {
         alongside: [db.insert(property).values({ id: "set-password-test", value: "" })],
       }),
     ).rejects.toThrow();
 
-    await expectPasswordInvariant(carolId, "before");
+    await expectConsolePassword(carolId, "before");
     expect(await sessionIds(carolId)).toEqual([kept]);
   });
 
-  it("writes nothing for a user that does not exist", async () => {
-    const before = await database(testEnv).select().from(account);
+  it("writes nothing, and answers false, for a console user that does not exist", async () => {
+    const before = await database(testEnv).select().from(consoleAccount);
 
     await expect(
-      setPassword(database(testEnv), encryptionKey(), newRandomId(), "nobody"),
+      setConsolePassword(database(testEnv), encryptionKey(), newRandomId(), "nobody"),
     ).resolves.toBe(false);
 
-    expect(await database(testEnv).select().from(account)).toEqual(before);
+    expect(await database(testEnv).select().from(consoleAccount)).toEqual(before);
   });
 
-  it("with onlyIfAdmin, writes nothing of a user who is not an admin", async () => {
-    await setPassword(database(testEnv), encryptionKey(), carolId, "unchanged");
-    const kept = await insertSession(carolId);
-    const d1 = countingD1(testEnv.DB);
+  it("does not take a Subsonic user's id for a console user's", async () => {
+    const admin = await findUserByUsername(database(testEnv), "admin");
 
-    const changed = await setPassword(drizzle(d1.binding), encryptionKey(), carolId, "admin-only", {
-      onlyIfAdmin: true,
-      alongside: [],
-    });
-
-    expect(changed).toBe(false);
-    expect(d1.statements.reduce((sum, statement) => sum + statement.rowsWritten, 0)).toBe(0);
-    await expectPasswordInvariant(carolId, "unchanged");
-    expect(await sessionIds(carolId)).toEqual([kept]);
-  });
-
-  it("with onlyIfAdmin, sets an admin's password", async () => {
-    const [admin] = await database(testEnv).select().from(user).where(eq(user.userName, "admin"));
-
-    const changed = await setPassword(database(testEnv), encryptionKey(), admin?.id ?? "", "new", {
-      onlyIfAdmin: true,
-    });
-
-    expect(changed).toBe(true);
-    await expectPasswordInvariant(admin?.id ?? "", "new");
+    await expect(
+      setConsolePassword(database(testEnv), encryptionKey(), admin?.id ?? "", "taken-over"),
+    ).resolves.toBe(false);
+    expect(await subsonicPing(send, BASE, "admin", "sesame")).toBe("ok");
   });
 });

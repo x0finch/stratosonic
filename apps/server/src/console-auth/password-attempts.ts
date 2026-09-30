@@ -6,13 +6,13 @@ import type { Database } from "../db";
  * A limit on attempts at `POST /api/account/password`.
  *
  * The route is behind a session, so whoever guesses there already holds one,
- * a stolen cookie say, and is after the password itself, which Subsonic
- * clients take as well. Better Auth's limiter covers only its own routes and
- * keys by address, so this counts attempts in its `rate_limit` table under
- * keys of its own.
+ * a stolen cookie say, and is after the password itself, which outlives any
+ * session. Better Auth's limiter covers only its own routes and keys by
+ * address, so this counts attempts in its `rate_limit` table under keys of
+ * its own.
  *
- * The key is the session, `account-password:<session id>`, not the user: a
- * thief guessing with a stolen session must not be able to lock the victim
+ * The key is the session, `account-password:<session id>`, not the user:
+ * a thief guessing with a stolen session must not be able to lock the victim
  * out of the one thing that revokes it, changing the password. Minting more
  * sessions to guess from needs the password, so a stolen session is worth
  * `MAX_PASSWORD_ATTEMPTS` guesses a window and no more.

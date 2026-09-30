@@ -1,4 +1,4 @@
-import { rateLimit, session, verification } from "@stratosonic/db";
+import { consoleSession, consoleVerification, rateLimit } from "@stratosonic/db";
 import { inArray, lt } from "drizzle-orm";
 import type { Database } from "../db";
 
@@ -84,11 +84,15 @@ export async function pruneExpiredAuthRows(
 
   const [sessions, rateLimits, verifications] = await db.batch([
     db
-      .delete(session)
+      .delete(consoleSession)
       .where(
         inArray(
-          session.id,
-          db.select({ id: session.id }).from(session).where(lt(session.expiresAt, at)).limit(limit),
+          consoleSession.id,
+          db
+            .select({ id: consoleSession.id })
+            .from(consoleSession)
+            .where(lt(consoleSession.expiresAt, at))
+            .limit(limit),
         ),
       ),
     db.delete(rateLimit).where(
@@ -102,14 +106,14 @@ export async function pruneExpiredAuthRows(
       ),
     ),
     db
-      .delete(verification)
+      .delete(consoleVerification)
       .where(
         inArray(
-          verification.id,
+          consoleVerification.id,
           db
-            .select({ id: verification.id })
-            .from(verification)
-            .where(lt(verification.expiresAt, at))
+            .select({ id: consoleVerification.id })
+            .from(consoleVerification)
+            .where(lt(consoleVerification.expiresAt, at))
             .limit(limit),
         ),
       ),

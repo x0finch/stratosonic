@@ -1,17 +1,30 @@
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
-import { account, newRandomId, rateLimit, session, user, verification } from "@stratosonic/db";
+import {
+  consoleAccount,
+  consoleSession,
+  consoleUser,
+  consoleVerification,
+  newRandomId,
+  rateLimit,
+} from "@stratosonic/db";
 import { isAPIError } from "better-auth/api";
 import { betterAuth } from "better-auth/minimal";
 import { username } from "better-auth/plugins/username";
 import { drizzle } from "drizzle-orm/d1";
-import { constantTimeEquals, decryptPassword, encryptPassword } from "../auth/crypto";
-import { foldAsciiCase } from "../users/repository";
-import { MAX_PASSWORD_LENGTH, MAX_USERNAME_LENGTH, MIN_PASSWORD_LENGTH } from "./credentials";
+import {
+  foldConsoleUsername,
+  MAX_PASSWORD_LENGTH,
+  MAX_USERNAME_LENGTH,
+  MIN_PASSWORD_LENGTH,
+} from "./credentials";
+import { hashConsolePassword, verifyConsolePassword } from "./password-hash";
 
 /**
  * The admin console's sessions: Better Auth (v1.7, `better-auth/minimal`, so
- * without Kysely) over the existing `user` table, as the spike proved it
- * (#86) and #81 specifies it.
+ * without Kysely), as the spike proved it (#86) and #81 specifies it, over
+ * the console's own users (#99), in Better Auth's standard tables (`user`,
+ * `session`, `account`, `verification`). A console user is not a Subsonic
+ * user, and nothing here reads or writes the `subsonic_user` table.
  *
  * This module is the only one that imports Better Auth, and the Worker imports
  * it statically. Evaluating the auth stack adds about 38 ms to the Worker's
@@ -23,7 +36,9 @@ import { MAX_PASSWORD_LENGTH, MAX_USERNAME_LENGTH, MIN_PASSWORD_LENGTH } from ".
  * of CPU. What `/rest/*`, `/share/*`, the cron and the scan driver's alarm
  * never pay is an instance: one is built on the first `/api` request for an
  * origin (`consoleAuth` below), and nothing else touches the auth tables but
- * the credential writer and the cron's prune of expired rows (prune.ts).
+ * the console users' writer (credentials.ts), the cron's prune of expired
+ * rows (prune.ts), and the first-run check of whether an owner exists
+ * (setup/initial-setup.ts).
  */
 
 /** Where the Better Auth routes are mounted, on the `/api` sub-app. */
@@ -46,13 +61,12 @@ export const CONSOLE_AUTH_ROUTES = [
  * username plugin, which it is told to refuse as well. A test fails when an
  * upgrade registers a route on neither list (test/console-auth-routes.test.ts).
  *
- * The writers of users, passwords and emails matter most: those writes go
- * through console-auth/credentials.ts, so that `user.password` and
- * `account.password` can never disagree, and `auth_email` is a generated
- * placeholder that Drizzle leaves out of every write. The rest are session
- * management, social and email flows, a health check (`/ok`) and the OAuth
- * error page (`/error`), none of which the console, or Better Auth itself,
- * needs over HTTP.
+ * The writers of users, passwords and emails matter most: console users and
+ * their passwords are written by console-auth/credentials.ts alone, and
+ * `email` is a generated placeholder that Drizzle leaves out of every write.
+ * The rest are session management, social and email flows, a health check
+ * (`/ok`) and the OAuth error page (`/error`), none of which the console, or
+ * Better Auth itself, needs over HTTP.
  *
  * Better Auth matches these paths exactly, so the two with a parameter
  * (`/callback/:id`, `/reset-password/:token`) are listed for completeness and
@@ -140,7 +154,7 @@ export async function deriveSessionSecret(passphrase: string): Promise<string> {
 export interface ConsoleAuthOptions {
   /** The D1 database the sessions and credentials live in. */
   readonly db: D1Database;
-  /** `PASSWORD_ENCRYPTION_KEY`: the AES-GCM passphrase, and the secret's source. */
+  /** `PASSWORD_ENCRYPTION_KEY`: the source of the session secret and the password pepper. */
   readonly passphrase: string;
   /**
    * The origin the console is served from, e.g. `https://<name>.workers.dev`.
@@ -160,52 +174,50 @@ function build({ db, passphrase, origin }: ConsoleAuthOptions, secret: string) {
     secret,
     database: drizzleAdapter(drizzle(db), {
       provider: "sqlite",
-      schema: { user, session, account, verification, rateLimit },
+      // Keyed by Better Auth's model names, which are also the tables' names.
+      schema: {
+        user: consoleUser,
+        session: consoleSession,
+        account: consoleAccount,
+        verification: consoleVerification,
+        rateLimit,
+      },
     }),
     user: {
-      // Better Auth's `email` is required and unique; ours is neither, so it
-      // reads the generated placeholder column instead (schema.ts).
-      fields: { email: "authEmail" },
       additionalFields: {
-        // Read-only to Better Auth: it comes back with the session, so the
-        // console knows whom it is talking to, but nothing Better Auth serves
-        // can set it. `is_admin` stays the source of truth.
-        isAdmin: { type: "boolean", required: false, input: false, defaultValue: false },
+        // Read-only to Better Auth: it comes back with the session, and so
+        // in the cookie cache, so a route can check a permission without a
+        // D1 read, but nothing Better Auth serves can set it (`input: false`
+        // refuses it in any body). Console users and their roles are written
+        // by console-auth/credentials.ts alone.
+        role: { type: "string", required: false, input: false },
       },
     },
     emailAndPassword: {
       enabled: true,
-      // Users are created by our own code (the first-run bootstrap, the setup
-      // token) through console-auth/credentials.ts, never by a public sign-up.
+      // Console users are created by our own code (the setup token)
+      // through console-auth/credentials.ts, never by a public sign-up.
       disableSignUp: true,
-      // Better Auth's default maximum, 128, would lock a longer Subsonic
-      // password out of the console.
+      // The routes that set a password accept up to MAX_PASSWORD_LENGTH,
+      // past Better Auth's default maximum of 128.
       minPasswordLength: MIN_PASSWORD_LENGTH,
       maxPasswordLength: MAX_PASSWORD_LENGTH,
       // Better Auth's default hasher is scrypt, about 100 ms of CPU a call
-      // against the Free plan's 10 ms, and a hash the Subsonic API could not
-      // read. The credential account carries the same AES-GCM ciphertext as
-      // `user.password` instead (ADR-0003), so verifying is a decryption and
-      // a constant-time comparison.
+      // against the Free plan's 10 ms. The credential account carries a
+      // peppered HMAC-SHA256 instead (ADR-0007), which hashes or verifies in
+      // about a tenth of a millisecond, and compares in constant time.
       //
       // Sign-in can still tell, by timing, a name that exists from one that
       // does not: an unknown name costs one D1 read and a hash (the username
       // plugin's `hash` of the attempt, meant to even the paths out), a known
-      // one with a wrong password two reads and a decryption. That is an
+      // one with a wrong password two reads and a verification. That is an
       // accepted trade-off, not an oversight: the answers are identical, the
       // rate limit caps a caller at 5 guesses a minute, and a server with a
       // single owner has few names to find. Padding the unknown path with a
       // dummy query would cost D1 on every failed sign-in.
       password: {
-        hash: (password) => encryptPassword(passphrase, password),
-        verify: async ({ hash, password }) => {
-          try {
-            return constantTimeEquals(await decryptPassword(passphrase, hash), password);
-          } catch {
-            // Not a ciphertext this passphrase wrote: a failed sign-in.
-            return false;
-          }
-        },
+        hash: (password) => hashConsolePassword(passphrase, password),
+        verify: ({ hash, password }) => verifyConsolePassword(passphrase, hash, password),
       },
     },
     session: {
@@ -231,27 +243,24 @@ function build({ db, passphrase, origin }: ConsoleAuthOptions, secret: string) {
     plugins: [
       username({
         // SQLite's `lower()` folds ASCII letters only, and the generated
-        // `username` column is `lower(user_name)`; the plugin's default,
-        // `toLowerCase()`, folds more and would look some names up under a
-        // key the column never holds. This is the fold the Subsonic `u`
-        // lookup uses, so both sides agree on whom a name refers to.
-        usernameNormalization: foldAsciiCase,
-        // Subsonic places no rule on names (Navidrome requires only that there
-        // is one), so any name `user_name` holds must be able to sign in, not
-        // only the plugin's default 3-30 characters of `[a-zA-Z0-9_.]`.
+        // `username` column is `lower(display_username)`; the plugin's
+        // default, `toLowerCase()`, folds more and would look some names up
+        // under a key the column never holds.
+        usernameNormalization: foldConsoleUsername,
+        // Navidrome requires only that a name is there, and setup takes any
+        // name of 1 to MAX_USERNAME_LENGTH characters (credentials.ts), so
+        // every name it takes must be able to sign in, not only the plugin's
+        // default 3-30 characters of `[a-zA-Z0-9_.]`.
         usernameValidator: () => true,
         minUsernameLength: 1,
         maxUsernameLength: MAX_USERNAME_LENGTH,
-        // The plugin's `displayUsername` is the name as entered, our
-        // `user_name`; its `username` is the generated, folded column.
-        schema: { user: { fields: { displayUsername: "userName" } } },
       }),
     ],
     advanced: {
       // The default, `x-forwarded-for`, is absent on Workers, and without an
       // address every client would share one rate-limit bucket.
       ipAddress: { ipAddressHeaders: ["cf-connecting-ip"] },
-      // Session and account ids look like the user ids Navidrome mints.
+      // Ids look like the user ids Navidrome mints.
       database: { generateId: () => newRandomId() },
     },
   });
