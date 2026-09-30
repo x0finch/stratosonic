@@ -18,13 +18,13 @@ export type LoginNotice = "set-up" | "reset";
 
 const NOTICES: Record<LoginNotice, { title: string; description: string }> = {
   "set-up": {
-    title: "The operator account is created",
+    title: "The owner account is created",
     description: "Sign in with its username and password.",
   },
   reset: {
     title: "The password is reset",
     description:
-      "Sign in with the new password. Every other session of that operator is signed out.",
+      "Sign in with the new password. Every other session of that account is signed out.",
   },
 };
 
@@ -71,9 +71,7 @@ export function LoginForm({
       <Card>
         <CardHeader>
           <CardTitle>Sign in to Stratosonic</CardTitle>
-          <CardDescription>
-            Enter the username and password of your operator account
-          </CardDescription>
+          <CardDescription>Enter the username and password of your console account</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={onSubmit}>
@@ -133,7 +131,7 @@ export function LoginForm({
                 </Button>
                 {setupState.data === "needs-setup" && (
                   <FieldDescription className="text-center">
-                    No operator yet? <Link to="/setup">Set up the server</Link>
+                    No owner yet? <Link to="/setup">Set up the server</Link>
                   </FieldDescription>
                 )}
               </Field>

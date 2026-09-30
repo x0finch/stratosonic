@@ -11,7 +11,7 @@ export const Route = createFileRoute("/setup/")({
   staticData: { title: "Set up" },
 });
 
-/** First run (#81, #99): the setup token creates the first operator account. */
+/** First run (#81, #99): the setup token creates the owner account. */
 function Setup() {
   const state = useQuery(setupStateQuery);
 
@@ -28,8 +28,8 @@ function Setup() {
           title="The server is already set up"
           description={
             state.data === "reset-available"
-              ? "It has an operator. Sign in, or reset an operator's password with the setup token."
-              : "It has an operator. Sign in with your operator account."
+              ? "It has an owner. Sign in, or reset the owner's password with the setup token."
+              : "It has an owner. Sign in with your console account."
           }
           links={
             state.data === "reset-available"
@@ -49,11 +49,11 @@ function Setup() {
       <SetupForm
         text={{
           title: "Set up Stratosonic",
-          description: "Create the operator account with the setup token",
+          description: "Create the owner account with the setup token",
           usernameLabel: "Username",
           passwordLabel: "Password",
-          submit: "Create operator account",
-          pending: "Creating operator account…",
+          submit: "Create owner account",
+          pending: "Creating owner account…",
         }}
         submit={setUp}
         notice="set-up"

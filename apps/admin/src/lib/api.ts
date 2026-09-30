@@ -9,12 +9,14 @@ import { queryOptions } from "@tanstack/react-query";
  */
 
 /**
- * Who is signed in, as `GET /api/me` answers: an operator, the console's own
- * kind of account (#99), which has no role.
+ * Who is signed in, as `GET /api/me` answers: a console user, the console's
+ * own kind of account (#99), with their role and the permissions it grants.
  */
 export interface Me {
   id: string;
   username: string;
+  role: string;
+  permissions: string[];
 }
 
 /** What `GET /api/setup` says the setup token may do now. */
@@ -120,7 +122,7 @@ async function call<T>(method: "GET" | "POST", path: string, body?: unknown): Pr
   return payload as T;
 }
 
-/** The signed-in operator, or `null` without a session. */
+/** The signed-in console user, or `null` without a session. */
 export async function fetchMe(): Promise<Me | null> {
   try {
     return await call<Me>("GET", "/api/me");
@@ -155,17 +157,17 @@ export interface SetupRequest extends Credentials {
   token: string;
 }
 
-/** Creates the first operator account with the setup token, while there is none. */
+/** Creates the owner account with the setup token, while there is no console user. */
 export async function setUp(request: SetupRequest): Promise<void> {
   await call("POST", "/api/setup", request);
 }
 
-/** Sets an operator's password with an unspent setup token, signing it out everywhere. */
-export async function resetOperatorPassword(request: SetupRequest): Promise<void> {
+/** Sets a console user's password with an unspent setup token, signing it out everywhere. */
+export async function resetConsolePassword(request: SetupRequest): Promise<void> {
   await call("POST", "/api/setup/reset", request);
 }
 
-/** Changes the signed-in operator's password, signing out its other sessions. */
+/** Changes the signed-in console user's password, signing out its other sessions. */
 export async function changePassword(request: {
   currentPassword: string;
   newPassword: string;
@@ -174,7 +176,7 @@ export async function changePassword(request: {
 }
 
 /**
- * The signed-in operator. The server vouches for a session from its 5-minute
+ * The signed-in console user. The server vouches for a session from its 5-minute
  * cookie cache (#81), so a fresher copy here would buy nothing.
  */
 export const meQuery = queryOptions({

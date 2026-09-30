@@ -20,18 +20,19 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { type Me, meQuery, signOut } from "@/lib/api";
+import { can, roleLabel } from "@/lib/roles";
 import { leaveSignedOut } from "@/lib/sign-out";
 
-/** The first two characters of the name, for the avatar an operator has none of. */
+/** The first two characters of the name, for the avatar a console user has none of. */
 function initials(name: string): string {
   return Array.from(name).slice(0, 2).join("").toUpperCase();
 }
 
 /**
- * The dashboard-01 block's nav-user: the signed-in operator's name, the
- * account page and sign-out. Operators have no avatar or email, so the avatar
- * is the name's initials and the second line says what kind of account it is:
- * an operator's, not a Subsonic user's.
+ * The dashboard-01 block's nav-user: the signed-in console user's name and
+ * role, the account page, if the role lets them change their password, and
+ * sign-out. Console users have no avatar or email, so the avatar is the
+ * name's initials and the second line the role, "Owner".
  */
 export function NavUser({ user }: { user: Me }) {
   const { isMobile } = useSidebar();
@@ -47,6 +48,8 @@ export function NavUser({ user }: { user: Me }) {
     // who is signed in instead, and say above the menu that it failed.
     onError: () => queryClient.invalidateQueries({ queryKey: meQuery.queryKey }),
   });
+
+  const role = roleLabel(user.role);
 
   return (
     <SidebarMenu>
@@ -65,7 +68,7 @@ export function NavUser({ user }: { user: Me }) {
             </Avatar>
             <div className="grid flex-1 text-left text-sm leading-tight">
               <span className="truncate font-medium">{user.username}</span>
-              <span className="truncate text-xs text-foreground/70">Operator</span>
+              <span className="truncate text-xs text-foreground/70">{role}</span>
             </div>
             <EllipsisVerticalIcon className="ml-auto size-4" />
           </DropdownMenuTrigger>
@@ -85,19 +88,23 @@ export function NavUser({ user }: { user: Me }) {
                   </Avatar>
                   <div className="grid flex-1 text-left text-sm leading-tight">
                     <span className="truncate font-medium">{user.username}</span>
-                    <span className="truncate text-xs text-muted-foreground">Operator</span>
+                    <span className="truncate text-xs text-muted-foreground">{role}</span>
                   </div>
                 </div>
               </DropdownMenuLabel>
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              <DropdownMenuItem render={<Link to="/account" />}>
-                <CircleUserRoundIcon />
-                Account
-              </DropdownMenuItem>
-            </DropdownMenuGroup>
-            <DropdownMenuSeparator />
+            {can(user, "account:change-password") && (
+              <>
+                <DropdownMenuGroup>
+                  <DropdownMenuItem render={<Link to="/account" />}>
+                    <CircleUserRoundIcon />
+                    Account
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+                <DropdownMenuSeparator />
+              </>
+            )}
             <DropdownMenuItem disabled={logOut.isPending} onClick={() => logOut.mutate()}>
               <LogOutIcon />
               Sign out

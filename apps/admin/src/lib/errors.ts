@@ -13,7 +13,7 @@ export const MAX_PASSWORD_LENGTH = 1024;
 const MESSAGES: Record<string, ErrorMessage> = {
   invalid_credentials: {
     title: "Wrong username or password",
-    description: "Check them and try again. Use your operator account, not a Subsonic login.",
+    description: "Check them and try again. Use your console account, not a Subsonic login.",
   },
   invalid_token: {
     title: "The setup token is not valid",
@@ -44,15 +44,15 @@ const MESSAGES: Record<string, ErrorMessage> = {
   },
   already_set_up: {
     title: "The server is already set up",
-    description: "Sign in instead, or reset an operator's password with a new setup token.",
+    description: "Sign in instead, or reset the owner's password with a new setup token.",
   },
   not_set_up: {
-    title: "There is no operator yet",
+    title: "There is no owner yet",
     description: "Set up the server with the setup token instead.",
   },
   unknown_user: {
-    title: "There is no operator by that name",
-    description: "Enter the username of an operator account.",
+    title: "There is no console user by that name",
+    description: "Enter the owner's username.",
   },
   invalid_username: {
     title: "The username is not valid",

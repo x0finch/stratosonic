@@ -15,7 +15,7 @@ import { describeError, MAX_PASSWORD_LENGTH } from "@/lib/errors";
 /**
  * The login-01 block's form with the change-password fields (#81): the
  * current password, then the new one twice. The server keeps this session
- * and signs the operator's others out.
+ * and signs the console user's others out.
  */
 export function ChangePasswordForm({
   username,
@@ -52,7 +52,7 @@ export function ChangePasswordForm({
         <CardHeader>
           <CardTitle>Change password</CardTitle>
           <CardDescription>
-            The password of your operator account. Subsonic passwords do not change.
+            The password of your console account. Subsonic passwords do not change.
           </CardDescription>
         </CardHeader>
         <CardContent>
