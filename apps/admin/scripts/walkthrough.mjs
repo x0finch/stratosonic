@@ -183,6 +183,16 @@ function watch(page, label) {
 
 async function shot(page, name) {
   if (SCREENSHOTS) {
+    // A toast slides in, its transition starting a frame or two after it
+    // mounts: catch it where it comes to rest. A transition that is replaced
+    // rejects `finished`, which is as good as settled here.
+    await page.evaluate(async (selector) => {
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const animations = [...document.querySelectorAll(selector)].flatMap((element) =>
+        element.getAnimations({ subtree: true }),
+      );
+      await Promise.allSettled(animations.map((animation) => animation.finished));
+    }, TOAST);
     await page.screenshot({ path: join(SCREENSHOTS, `${name}.png`), fullPage: true });
   }
 }
