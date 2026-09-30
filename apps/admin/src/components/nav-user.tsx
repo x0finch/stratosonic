@@ -20,6 +20,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { type Me, meQuery, signOut } from "@/lib/api";
+import { leaveSignedOut } from "@/lib/sign-out";
 
 /** The first two characters of the name, for the avatar a user has none of. */
 function initials(name: string): string {
@@ -38,14 +39,9 @@ export function NavUser({ user }: { user: Me }) {
 
   const logOut = useMutation({
     mutationFn: signOut,
-    // Nothing the user signing out has read stays in the cache for whoever
-    // signs in next. Reloading the route then runs the shell's guard, which finds
-    // nobody signed in and shows the sign-in screen (routes/_shell.tsx).
-    onSuccess: async () => {
-      queryClient.clear();
-      queryClient.setQueryData(meQuery.queryKey, null);
-      await router.invalidate();
-    },
+    // Plain /login, with nothing left in the cache: the next sign-in lands on
+    // the overview, not on the page this one left (lib/sign-out.ts).
+    onSuccess: () => leaveSignedOut(queryClient, router),
     // Never shown as signed out while the session may live on: ask the server
     // who is signed in instead, and say above the menu that it failed.
     onError: () => queryClient.invalidateQueries({ queryKey: meQuery.queryKey }),

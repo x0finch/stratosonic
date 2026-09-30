@@ -9,8 +9,10 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { meQuery } from "@/lib/api";
 
 /**
- * The signed-in console: every page under the sidebar shell. Without a
- * session a visit goes to `/login`, which returns here once signed in.
+ * The signed-in console: every page under the sidebar shell. A visit without
+ * a session (it ran out, or a deep link opened while signed out) goes to
+ * `/login`, which returns here once signed in. Signing out on purpose does
+ * not come through here: it goes to plain `/login` (lib/sign-out.ts).
  */
 export const Route = createFileRoute("/_shell")({
   beforeLoad: async ({ context, location }) => {
@@ -28,9 +30,11 @@ function Shell() {
   const { data: me } = useQuery(meQuery);
   const router = useRouter();
 
-  // Signed out while on a page: by the sign-out action, or by a request the
-  // server refused for want of a session (main.tsx). Reloading the route runs
-  // the guard above, which sends the visit to /login and back here after.
+  // Signed out while on a page by a request the server refused for want of a
+  // session (main.tsx). Reloading the route runs the guard above, which sends
+  // the visit to /login and back here after. The sign-out action navigates to
+  // plain /login itself (lib/sign-out.ts) before this can run, so the reload
+  // it may still trigger reloads /login, not this page.
   useEffect(() => {
     if (me === null) {
       void router.invalidate();
