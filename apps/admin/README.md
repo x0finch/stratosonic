@@ -106,6 +106,15 @@ of the Worker's `/api`: plain same-origin `fetch` calls, the session being
 Better Auth's HttpOnly cookie. Better Auth's own client would add about
 11.5 kB gzipped for the two calls the console makes to it.
 
+What a form did, or why it failed, shows as a toast: shadcn/ui's toast for
+Base UI (`src/components/ui/toast.tsx`), raised through `src/lib/toasts.ts`.
+Its toaster sits above the router in `src/main.tsx`, so the toast a setup or
+a reset raises before going to `/login` is still there when the sign-in
+screen opens. Field-level validation, such as a wrong current password or a
+confirmation mismatch, stays beside its field, and a state that is the whole
+page, such as the error screen of a server that is not configured or the
+notice that setup is closed, stays on the page.
+
 ## The walkthrough
 
 `scripts/walkthrough.mjs` creates the owner, signs out and back in,

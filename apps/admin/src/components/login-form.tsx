@@ -1,46 +1,29 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useRouter } from "@tanstack/react-router";
 import { cn } from "cn";
-import { CircleCheckIcon } from "lucide-react";
 import { type ComponentProps, type FormEvent, useEffect } from "react";
 
-import { ErrorAlert } from "@/components/error-alert";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { meQuery, setupStateQuery, signIn } from "@/lib/api";
 import { MAX_PASSWORD_LENGTH, MAX_USERNAME_LENGTH } from "@/lib/errors";
-
-/** What the setup screens send the visitor here to hear about. */
-export type LoginNotice = "set-up" | "reset";
-
-const NOTICES: Record<LoginNotice, { title: string; description: string }> = {
-  "set-up": {
-    title: "The owner account is created",
-    description: "Sign in with its username and password.",
-  },
-  reset: {
-    title: "The password is reset",
-    description: "Sign in with the new password. All sessions of that account are signed out.",
-  },
-};
+import { toastError } from "@/lib/toasts";
 
 /**
  * The login-01 block's form, signing in with a username rather than an email.
  * Its "Forgot your password?" link is the setup token's reset, and its sign-up
  * line the first-run setup, each shown only while `GET /api/setup` allows it.
+ * A failed sign-in says why in a toast.
  */
 export function LoginForm({
   redirectTo,
-  notice,
   className,
   ...props
 }: ComponentProps<"div"> & {
   /** Where to go once signed in: a path `safeRedirect` has vetted. */
   redirectTo: string;
-  notice?: LoginNotice;
 }) {
   const queryClient = useQueryClient();
   const router = useRouter();
@@ -52,7 +35,17 @@ export function LoginForm({
       await queryClient.fetchQuery({ ...meQuery, staleTime: 0 });
       await router.navigate({ href: redirectTo, replace: true });
     },
+    onError: (error) => toastError(error),
   });
+
+  // A server that refuses every `/api` call (without its encryption key, say)
+  // refuses the setup state as well, and says why before anyone types. The
+  // fixed id keeps a second render of the same failure from stacking a toast.
+  useEffect(() => {
+    if (setupState.error) {
+      toastError(setupState.error, { id: "setup-state" });
+    }
+  }, [setupState.error]);
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -62,22 +55,6 @@ export function LoginForm({
       password: String(form.get("password") ?? ""),
     });
   }
-
-  const done = notice ? NOTICES[notice] : undefined;
-
-  // A notice says what a setup screen did just before, once. When an error
-  // takes its place, it is dropped from the URL too, so a reload or a copied
-  // link does not bring it back.
-  const noticeReplaced = Boolean(notice && (mutation.error || setupState.error));
-  useEffect(() => {
-    if (noticeReplaced) {
-      void router.navigate({
-        to: "/login",
-        search: (search) => ({ ...search, notice: undefined }),
-        replace: true,
-      });
-    }
-  }, [noticeReplaced, router]);
 
   return (
     <div className={cn("flex flex-col gap-6", className)} {...props}>
@@ -89,22 +66,6 @@ export function LoginForm({
         <CardContent>
           <form onSubmit={onSubmit}>
             <FieldGroup>
-              {/* A server that refuses every `/api` call (without its
-                  encryption key, say) refuses the setup state as well, and
-                  says why here, before anyone types. */}
-              {mutation.error ? (
-                <ErrorAlert error={mutation.error} />
-              ) : setupState.error ? (
-                <ErrorAlert error={setupState.error} />
-              ) : (
-                done && (
-                  <Alert>
-                    <CircleCheckIcon />
-                    <AlertTitle>{done.title}</AlertTitle>
-                    <AlertDescription>{done.description}</AlertDescription>
-                  </Alert>
-                )
-              )}
               <Field>
                 <FieldLabel htmlFor="username">Username</FieldLabel>
                 <Input

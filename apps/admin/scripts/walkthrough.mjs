@@ -20,22 +20,25 @@
  * stays ok through every change of the owner's password.
  *
  * It walks, in order: the router guard; first-run setup, with a wrong token
- * and a mismatched confirmation on the way, then a wrong password, whose
- * error drops the setup's notice from the URL, and the first sign-in;
+ * and a mismatched confirmation on the way, then the first sign-in;
  * sign-out and sign-in; a wrong password, and a Subsonic user's; a deep link
  * opened while signed out, which sign-in returns to; the account page's
  * validation and a password change, after which a Subsonic `ping` with
  * neither password is ok; signing out from the account page, which lands on
  * plain `/login` and signs in to the overview; a session that ends while on a
  * page, which sign-in returns to; a reset with a new setup token, whose
- * notice says all of the account's sessions are signed out and leaves the URL
- * on a wrong password too; dark mode; and a phone-sized viewport. The reset
- * needs a token the first run did not spend, so the script waits, up to five
- * minutes, for `GET /api/setup` to say
+ * toast says all of the account's sessions are signed out; dark mode; and a
+ * phone-sized viewport. The reset needs a token the first run did not spend,
+ * so the script waits, up to five minutes, for `GET /api/setup` to say
  * `reset-available`: put `RESET_TOKEN` in `SETUP_TOKEN` (apps/server/.dev.vars)
  * and restart `wrangler dev` when it asks. Without `RESET_TOKEN` the reset is
  * skipped. It signs in more often than the server's limit of 5 a minute
  * allows, so it meets the rate limit's message on the way, and waits it out.
+ *
+ * What a form did, or why it failed, is a toast (#101): the walkthrough waits
+ * for a new one, in the toaster's live region, with the expected words.
+ * Field-level validation stays beside its field, so it checks no toast
+ * repeats it.
  *
  * Any console error or uncaught exception on a page fails the walkthrough,
  * except the browser's own "Failed to load resource" line for a response the
@@ -190,9 +193,10 @@ async function shot(page, name) {
  * screen, then a wait and another try.
  */
 async function signIn(page, password, { expectAt, username = USERNAME } = {}) {
-  await page.getByLabel("Username").fill(username);
+  await page.getByLabel("Username", { exact: true }).fill(username);
   await page.getByLabel("Password", { exact: true }).fill(password);
   for (;;) {
+    await markToasts(page);
     const [response] = await Promise.all([
       page.waitForResponse((response) => response.url().endsWith("/api/auth/sign-in/username")),
       page.getByRole("button", { name: "Sign in" }).click(),
@@ -200,7 +204,7 @@ async function signIn(page, password, { expectAt, username = USERNAME } = {}) {
     if (response.status() !== 429) {
       break;
     }
-    await page.getByText("Too many attempts").waitFor();
+    await expectToast(page, "Too many attempts");
     rateLimited += 1;
     const wait = Number(response.headers()["x-retry-after"] ?? 60) + 1;
     console.log(`  sign-in rate limited, as shown on the screen; retrying in ${wait} s`);
@@ -211,23 +215,31 @@ async function signIn(page, password, { expectAt, username = USERNAME } = {}) {
   }
 }
 
-/**
- * That the sign-in screen's notice, the setup screens' report, leaves the URL
- * once an error takes its place: a reload must not bring it back.
- */
-async function checkNoticeDroppedOnError(page, notice, password) {
-  const before = new URL(page.url()).searchParams.get("notice");
-  check(before === notice, `the sign-in screen's notice is ${before}, not ${notice}`);
-  await signIn(page, `${password} (wrong)`);
-  await page.getByText("Wrong username or password").waitFor();
-  await page.waitForURL((url) => !url.searchParams.has("notice"));
-  await page.getByText("Wrong username or password").waitFor();
-  await page.reload();
-  await page.getByRole("button", { name: "Sign in" }).waitFor();
-  check(
-    (await page.getByRole("alert").count()) === 0,
-    "a notice or an error is still shown after a reload",
-  );
+/** A toast inside the toaster's live region, which announces it. */
+const TOAST = '[role="region"][aria-live] [data-slot="toast"]';
+
+/** Marks the toasts already on screen, before an action that raises one. */
+async function markToasts(page) {
+  await page.locator(TOAST).evaluateAll((elements) => {
+    for (const element of elements) {
+      element.setAttribute("data-walkthrough-seen", "");
+    }
+  });
+}
+
+/** Waits for a toast raised since `markToasts` that has every one of `texts`. */
+async function expectToast(page, ...texts) {
+  let toast = page.locator(`${TOAST}:not([data-walkthrough-seen])`);
+  for (const text of texts) {
+    toast = toast.filter({ hasText: text });
+  }
+  await toast.first().waitFor();
+}
+
+/** That no toast repeats what a field says beside it. */
+async function checkNoToast(page, text) {
+  const count = await page.locator(TOAST).filter({ hasText: text }).count();
+  check(count === 0, `a toast repeats the field's "${text}"`);
 }
 
 async function openUserMenu(page) {
@@ -288,28 +300,38 @@ async function main() {
       await page.waitForURL((url) => url.pathname === "/setup");
 
       const fill = async (token, confirm) => {
-        await page.getByLabel("Setup token").fill(token);
-        await page.getByLabel("Username").fill(USERNAME);
+        await page.getByLabel("Setup token", { exact: true }).fill(token);
+        await page.getByLabel("Username", { exact: true }).fill(USERNAME);
         await page.getByLabel("Password", { exact: true }).fill(password);
-        await page.getByLabel("Confirm password").fill(confirm);
+        await page.getByLabel("Confirm password", { exact: true }).fill(confirm);
+        await markToasts(page);
         await page.getByRole("button", { name: "Create owner account" }).click();
       };
 
       await fill(SETUP_TOKEN, `${password} (typo)`);
       await page.getByText("The passwords do not match.").waitFor();
+      await checkNoToast(page, "The passwords do not match");
 
       await fill(`${SETUP_TOKEN}-wrong`, password);
-      await page.getByText("The setup token is not valid").waitFor();
+      await expectToast(page, "The setup token is not valid", "each token works once");
       await shot(page, "setup-invalid-token");
 
+      // The toast is raised before the navigation, and outlives it.
       await fill(SETUP_TOKEN, password);
       await page.waitForURL((url) => url.pathname === "/login");
-      await page.getByText("The owner account is created").waitFor();
+      await expectToast(
+        page,
+        "The owner account is created",
+        "Sign in with its username and password.",
+      );
+      check(
+        new URL(page.url()).search === "",
+        `setup landed on /login${new URL(page.url()).search}`,
+      );
       check((await setupState()) === "closed", "the setup token is not spent");
       await checkOwnerCannotPing(password);
       await checkSubsonicUserPings();
       await shot(page, "login-after-setup");
-      await checkNoticeDroppedOnError(page, "set-up", password);
       await signIn(page, password, { expectAt: "/" });
       const menu = page.getByRole("button", { name: new RegExp(USERNAME) });
       await menu.waitFor();
@@ -332,7 +354,7 @@ async function main() {
     await step("a wrong password is refused, in words", async () => {
       await signOut(page);
       await signIn(page, `${password} (wrong)`);
-      await page.getByText("Wrong username or password").waitFor();
+      await expectToast(page, "Wrong username or password");
       check(new URL(page.url()).pathname === "/login", "left /login on a wrong password");
       await shot(page, "login-wrong-password");
     });
@@ -343,7 +365,7 @@ async function main() {
       }
       await page.goto(`${BASE_URL}/login`);
       await signIn(page, SUBSONIC_PASSWORD, { username: SUBSONIC_USER });
-      await page.getByText("Wrong username or password").waitFor();
+      await expectToast(page, "Wrong username or password");
       check(new URL(page.url()).pathname === "/login", "a Subsonic user left /login");
       await checkSubsonicUserPings();
     });
@@ -358,25 +380,30 @@ async function main() {
     });
 
     await step("the account form checks its fields", async () => {
-      await page.getByLabel("Current password").fill(password);
+      await page.getByLabel("Current password", { exact: true }).fill(password);
       await page.getByLabel("New password", { exact: true }).fill(passwords.changed);
-      await page.getByLabel("Confirm new password").fill(`${passwords.changed} (typo)`);
+      await page
+        .getByLabel("Confirm new password", { exact: true })
+        .fill(`${passwords.changed} (typo)`);
       await page.getByRole("button", { name: "Change password" }).click();
       await page.getByText("The passwords do not match.").waitFor();
+      await checkNoToast(page, "The passwords do not match");
 
-      await page.getByLabel("Current password").fill(`${password} (wrong)`);
-      await page.getByLabel("Confirm new password").fill(passwords.changed);
+      await page.getByLabel("Current password", { exact: true }).fill(`${password} (wrong)`);
+      await page.getByLabel("Confirm new password", { exact: true }).fill(passwords.changed);
       await page.getByRole("button", { name: "Change password" }).click();
       await page.getByText("The current password is wrong.").waitFor();
+      await checkNoToast(page, "The current password is wrong");
       await shot(page, "account-wrong-password");
     });
 
     await step("change password; Subsonic's ping takes neither", async () => {
-      await page.getByLabel("Current password").fill(password);
+      await page.getByLabel("Current password", { exact: true }).fill(password);
       await page.getByLabel("New password", { exact: true }).fill(passwords.changed);
-      await page.getByLabel("Confirm new password").fill(passwords.changed);
+      await page.getByLabel("Confirm new password", { exact: true }).fill(passwords.changed);
+      await markToasts(page);
       await page.getByRole("button", { name: "Change password" }).click();
-      await page.getByText("Password changed").waitFor();
+      await expectToast(page, "Password changed", "Your other sessions are signed out.");
       await shot(page, "account-changed");
       const old = password;
       password = passwords.changed;
@@ -401,9 +428,9 @@ async function main() {
       // As if the session ran out, or was revoked elsewhere: the next write
       // is refused, and the console asks for a sign-in on the way back here.
       await context.clearCookies();
-      await page.getByLabel("Current password").fill(password);
+      await page.getByLabel("Current password", { exact: true }).fill(password);
       await page.getByLabel("New password", { exact: true }).fill(passwords.changed);
-      await page.getByLabel("Confirm new password").fill(passwords.changed);
+      await page.getByLabel("Confirm new password", { exact: true }).fill(passwords.changed);
       await page.getByRole("button", { name: "Change password" }).click();
       await page.waitForURL((url) => url.pathname === "/login");
       const url = new URL(page.url());
@@ -429,17 +456,25 @@ async function main() {
       await signOut(page);
       await page.getByRole("link", { name: "Reset with a setup token" }).click();
       await page.waitForURL((url) => url.pathname === "/setup/reset");
-      await page.getByLabel("Setup token").fill(RESET_TOKEN);
-      await page.getByLabel("Owner username").fill(USERNAME);
+      await page.getByLabel("Setup token", { exact: true }).fill(RESET_TOKEN);
+      await page.getByLabel("Owner username", { exact: true }).fill(USERNAME);
       await page.getByLabel("New password", { exact: true }).fill(passwords.reset);
-      await page.getByLabel("Confirm password").fill(passwords.reset);
+      await page.getByLabel("Confirm password", { exact: true }).fill(passwords.reset);
       await shot(page, "reset");
+      await markToasts(page);
       await page.getByRole("button", { name: "Reset password" }).click();
       await page.waitForURL((url) => url.pathname === "/login");
-      await page.getByText("The password is reset").waitFor();
-      await page.getByText("All sessions of that account are signed out.").waitFor();
+      await expectToast(
+        page,
+        "The password is reset",
+        "Sign in with the new password. All sessions of that account are signed out.",
+      );
+      check(
+        new URL(page.url()).search === "",
+        `the reset landed on /login${new URL(page.url()).search}`,
+      );
+      await shot(page, "login-after-reset");
       password = passwords.reset;
-      await checkNoticeDroppedOnError(page, "reset", password);
       await signIn(page, password, { expectAt: "/" });
       await checkOwnerCannotPing(password);
       await checkSubsonicUserPings();

@@ -2,7 +2,6 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useRouter } from "@tanstack/react-router";
 import { CircleUserRoundIcon, EllipsisVerticalIcon, LogOutIcon } from "lucide-react";
 
-import { ErrorAlert } from "@/components/error-alert";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
   DropdownMenu,
@@ -22,6 +21,7 @@ import {
 import { type Me, meQuery, signOut } from "@/lib/api";
 import { can, roleLabel } from "@/lib/roles";
 import { leaveSignedOut } from "@/lib/sign-out";
+import { toastError } from "@/lib/toasts";
 
 /** The first two characters of the name, for the avatar a console user has none of. */
 function initials(name: string): string {
@@ -45,19 +45,17 @@ export function NavUser({ user }: { user: Me }) {
     // the overview, not on the page this one left (lib/sign-out.ts).
     onSuccess: () => leaveSignedOut(queryClient, router),
     // Never shown as signed out while the session may live on: ask the server
-    // who is signed in instead, and say above the menu that it failed.
-    onError: () => queryClient.invalidateQueries({ queryKey: meQuery.queryKey }),
+    // who is signed in instead, and say in a toast that it failed.
+    onError: (error) => {
+      toastError(error, { title: "Sign-out failed" });
+      return queryClient.invalidateQueries({ queryKey: meQuery.queryKey });
+    },
   });
 
   const role = roleLabel(user.role);
 
   return (
     <SidebarMenu>
-      {logOut.error && (
-        <SidebarMenuItem>
-          <ErrorAlert error={logOut.error} title="Sign-out failed" />
-        </SidebarMenuItem>
-      )}
       <SidebarMenuItem>
         <DropdownMenu>
           <DropdownMenuTrigger
