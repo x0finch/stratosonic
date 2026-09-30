@@ -23,8 +23,9 @@
  * and a mismatched confirmation on the way, then the first sign-in;
  * sign-out and sign-in; a wrong password, and a Subsonic user's; a deep link
  * opened while signed out, which sign-in returns to; the account page's
- * validation and a password change, after which a Subsonic `ping` with
- * neither password is ok; signing out from the account page, which lands on
+ * validation, where a wrong current password's error goes once that field
+ * changes and at the next submit, and a password change, after which a
+ * Subsonic `ping` with neither password is ok; signing out from the account page, which lands on
  * plain `/login` and signs in to the overview; a session that ends while on a
  * page, which sign-in returns to; a reset with a new setup token, whose
  * toast says all of the account's sessions are signed out; dark mode; and a
@@ -405,6 +406,50 @@ async function main() {
       await page.getByText("The current password is wrong.").waitFor();
       await checkNoToast(page, "The current password is wrong");
       await shot(page, "account-wrong-password");
+    });
+
+    await step("a server-reported field error goes once its field changes", async () => {
+      const current = page.getByLabel("Current password", { exact: true });
+      const confirm = page.getByLabel("Confirm new password", { exact: true });
+      const submit = page.getByRole("button", { name: "Change password" });
+      const wrong = page.getByText("The current password is wrong.");
+      const mismatch = page.getByText("The passwords do not match.");
+      /** That the mismatch is the one error on the form (#103). */
+      const checkOnlyMismatch = async () => {
+        await mismatch.waitFor();
+        const errors = await page.locator('[data-slot="field-error"]').allTextContents();
+        check(
+          errors.length === 1 && errors[0] === "The passwords do not match.",
+          `the form shows ${JSON.stringify(errors)}, not only the mismatch`,
+        );
+        check(
+          (await current.getAttribute("aria-invalid")) === null,
+          "the current password is still marked invalid",
+        );
+      };
+
+      // The wrong current password is fixed, then the confirmation typed
+      // wrong: the mismatch check stops the submit before any request, and
+      // the server's word on the old value went when the field changed.
+      await wrong.waitFor();
+      await current.fill(password);
+      await wrong.waitFor({ state: "detached" });
+      await confirm.fill(`${passwords.changed} (typo)`);
+      await submit.click();
+      await checkOnlyMismatch();
+      await shot(page, "account-mismatch-only");
+
+      // A submit drops it too, before its own checks: the wrong password
+      // again, then only the confirmation typed wrong.
+      await current.fill(`${password} (wrong)`);
+      await confirm.fill(passwords.changed);
+      await submit.click();
+      await wrong.waitFor();
+      check((await mismatch.count()) === 0, "the mismatch outlived a matching confirmation");
+      await confirm.fill(`${passwords.changed} (typo)`);
+      check((await wrong.count()) === 1, "the wrong-password error went with another field");
+      await submit.click();
+      await checkOnlyMismatch();
     });
 
     await step("change password; Subsonic's ping takes neither", async () => {
