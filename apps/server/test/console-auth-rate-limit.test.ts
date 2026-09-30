@@ -3,7 +3,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app";
 import { database } from "../src/db";
 import type { Env } from "../src/env";
-import { consoleRequest, countingD1, seedOperator, signIn } from "./console-auth-support";
+import { consoleRequest, countingD1, seedConsoleUser, signIn } from "./console-auth-support";
 import { testEnv } from "./support";
 
 /**
@@ -27,7 +27,7 @@ function attempt(address: string, password = "wrong") {
 }
 
 beforeAll(async () => {
-  await seedOperator("Alice", "wonderland");
+  await seedConsoleUser("Alice", "wonderland");
 });
 
 afterEach(() => {

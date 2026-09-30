@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { CONSOLE_AUTH_ROUTES } from "../console-auth/auth";
 import { type ConsoleEnv, loadConsoleAuth, requireSession } from "../console-auth/middleware";
+import { permissionsOf } from "../console-auth/permissions";
 import { registerAccountRoutes } from "./account";
 import { registerSetupRoutes } from "./setup";
 
@@ -37,11 +38,13 @@ export function createApiApp(): ApiApp {
     api.on(method, `/auth${path}`, (c) => c.var.consoleAuth.handler(c.req.raw));
   }
 
-  // Who am I (#81, #99): the signed-in operator, from a session the cookie
-  // cache may vouch for. Operators have no roles, so there is none to answer.
+  // Who am I (#81, #99): the signed-in console user, from a session the
+  // cookie cache may vouch for, with their role and what it grants, so the
+  // console can leave out what they may not do. The routes check for
+  // themselves.
   api.get("/me", requireSession, (c) => {
-    const { userId, username } = c.var.session;
-    return c.json({ id: userId, username });
+    const { userId, username, role } = c.var.session;
+    return c.json({ id: userId, username, role, permissions: permissionsOf(role) });
   });
 
   // Every route below that writes goes behind `requireSameOrigin`

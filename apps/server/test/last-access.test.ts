@@ -1,5 +1,5 @@
 import { SELF } from "cloudflare:test";
-import { user } from "@stratosonic/db";
+import { subsonicUser } from "@stratosonic/db";
 import { eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import { subsonicToken } from "../src/auth/crypto";
@@ -20,7 +20,10 @@ async function ping(): Promise<void> {
 }
 
 async function lastAccessAt(): Promise<Date | null> {
-  const rows = await database(testEnv).select().from(user).where(eq(user.id, userId));
+  const rows = await database(testEnv)
+    .select()
+    .from(subsonicUser)
+    .where(eq(subsonicUser.id, userId));
 
   return rows[0]?.lastAccessAt ?? null;
 }
@@ -62,7 +65,10 @@ describe("last access", () => {
 
     await SELF.fetch(`${BASE}/rest/ping?u=stranger&p=wrong&v=1.16.1&c=Substreamer`);
 
-    const rows = await database(testEnv).select().from(user).where(eq(user.id, other));
+    const rows = await database(testEnv)
+      .select()
+      .from(subsonicUser)
+      .where(eq(subsonicUser.id, other));
     expect(rows[0]?.lastAccessAt).toBeNull();
   });
 });

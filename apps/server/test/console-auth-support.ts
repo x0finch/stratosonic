@@ -1,15 +1,16 @@
-import { operatorAccount } from "@stratosonic/db";
+import { consoleAccount } from "@stratosonic/db";
 import { eq } from "drizzle-orm";
 import { expect } from "vitest";
 import { subsonicToken } from "../src/auth/crypto";
-import { createOperator } from "../src/console-auth/credentials";
-import { verifyOperatorPassword } from "../src/console-auth/password-hash";
+import { createConsoleUser } from "../src/console-auth/credentials";
+import { verifyConsolePassword } from "../src/console-auth/password-hash";
+import { OWNER_ROLE, type Role } from "../src/console-auth/permissions";
 import { database } from "../src/db";
 import { encryptionKey, type JsonEnvelope, testEnv } from "./support";
 
 /**
  * Helpers for the admin console's auth tests (#89, #99): a D1 binding that
- * records every statement it runs, a cookie jar, the console's operators and
+ * records every statement it runs, a cookie jar, the console's users and
  * their stored passwords.
  */
 
@@ -129,34 +130,55 @@ export function cost(statements: readonly RecordedStatement[]) {
 }
 
 /**
- * Creates an operator with a known password, the way setup does: through the
- * one writer of operators (console-auth/credentials.ts). An operator is not a
- * Subsonic user; `seedUser` (test/support.ts) creates those.
+ * A role no release defines, which grants no permission: the one the console
+ * users a test needs besides its owner get, since the database takes at most
+ * one owner.
  */
-export async function seedOperator(username: string, password: string): Promise<string> {
-  const id = await createOperator(database(testEnv), encryptionKey(), { username, password });
+export const GUEST_ROLE = "guest";
+
+/**
+ * Creates a console user with a known password, the way setup does: through
+ * the one writer of console users (console-auth/credentials.ts), as the owner
+ * unless told otherwise. A console user is not a Subsonic user; `seedUser`
+ * (test/support.ts) creates those.
+ */
+export async function seedConsoleUser(
+  username: string,
+  password: string,
+  role: string = OWNER_ROLE,
+): Promise<string> {
+  const id = await createConsoleUser(database(testEnv), encryptionKey(), {
+    username,
+    password,
+    // The writer takes the roles this release knows; a test also writes
+    // others, which grant nothing.
+    role: role as Role,
+  });
   if (id === null) {
-    throw new Error(`an operator named ${username} already exists`);
+    throw new Error(`a console user named ${username}, or an owner, already exists`);
   }
 
   return id;
 }
 
 /**
- * That an operator has exactly one credential account, holding a peppered
+ * That a console user has exactly one credential account, holding a peppered
  * hash (ADR-0007) of `plaintext` and of nothing else.
  */
-export async function expectOperatorPassword(operatorId: string, plaintext: string): Promise<void> {
+export async function expectConsolePassword(
+  consoleUserId: string,
+  plaintext: string,
+): Promise<void> {
   const accounts = await database(testEnv)
-    .select({ password: operatorAccount.password, providerId: operatorAccount.providerId })
-    .from(operatorAccount)
-    .where(eq(operatorAccount.userId, operatorId));
+    .select({ password: consoleAccount.password, providerId: consoleAccount.providerId })
+    .from(consoleAccount)
+    .where(eq(consoleAccount.userId, consoleUserId));
 
   expect(accounts).toMatchObject([{ providerId: "credential" }]);
   const stored = accounts[0]?.password ?? "";
   expect(stored).toMatch(/^hmac-sha256\$v1\$/);
-  expect(await verifyOperatorPassword(encryptionKey(), stored, plaintext)).toBe(true);
-  expect(await verifyOperatorPassword(encryptionKey(), stored, `${plaintext}?`)).toBe(false);
+  expect(await verifyConsolePassword(encryptionKey(), stored, plaintext)).toBe(true);
+  expect(await verifyConsolePassword(encryptionKey(), stored, `${plaintext}?`)).toBe(false);
 }
 
 /** The session cookies Better Auth sets for an `https` origin. */

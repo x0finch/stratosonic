@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
 import type { Env } from "../env";
 import { type ConsoleAuth, consoleAuth, isUnauthorizedError } from "./auth";
+import { type Permission, roleGrants } from "./permissions";
 
 /**
  * The console API's view of Better Auth (#81, #89): the middleware that
@@ -13,17 +14,23 @@ import { type ConsoleAuth, consoleAuth, isUnauthorizedError } from "./auth";
  */
 
 /**
- * Who a console request is from, as a route sees it: an operator, the
- * console's own kind of account (#99). Operators have no roles, so a session
- * is all a route needs to check.
+ * Who a console request is from, as a route sees it: a console user, the
+ * console's own kind of account (#99), and the role that says what they may
+ * do (console-auth/permissions.ts).
  */
 export interface ConsoleSession {
-  /** Better Auth's session id: what `setOperatorPassword`'s `keepSessionId` names. */
+  /** Better Auth's session id: what `setConsolePassword`'s `keepSessionId` names. */
   readonly id: string;
-  /** The operator's id, in `operator`. */
+  /** The console user's id, in `user`. */
   readonly userId: string;
   /** The name as entered, `display_username`. */
   readonly username: string;
+  /**
+   * `user.role` as stored, which may be one this release does not know
+   * and so grants nothing. As fresh as the check that read it: the cookie
+   * cache's for `requireSession`, D1's for `requireFreshSession`.
+   */
+  readonly role: string;
 }
 
 /**
@@ -92,7 +99,7 @@ export const loadConsoleAuth = createMiddleware<ConsoleEnv>(async (c, next) => {
 });
 
 /**
- * Requires a signed-in operator, trusting the cookie cache: within its 5
+ * Requires a signed-in console user, trusting the cookie cache: within its 5
  * minutes a check makes no D1 query at all. For reads, which may be that
  * stale (#81).
  */
@@ -107,8 +114,8 @@ export const requireSession = createMiddleware<SessionEnv>(async (c, next) => {
 });
 
 /**
- * Requires a signed-in operator, read from D1 past the cookie cache: the
- * session row and its operator as they are now, so a revoked session is
+ * Requires a signed-in console user, read from D1 past the cookie cache: the
+ * session row and its console user as they are now, so a revoked session is
  * refused at once. For every route that writes (#81).
  */
 export const requireFreshSession = createMiddleware<SessionEnv>(async (c, next) => {
@@ -120,6 +127,26 @@ export const requireFreshSession = createMiddleware<SessionEnv>(async (c, next) 
   c.set("session", session);
   await next();
 });
+
+/**
+ * Requires the console user's role to grant `permission`, answering
+ * `403 {"error":"forbidden"}` otherwise. It goes after `requireSession`, whose
+ * role the cookie cache may vouch for up to 5 minutes, which is as stale as a
+ * read may be, or, for a write, after `requireFreshSession`, whose role is
+ * read from D1, so a role taken away stops the next write.
+ *
+ * Routes ask for a permission, never for a role by name, so that a new role
+ * is a change to console-auth/permissions.ts and to no route.
+ */
+export function requirePermission(permission: Permission) {
+  return createMiddleware<SessionEnv>(async (c, next) => {
+    if (!roleGrants(c.var.session.role, permission)) {
+      return c.json({ error: "forbidden" }, 403);
+    }
+
+    await next();
+  });
+}
 
 function getSession(auth: ConsoleAuth, headers: Headers, fresh: boolean) {
   return auth.api.getSession({
@@ -182,5 +209,8 @@ async function readSession(
     // The plugin types `displayUsername` as optional; the column is never
     // null.
     username: response.user.displayUsername ?? response.user.name,
+    // Better Auth types the field as optional; a row always has one, and a
+    // missing one would grant nothing.
+    role: response.user.role ?? "",
   };
 }

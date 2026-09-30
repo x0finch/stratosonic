@@ -24,8 +24,14 @@ export type Property = typeof property.$inferSelect;
 export type NewProperty = typeof property.$inferInsert;
 
 /**
- * An account that can log in, shaped like Navidrome's `user` table
- * (`model/user.go`).
+ * A Subsonic user, an account a Subsonic client logs in with, shaped like
+ * Navidrome's `user` table (`model/user.go`).
+ *
+ * The table is `subsonic_user`, not Navidrome's `user`, because the admin
+ * console's own users take Better Auth's standard `user` table below (#99):
+ * the two kinds of account are separate, and each keeps the name its own
+ * reference implementation uses for it. Only the name differs from
+ * Navidrome's; migration 0008 renamed the table and nothing else.
  *
  * `password` holds the AES-GCM ciphertext of the plaintext password, not a
  * hash: Subsonic token auth needs the plaintext back to verify `md5(password +
@@ -37,8 +43,8 @@ export type NewProperty = typeof property.$inferInsert;
  * an empty user table — no user rows are migrated — so timestamps are stored as
  * epoch milliseconds instead, which is what the rest of the protocol speaks.
  */
-export const user = sqliteTable(
-  "user",
+export const subsonicUser = sqliteTable(
+  "subsonic_user",
   {
     id: text("id").primaryKey(),
     userName: text("user_name").notNull(),
@@ -57,33 +63,33 @@ export const user = sqliteTable(
     // `COLLATE NOCASE`), so uniqueness has to ignore case as well: without
     // this, "Admin" and "admin" could both be created and a login would be
     // ambiguous.
-    uniqueIndex("user_user_name_unique").on(sql`lower(${table.userName})`),
+    uniqueIndex("subsonic_user_user_name_unique").on(sql`lower(${table.userName})`),
   ],
 );
 
-export type User = typeof user.$inferSelect;
-export type NewUser = typeof user.$inferInsert;
+export type SubsonicUser = typeof subsonicUser.$inferSelect;
+export type NewSubsonicUser = typeof subsonicUser.$inferInsert;
 
 /**
- * The admin console's own accounts, the operators', with their sessions and
- * credentials (#99): Better Auth's core schema (v1.7: `user`, `session`,
- * `account`, `verification`) under names of their own, which
- * console-auth/auth.ts maps its models to through `modelName`, plus the table
- * its database-backed rate limiter keeps. Column names follow the snake_case
- * of the tables above, and timestamps are epoch milliseconds like theirs.
+ * The admin console's own users, with their sessions and credentials (#99), in
+ * Better Auth's core schema under its standard table names (v1.7: `user`,
+ * `session`, `account`, `verification`), plus the table its database-backed
+ * rate limiter keeps. Column names follow the snake_case of the tables above,
+ * and timestamps are epoch milliseconds like theirs.
  *
- * An operator is not a Subsonic user. The console is for administration only:
- * an operator never signs in to Subsonic, and a Subsonic user never signs in
- * to the console, so nothing here refers to `user`. Operators have no roles:
- * each can do all the console does.
+ * A console user is not a Subsonic user. The console is for administration
+ * only: a console user never signs in to Subsonic, and a Subsonic user never
+ * signs in to the console, so nothing here refers to `subsonic_user`. Each
+ * console user has one role, which grants a set of permissions (apps/server's
+ * `console-auth/permissions.ts`); `owner` is the only role for now.
  *
- * Better Auth reads these rows and writes the sessions itself. Operators and
- * their passwords are written only by apps/server's
+ * Better Auth reads these rows and writes the sessions itself. Console users
+ * and their passwords are written only by apps/server's
  * `console-auth/credentials.ts`, and a password is stored as a peppered
  * HMAC-SHA256 digest, not reversibly (ADR-0007).
  */
-export const operator = sqliteTable(
-  "operator",
+export const consoleUser = sqliteTable(
+  "user",
   {
     id: text("id").primaryKey(),
     // Better Auth's required display name: the name as entered.
@@ -98,10 +104,9 @@ export const operator = sqliteTable(
     username: text("username")
       .notNull()
       .generatedAlwaysAs(sql`lower("display_username")`, { mode: "virtual" }),
-    // Better Auth's `email`, which its schema requires and keeps unique. An
-    // operator has no address, so it gets a placeholder that no mail can
-    // reach (RFC 2606 reserves `.invalid`). No route that uses it is
-    // enabled.
+    // Better Auth's `email`, which its schema requires and keeps unique. A
+    // console user has no address, so it gets a placeholder that no mail can
+    // reach (RFC 2606 reserves `.invalid`). No route that uses it is enabled.
     email: text("email")
       .notNull()
       .generatedAlwaysAs(sql`lower("display_username") || '@console.invalid'`, {
@@ -109,22 +114,31 @@ export const operator = sqliteTable(
       }),
     emailVerified: integer("email_verified", { mode: "boolean" }).notNull().default(false),
     image: text("image"),
+    // What the console user may do, as a role that apps/server's
+    // `console-auth/permissions.ts` maps to permissions. There is no default,
+    // so a row cannot be written without one, and no CHECK: SQLite can only
+    // change one by rebuilding the table, and a role that registry does not
+    // know grants nothing.
+    role: text("role").notNull(),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
   },
   (table) => [
-    // One account per folded name, which is also the index the username
+    // One console user per folded name, which is also the index the username
     // plugin's `WHERE username = ?` is served from.
-    uniqueIndex("operator_username_unique").on(table.username),
+    uniqueIndex("user_username_unique").on(table.username),
     // Better Auth's own uniqueness rule for `email`.
-    uniqueIndex("operator_email_unique").on(table.email),
+    uniqueIndex("user_email_unique").on(table.email),
+    // At most one owner, whatever writes a row: two setups racing, or any
+    // later code, cannot make a second.
+    uniqueIndex("user_one_owner").on(table.role).where(sql`role = 'owner'`),
   ],
 );
 
-export type Operator = typeof operator.$inferSelect;
+export type ConsoleUser = typeof consoleUser.$inferSelect;
 
-export const operatorSession = sqliteTable(
-  "operator_session",
+export const consoleSession = sqliteTable(
+  "session",
   {
     id: text("id").primaryKey(),
     expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
@@ -135,15 +149,13 @@ export const operatorSession = sqliteTable(
     userAgent: text("user_agent"),
     userId: text("user_id")
       .notNull()
-      .references(() => operator.id, { onDelete: "cascade" }),
+      .references(() => consoleUser.id, { onDelete: "cascade" }),
   },
-  (table) => [index("operator_session_user_id_idx").on(table.userId)],
+  (table) => [index("session_user_id_idx").on(table.userId)],
 );
 
-export type OperatorSession = typeof operatorSession.$inferSelect;
-
-export const operatorAccount = sqliteTable(
-  "operator_account",
+export const consoleAccount = sqliteTable(
+  "account",
   {
     id: text("id").primaryKey(),
     // For the `credential` provider, Better Auth looks the account up by
@@ -152,7 +164,7 @@ export const operatorAccount = sqliteTable(
     providerId: text("provider_id").notNull(),
     userId: text("user_id")
       .notNull()
-      .references(() => operator.id, { onDelete: "cascade" }),
+      .references(() => consoleUser.id, { onDelete: "cascade" }),
     accessToken: text("access_token"),
     refreshToken: text("refresh_token"),
     idToken: text("id_token"),
@@ -165,21 +177,19 @@ export const operatorAccount = sqliteTable(
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
   },
   (table) => [
-    index("operator_account_user_id_idx").on(table.userId),
-    // At most one credential account per operator, so the password
+    index("account_user_id_idx").on(table.userId),
+    // At most one credential account per console user, so the password
     // writer's `WHERE user_id = ? AND provider_id = 'credential'` names one row.
-    uniqueIndex("operator_account_provider_account_unique").on(table.providerId, table.accountId),
+    uniqueIndex("account_provider_account_unique").on(table.providerId, table.accountId),
   ],
 );
-
-export type OperatorAccount = typeof operatorAccount.$inferSelect;
 
 /**
  * Unused by the console's flows (it holds email-verification and reset
  * tokens), but part of the core schema Better Auth checks its adapter against.
  */
-export const operatorVerification = sqliteTable(
-  "operator_verification",
+export const consoleVerification = sqliteTable(
+  "verification",
   {
     id: text("id").primaryKey(),
     identifier: text("identifier").notNull(),
@@ -188,7 +198,7 @@ export const operatorVerification = sqliteTable(
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
   },
-  (table) => [index("operator_verification_identifier_idx").on(table.identifier)],
+  (table) => [index("verification_identifier_idx").on(table.identifier)],
 );
 
 /**
@@ -435,7 +445,7 @@ export const annotation = sqliteTable(
   {
     userId: text("user_id")
       .notNull()
-      .references(() => user.id, { onDelete: "cascade" }),
+      .references(() => subsonicUser.id, { onDelete: "cascade" }),
     itemId: text("item_id").notNull(),
     itemType: text("item_type", { enum: ANNOTATION_ITEM_TYPES }).notNull(),
     starred: integer("starred", { mode: "boolean" }).notNull().default(false),
@@ -481,7 +491,7 @@ export type NewAnnotation = typeof annotation.$inferInsert;
 export const nowPlaying = sqliteTable("now_playing", {
   userId: text("user_id")
     .primaryKey()
-    .references(() => user.id, { onDelete: "cascade" }),
+    .references(() => subsonicUser.id, { onDelete: "cascade" }),
   trackId: text("track_id").notNull(),
   /** The client's `c` parameter, shown in the now-playing feed. */
   playerName: text("player_name").notNull().default(""),
@@ -519,7 +529,7 @@ export type NewNowPlaying = typeof nowPlaying.$inferInsert;
 export const playQueue = sqliteTable("play_queue", {
   userId: text("user_id")
     .primaryKey()
-    .references(() => user.id, { onDelete: "cascade" }),
+    .references(() => subsonicUser.id, { onDelete: "cascade" }),
   /** The queue in order, a JSON array of bare track ids. */
   trackIds: text("track_ids").notNull().default("[]"),
   current: text("current"),
@@ -555,7 +565,7 @@ export const bookmark = sqliteTable(
   {
     userId: text("user_id")
       .notNull()
-      .references(() => user.id, { onDelete: "cascade" }),
+      .references(() => subsonicUser.id, { onDelete: "cascade" }),
     trackId: text("track_id").notNull(),
     /** Milliseconds into the track. */
     position: integer("position").notNull().default(0),

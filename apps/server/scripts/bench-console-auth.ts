@@ -29,8 +29,9 @@ import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { Hono } from "hono";
 import { createApiApp } from "../src/api/app";
-import { createOperator, setOperatorPassword } from "../src/console-auth/credentials";
-import { hashOperatorPassword, verifyOperatorPassword } from "../src/console-auth/password-hash";
+import { createConsoleUser, setConsolePassword } from "../src/console-auth/credentials";
+import { hashConsolePassword, verifyConsolePassword } from "../src/console-auth/password-hash";
+import type { Role } from "../src/console-auth/permissions";
 import { database } from "../src/db";
 import type { Env } from "../src/env";
 
@@ -224,27 +225,31 @@ async function bench(label: string, n: number, prepare: () => Promise<() => Prom
   });
 }
 
-// The operators' password hash itself (ADR-0007): what sign-in's verify hook
+// The console's password hash itself (ADR-0007): what sign-in's verify hook
 // and every password write pay, outside any request.
-const stored = await hashOperatorPassword(PASSPHRASE, "wonderland");
+const stored = await hashConsolePassword(PASSPHRASE, "wonderland");
 await bench(
-  "hashOperatorPassword (HMAC-SHA256)",
+  "hashConsolePassword (HMAC-SHA256)",
   2000,
-  async () => () => hashOperatorPassword(PASSPHRASE, "wonderland"),
+  async () => () => hashConsolePassword(PASSPHRASE, "wonderland"),
 );
 await bench(
-  "verifyOperatorPassword (HMAC-SHA256)",
+  "verifyConsolePassword (HMAC-SHA256)",
   2000,
-  async () => () => verifyOperatorPassword(PASSPHRASE, stored, "wonderland"),
+  async () => () => verifyConsolePassword(PASSPHRASE, stored, "wonderland"),
 );
 await bench(
-  "hashOperatorPassword, 1,024-character password",
+  "hashConsolePassword, 1,024-character password",
   2000,
-  async () => () => hashOperatorPassword(PASSPHRASE, "p".repeat(1024)),
+  async () => () => hashConsolePassword(PASSPHRASE, "p".repeat(1024)),
 );
 
-const aliceId = await createOperator(db, PASSPHRASE, { username: "Alice", password: "wonderland" });
-if (aliceId === null) throw new Error("could not create the bench operator");
+const aliceId = await createConsoleUser(db, PASSPHRASE, {
+  username: "Alice",
+  password: "wonderland",
+  role: "owner",
+});
+if (aliceId === null) throw new Error("could not create the bench's owner");
 
 // A fresh app and origin each time, so the isolate's instance cache misses.
 let freshOrigin = 0;
@@ -292,7 +297,7 @@ const tokenOnly = cookie
   .filter((pair) => pair.includes("session_token"))
   .join("; ");
 await bench(
-  "GET /api/me, cache expired (session + operator read)",
+  "GET /api/me, cache expired (session + user read)",
   1000,
   async () => () => send(request("/api/me", { cookie: tokenOnly })),
 );
@@ -303,14 +308,16 @@ await bench("sign-out", 300, async () => {
 });
 
 await bench(
-  "setOperatorPassword (one batch)",
+  "setConsolePassword (one batch)",
   300,
-  async () => () => setOperatorPassword(db, PASSPHRASE, aliceId, "wonderland"),
+  async () => () => setConsolePassword(db, PASSPHRASE, aliceId, "wonderland"),
 );
-let operators = 0;
-await bench("createOperator (one batch)", 300, async () => {
-  const username = `operator-${operators++}`;
-  return () => createOperator(db, PASSPHRASE, { username, password: "x" });
+let users = 0;
+await bench("createConsoleUser (one batch)", 300, async () => {
+  const username = `user-${users++}`;
+  // A role no release defines: the database takes one owner, and Alice is it.
+  return () =>
+    createConsoleUser(db, PASSPHRASE, { username, password: "x", role: "guest" as Role });
 });
 
 /** Fails the bench when a request is not answered as it should be. */
@@ -368,11 +375,9 @@ await bench("POST /api/account/password, wrong current password", 300, async () 
       ),
     );
 });
-// Last, since each run empties the operators' tables first, untimed.
-await bench("POST /api/setup (first operator)", 300, async () => {
-  sqlite.exec(
-    "DELETE FROM operator_session; DELETE FROM operator_account; DELETE FROM operator; DELETE FROM property",
-  );
+// Last, since each run empties the console's user tables first, untimed.
+await bench("POST /api/setup (the owner)", 300, async () => {
+  sqlite.exec("DELETE FROM session; DELETE FROM account; DELETE FROM user; DELETE FROM property");
   return () =>
     expecting(
       201,

@@ -1,10 +1,10 @@
 /**
- * How operators' passwords are stored (#99, ADR-0007): a peppered
+ * How console users' passwords are stored (#99, ADR-0007): a peppered
  * HMAC-SHA256, not a slow hash, and not the reversible AES-GCM of Subsonic
  * passwords.
  *
- * An operator's password never has to be recovered: nothing but the console
- * signs in with it, and the console only compares. So it is hashed, one way. A slow
+ * A console user's password never has to be recovered: nothing but the
+ * console signs in with it, and the console only compares. So it is hashed, one way. A slow
  * hash does not fit the Workers Free plan's 10 ms of CPU a request: PBKDF2-
  * SHA256 measured about 10 ms at 10,000 iterations and 77 ms at 100,000, and
  * Better Auth's default, scrypt, about 100 ms. Instead:
@@ -98,7 +98,7 @@ async function digest(passphrase: string, salt: Uint8Array, password: string): P
 }
 
 /** Hashes a console password for storage, under a fresh random salt. */
-export async function hashOperatorPassword(passphrase: string, password: string): Promise<string> {
+export async function hashConsolePassword(passphrase: string, password: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES));
 
   return `${HASH_PREFIX}${toBase64(salt)}$${toBase64(await digest(passphrase, salt, password))}`;
@@ -110,7 +110,7 @@ export async function hashOperatorPassword(passphrase: string, password: string)
  * its bytes a guess got right. A value that is not a hash this scheme wrote,
  * or one written under another key, matches nothing.
  */
-export async function verifyOperatorPassword(
+export async function verifyConsolePassword(
   passphrase: string,
   stored: string,
   password: string,

@@ -17,7 +17,7 @@ import { BASE, testEnv } from "./support";
  * URLs, the cron and the scan driver's alarm never build an instance, and
  * never read or write the auth tables, but for the cron's prune of their
  * expired rows (#93) and the first-run check, once per isolate, of whether an
- * operator exists (#99).
+ * owner exists (#99).
  *
  * `betterAuth()` is counted through a mock of `better-auth/minimal`, and every
  * D1 statement through a counting binding.
@@ -36,9 +36,11 @@ vi.mock("better-auth/minimal", async (importOriginal) => {
   };
 });
 
-/** The tables only Better Auth and the operators' writer touch. */
-const AUTH_TABLES =
-  /"(operator|operator_session|operator_account|operator_verification|rate_limit)"/;
+/**
+ * The tables only Better Auth and the console users' writer touch. `"user"`,
+ * quoted, is the console's; the Subsonic table is `"subsonic_user"`.
+ */
+const AUTH_TABLES = /"(user|session|account|verification|rate_limit)"/;
 
 const d1 = countingD1(testEnv.DB);
 const env: Env = { ...testEnv, DB: d1.binding };
@@ -89,7 +91,7 @@ describe("the console's Better Auth instance", () => {
     expect(built.count).toBe(0);
   });
 
-  it("is not built by an isolate's first request, whose bootstrap only asks if an operator exists", async () => {
+  it("is not built by an isolate's first request, whose bootstrap only asks if an owner exists", async () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     const response = await fetchThroughWorker(
       new Request(`${BASE}/rest/ping?u=admin&p=sesame&v=1.16.1&c=test&f=json`),
@@ -101,7 +103,7 @@ describe("the console's Better Auth instance", () => {
     const checks = d1.statements.filter((statement) => AUTH_TABLES.test(statement.sql));
     expect(checks.map((statement) => statement.sql)).toEqual([
       expect.stringMatching(
-        /^select\s+exists \(select 1 from "property".*exists \(select 1 from "operator"\)/s,
+        /^select\s+exists \(select 1 from "property".*exists \(select 1 from "user" where "user"\."role" = \?\)/s,
       ),
     ]);
     expect(checks[0]?.rowsWritten).toBe(0);
@@ -141,9 +143,9 @@ describe("the console's Better Auth instance", () => {
     expect(start).toHaveBeenCalledOnce();
     // The prune's three bounded deletes (console-auth/prune.ts), and nothing else.
     expect(authTableStatements().map((sql) => sql.match(/^delete from "(\w+)"/)?.[1])).toEqual([
-      "operator_session",
+      "session",
       "rate_limit",
-      "operator_verification",
+      "verification",
     ]);
     expect(built.count).toBe(0);
   });

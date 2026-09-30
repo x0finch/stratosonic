@@ -1,10 +1,10 @@
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import {
+  consoleAccount,
+  consoleSession,
+  consoleUser,
+  consoleVerification,
   newRandomId,
-  operator,
-  operatorAccount,
-  operatorSession,
-  operatorVerification,
   rateLimit,
 } from "@stratosonic/db";
 import { isAPIError } from "better-auth/api";
@@ -12,20 +12,19 @@ import { betterAuth } from "better-auth/minimal";
 import { username } from "better-auth/plugins/username";
 import { drizzle } from "drizzle-orm/d1";
 import {
-  foldOperatorUsername,
+  foldConsoleUsername,
   MAX_PASSWORD_LENGTH,
   MAX_USERNAME_LENGTH,
   MIN_PASSWORD_LENGTH,
 } from "./credentials";
-import { hashOperatorPassword, verifyOperatorPassword } from "./password-hash";
+import { hashConsolePassword, verifyConsolePassword } from "./password-hash";
 
 /**
  * The admin console's sessions: Better Auth (v1.7, `better-auth/minimal`, so
  * without Kysely), as the spike proved it (#86) and #81 specifies it, over
- * the console's own accounts (#99): `operator`, `operator_session`,
- * `operator_account` and `operator_verification`, which its `modelName`s map
- * its models to. An operator is not a Subsonic user, and nothing here reads
- * or writes the Subsonic `user` table.
+ * the console's own users (#99), in Better Auth's standard tables (`user`,
+ * `session`, `account`, `verification`). A console user is not a Subsonic
+ * user, and nothing here reads or writes the `subsonic_user` table.
  *
  * This module is the only one that imports Better Auth, and the Worker imports
  * it statically. Evaluating the auth stack adds about 38 ms to the Worker's
@@ -37,8 +36,8 @@ import { hashOperatorPassword, verifyOperatorPassword } from "./password-hash";
  * of CPU. What `/rest/*`, `/share/*`, the cron and the scan driver's alarm
  * never pay is an instance: one is built on the first `/api` request for an
  * origin (`consoleAuth` below), and nothing else touches the auth tables but
- * the operators' writer (credentials.ts), the cron's prune of expired rows
- * (prune.ts), and the first-run check of whether an operator exists
+ * the console users' writer (credentials.ts), the cron's prune of expired
+ * rows (prune.ts), and the first-run check of whether an owner exists
  * (setup/initial-setup.ts).
  */
 
@@ -62,7 +61,7 @@ export const CONSOLE_AUTH_ROUTES = [
  * username plugin, which it is told to refuse as well. A test fails when an
  * upgrade registers a route on neither list (test/console-auth-routes.test.ts).
  *
- * The writers of users, passwords and emails matter most: operators and
+ * The writers of users, passwords and emails matter most: console users and
  * their passwords are written by console-auth/credentials.ts alone, and
  * `email` is a generated placeholder that Drizzle leaves out of every write.
  * The rest are session management, social and email flows, a health check
@@ -108,18 +107,6 @@ export const DISABLED_AUTH_PATHS = [
   "/ok",
   "/error",
 ] as const;
-
-/**
- * The Better Auth models' names, each the name of the console's own table
- * (#99), so that no model can be mistaken for the Subsonic `user` table. The
- * rate limiter's table keeps Better Auth's name, `rate_limit`.
- */
-export const OPERATOR_MODEL_NAMES = {
-  user: "operator",
-  session: "operator_session",
-  account: "operator_account",
-  verification: "operator_verification",
-} as const;
 
 /**
  * The HKDF `info` the session secret is derived under. Rotating every
@@ -187,22 +174,28 @@ function build({ db, passphrase, origin }: ConsoleAuthOptions, secret: string) {
     secret,
     database: drizzleAdapter(drizzle(db), {
       provider: "sqlite",
-      // Keyed by each model's `modelName` below, which is what the adapter
-      // looks a table up by.
+      // Keyed by Better Auth's model names, which are also the tables' names.
       schema: {
-        [OPERATOR_MODEL_NAMES.user]: operator,
-        [OPERATOR_MODEL_NAMES.session]: operatorSession,
-        [OPERATOR_MODEL_NAMES.account]: operatorAccount,
-        [OPERATOR_MODEL_NAMES.verification]: operatorVerification,
+        user: consoleUser,
+        session: consoleSession,
+        account: consoleAccount,
+        verification: consoleVerification,
         rateLimit,
       },
     }),
-    user: { modelName: OPERATOR_MODEL_NAMES.user },
-    account: { modelName: OPERATOR_MODEL_NAMES.account },
-    verification: { modelName: OPERATOR_MODEL_NAMES.verification },
+    user: {
+      additionalFields: {
+        // Read-only to Better Auth: it comes back with the session, and so
+        // in the cookie cache, so a route can check a permission without a
+        // D1 read, but nothing Better Auth serves can set it (`input: false`
+        // refuses it in any body). Console users and their roles are written
+        // by console-auth/credentials.ts alone.
+        role: { type: "string", required: false, input: false },
+      },
+    },
     emailAndPassword: {
       enabled: true,
-      // Operators are created by our own code (the setup token)
+      // Console users are created by our own code (the setup token)
       // through console-auth/credentials.ts, never by a public sign-up.
       disableSignUp: true,
       // The routes that set a password accept up to MAX_PASSWORD_LENGTH,
@@ -223,14 +216,13 @@ function build({ db, passphrase, origin }: ConsoleAuthOptions, secret: string) {
       // single owner has few names to find. Padding the unknown path with a
       // dummy query would cost D1 on every failed sign-in.
       password: {
-        hash: (password) => hashOperatorPassword(passphrase, password),
-        verify: ({ hash, password }) => verifyOperatorPassword(passphrase, hash, password),
+        hash: (password) => hashConsolePassword(passphrase, password),
+        verify: ({ hash, password }) => verifyConsolePassword(passphrase, hash, password),
       },
     },
     session: {
-      modelName: OPERATOR_MODEL_NAMES.session,
       // A session check trusts the signed cookie for 5 minutes and touches D1
-      // zero times; after that it reads the session and operator again. The
+      // zero times; after that it reads the session and user again. The
       // console's writes never trust it (`requireFreshSession`).
       cookieCache: { enabled: true, strategy: "compact", maxAge: COOKIE_CACHE_SECONDS },
     },
@@ -254,7 +246,7 @@ function build({ db, passphrase, origin }: ConsoleAuthOptions, secret: string) {
         // `username` column is `lower(display_username)`; the plugin's
         // default, `toLowerCase()`, folds more and would look some names up
         // under a key the column never holds.
-        usernameNormalization: foldOperatorUsername,
+        usernameNormalization: foldConsoleUsername,
         // Navidrome requires only that a name is there, and setup takes any
         // name of 1 to MAX_USERNAME_LENGTH characters (credentials.ts), so
         // every name it takes must be able to sign in, not only the plugin's

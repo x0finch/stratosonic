@@ -1,15 +1,16 @@
 import {
-  operator,
-  operatorAccount,
-  operatorSession,
+  consoleAccount,
+  consoleSession,
+  consoleUser,
   property,
   rateLimit,
-  user,
+  subsonicUser,
 } from "@stratosonic/db";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app";
 import { MAX_PASSWORD_LENGTH, MAX_USERNAME_LENGTH } from "../src/console-auth/credentials";
+import { PERMISSIONS } from "../src/console-auth/permissions";
 import { database } from "../src/db";
 import type { Env } from "../src/env";
 import { runInitialSetup } from "../src/setup/initial-setup";
@@ -19,9 +20,10 @@ import {
   consoleRequest,
   cost,
   countingD1,
-  expectOperatorPassword,
+  expectConsolePassword,
+  GUEST_ROLE,
   type RecordedStatement,
-  seedOperator,
+  seedConsoleUser,
   shape,
   signIn,
   subsonicPing,
@@ -31,7 +33,7 @@ import { seedUser, testEnv } from "./support";
 /**
  * Setup and recovery with the setup token (#81, #90, #99), through the
  * Worker's app over a D1 binding that counts every statement. They create and
- * reset operators, the console's own accounts, and never a Subsonic user.
+ * reset console users, the console's own accounts, and never a Subsonic user.
  *
  * This file owns its database, and every test starts from an empty one: the
  * app is called directly rather than through the Worker's `fetch`, which would
@@ -82,10 +84,10 @@ function subsonicStatus(username: string, password: string) {
 async function snapshot() {
   const db = database(testEnv);
   return {
-    subsonicUsers: await db.select().from(user),
-    operators: await db.select().from(operator),
-    accounts: await db.select().from(operatorAccount),
-    sessions: await db.select().from(operatorSession),
+    subsonicUsers: await db.select().from(subsonicUser),
+    consoleUsers: await db.select().from(consoleUser),
+    accounts: await db.select().from(consoleAccount),
+    sessions: await db.select().from(consoleSession),
     properties: await db.select().from(property),
   };
 }
@@ -124,7 +126,7 @@ async function spentRows() {
 }
 
 async function sessionsOf(userId: string) {
-  const rows = await database(testEnv).select().from(operatorSession);
+  const rows = await database(testEnv).select().from(consoleSession);
   return rows.filter((row) => row.userId === userId);
 }
 
@@ -140,10 +142,10 @@ function changePassword(jar: CookieJar, currentPassword: string, newPassword: st
 
 beforeEach(async () => {
   const db = database(testEnv);
-  await db.delete(operatorSession);
-  await db.delete(operatorAccount);
-  await db.delete(operator);
-  await db.delete(user);
+  await db.delete(consoleSession);
+  await db.delete(consoleAccount);
+  await db.delete(consoleUser);
+  await db.delete(subsonicUser);
   await db.delete(property);
   await db.delete(rateLimit);
 });
@@ -176,7 +178,7 @@ describe("GET /api/setup", () => {
     expect(reports).toHaveLength(1);
   });
 
-  it("needs setup with a token of 32 characters or more and no operator, in one read", async () => {
+  it("needs setup with a token of 32 characters or more and no console user, in one read", async () => {
     let answer: unknown;
     const statements = await measured(async () => {
       answer = await state(envWith(TOKEN.slice(0, 32)));
@@ -187,8 +189,8 @@ describe("GET /api/setup", () => {
     expect(cost(statements).rowsWritten).toBe(0);
   });
 
-  it("offers a reset once an operator exists", async () => {
-    await seedOperator("owner", "old");
+  it("offers a reset once a console user exists", async () => {
+    await seedConsoleUser("owner", "old");
 
     expect(await state()).toEqual({ state: "reset-available" });
   });
@@ -206,9 +208,9 @@ describe("GET /api/setup", () => {
     expect(await state(envWith(OTHER_TOKEN))).toEqual({ state: "reset-available" });
   });
 
-  it("is closed for a spent token even when no operator is left", async () => {
+  it("is closed for a spent token even when no console user is left", async () => {
     expect((await setup({ token: TOKEN, username: "owner", password: "pw" })).status).toBe(201);
-    await database(testEnv).delete(operator);
+    await database(testEnv).delete(consoleUser);
 
     expect(await state()).toEqual({ state: "closed" });
     await expectRefusal(
@@ -220,7 +222,7 @@ describe("GET /api/setup", () => {
 });
 
 describe("POST /api/setup", () => {
-  it("creates the first operator, spends the token, and costs one read and one batch", async () => {
+  it("creates the owner, spends the token, and costs one read and one batch", async () => {
     let response: Response | undefined;
     const statements = await measured(async () => {
       response = await setup({ token: TOKEN, username: "Owner", password: "correct horse" });
@@ -228,35 +230,51 @@ describe("POST /api/setup", () => {
 
     expect(response?.status).toBe(201);
     const created = (await response?.json()) as { id: string };
-    expect(created).toEqual({ id: expect.any(String), username: "Owner" });
+    expect(created).toEqual({
+      id: expect.any(String),
+      username: "Owner",
+      role: "owner",
+      permissions: [...PERMISSIONS],
+    });
     expect(statements.map(shape)).toEqual([
-      "select operator", // whether any operator exists and whether the token is spent
-      "insert operator",
-      "insert operator_account",
+      "select user", // whether any console user exists and whether the token is spent
+      "insert user",
+      "insert account",
       "insert property", // the spent token
     ]);
     expect(cost(statements).roundTrips).toBe(2);
-    // D1 counts each index entry as a row written: the operator and its
-    // three indexes, the account and its three, the spent token and its key.
-    expect(cost(statements).rowsWritten).toBe(10);
+    // D1 counts each index entry as a row written: the console user and its
+    // four indexes (the owner's among them), the account and its three, and
+    // the spent token and its key.
+    expect(cost(statements).rowsWritten).toBe(11);
 
-    const [owner] = await database(testEnv).select().from(operator);
-    expect(owner).toMatchObject({ id: created.id, displayUsername: "Owner", username: "owner" });
-    await expectOperatorPassword(created.id, "correct horse");
-    expect(await database(testEnv).select().from(user)).toEqual([]);
+    const [owner] = await database(testEnv).select().from(consoleUser);
+    expect(owner).toMatchObject({
+      id: created.id,
+      displayUsername: "Owner",
+      username: "owner",
+      role: "owner",
+    });
+    await expectConsolePassword(created.id, "correct horse");
+    expect(await database(testEnv).select().from(subsonicUser)).toEqual([]);
     expect(await spentRows()).toEqual([
       { id: `SetupTokenSpent:${await setupTokenDigest(TOKEN)}`, value: expect.any(String) },
     ]);
   });
 
-  it("leaves an operator who can sign in to the console, and not to Subsonic", async () => {
+  it("leaves an owner who can sign in to the console, and not to Subsonic", async () => {
     const created = await setup({ token: TOKEN, username: "Owner", password: "correct horse" });
     const { id } = (await created.json()) as { id: string };
 
     const { response, jar } = await signIn(send, ORIGIN, "owner", "correct horse");
     expect(response.status).toBe(200);
     const me = await send(consoleRequest(ORIGIN, "/api/me", { jar }));
-    expect(await me.json()).toEqual({ id, username: "Owner" });
+    expect(await me.json()).toEqual({
+      id,
+      username: "Owner",
+      role: "owner",
+      permissions: [...PERMISSIONS],
+    });
     expect(await subsonicStatus("owner", "correct horse")).toBe(40);
   });
 
@@ -308,8 +326,8 @@ describe("POST /api/setup", () => {
     );
   });
 
-  it("refuses while an operator exists, with an unspent token", async () => {
-    await seedOperator("first", "pw");
+  it("refuses while a console user exists, with an unspent token", async () => {
+    await seedConsoleUser("first", "pw");
 
     await expectRefusal(
       () => setup({ token: TOKEN, username: "owner", password: "pw" }),
@@ -318,14 +336,14 @@ describe("POST /api/setup", () => {
     );
   });
 
-  it("creates the operator while Subsonic users exist, and leaves them as they were", async () => {
+  it("creates the owner while Subsonic users exist, and leaves them as they were", async () => {
     await seedUser("owner", "subsonic password", true);
-    const before = await database(testEnv).select().from(user);
+    const before = await database(testEnv).select().from(subsonicUser);
 
     const response = await setup({ token: TOKEN, username: "owner", password: "console password" });
 
     expect(response.status).toBe(201);
-    expect(await database(testEnv).select().from(user)).toEqual(before);
+    expect(await database(testEnv).select().from(subsonicUser)).toEqual(before);
     expect(await subsonicStatus("owner", "subsonic password")).toBe("ok");
     expect(await subsonicStatus("owner", "console password")).toBe(40);
     expect((await signIn(send, ORIGIN, "owner", "subsonic password")).response.status).toBe(401);
@@ -407,7 +425,7 @@ describe("POST /api/setup", () => {
     );
   });
 
-  it("makes exactly one operator when two setups race, whatever names they ask for", async () => {
+  it("makes exactly one owner when two setups race, whatever names they ask for", async () => {
     let responses: Response[] = [];
     const statements = await measured(async () => {
       responses = await Promise.all([
@@ -419,13 +437,13 @@ describe("POST /api/setup", () => {
     expect(responses.map((response) => response.status).sort()).toEqual([201, 409]);
     // Both read an empty table and sent their batch: the guard inside the
     // insert, not the read before it, is what stopped the second.
-    expect(statements.map(shape).filter((s) => s === "insert operator")).toHaveLength(2);
-    const operators = await database(testEnv).select().from(operator);
-    expect(operators).toHaveLength(1);
-    expect(await database(testEnv).select().from(operatorAccount)).toHaveLength(1);
+    expect(statements.map(shape).filter((s) => s === "insert user")).toHaveLength(2);
+    const consoleUsers = await database(testEnv).select().from(consoleUser);
+    expect(consoleUsers).toHaveLength(1);
+    expect(await database(testEnv).select().from(consoleAccount)).toHaveLength(1);
     expect(await spentRows()).toHaveLength(1);
-    const [winner] = operators;
-    await expectOperatorPassword(
+    const [winner] = consoleUsers;
+    await expectConsolePassword(
       winner?.id ?? "",
       winner?.displayUsername === "first" ? "one" : "two",
     );
@@ -438,8 +456,8 @@ describe("POST /api/setup", () => {
     ]);
 
     expect(response.status).toBe(201);
-    expect(await database(testEnv).select().from(operator)).toHaveLength(1);
-    expect(await database(testEnv).select().from(user)).toMatchObject([
+    expect(await database(testEnv).select().from(consoleUser)).toHaveLength(1);
+    expect(await database(testEnv).select().from(subsonicUser)).toMatchObject([
       { userName: "admin", isAdmin: true },
     ]);
     expect(await spentRows()).toHaveLength(1);
@@ -452,14 +470,14 @@ describe("POST /api/setup/reset", () => {
   let ownerId: string;
 
   beforeEach(async () => {
-    ownerId = await seedOperator("Owner", "forgotten");
-    await seedOperator("other", "theirs");
+    ownerId = await seedConsoleUser("Owner", "forgotten");
+    await seedConsoleUser("other", "theirs", GUEST_ROLE);
     // Subsonic users, one of them Owner's namesake, which a reset never names.
     await seedUser("Owner", "subsonic", true);
     await seedUser("listener", "music");
   });
 
-  it("resets an operator's password, ends every session, and spends the token", async () => {
+  it("resets a console user's password, ends every session, and spends the token", async () => {
     const { jar } = await signIn(send, ORIGIN, "owner", "forgotten");
     await signIn(send, ORIGIN, "owner", "forgotten");
     expect(await sessionsOf(ownerId)).toHaveLength(2);
@@ -470,11 +488,16 @@ describe("POST /api/setup/reset", () => {
     });
 
     expect(response?.status).toBe(200);
-    expect(await response?.json()).toEqual({ id: ownerId, username: "Owner" });
+    expect(await response?.json()).toEqual({
+      id: ownerId,
+      username: "Owner",
+      role: "owner",
+      permissions: [...PERMISSIONS],
+    });
     expect(statements.map(shape)).toEqual([
-      "select operator", // whether the token is spent, and the operator it names
-      "update operator_account",
-      "delete operator_session",
+      "select user", // whether the token is spent, and the console user it names
+      "update account",
+      "delete session",
       "insert property", // the spent token
     ]);
     expect(cost(statements).roundTrips).toBe(2);
@@ -485,20 +508,43 @@ describe("POST /api/setup/reset", () => {
     // The old sessions are gone: a write refuses the old cookie at once.
     expect(await sessionsOf(ownerId)).toEqual([]);
     expect((await changePassword(jar, "remembered", "again")).status).toBe(401);
-    await expectOperatorPassword(ownerId, "remembered");
+    await expectConsolePassword(ownerId, "remembered");
     expect(await spentRows()).toHaveLength(1);
   });
 
   it("moves the console to the new password, and leaves Subsonic's as it was", async () => {
-    const before = await database(testEnv).select().from(user);
+    const before = await database(testEnv).select().from(subsonicUser);
 
     await reset({ token: TOKEN, username: "owner", password: "remembered" });
 
     expect((await signIn(send, ORIGIN, "owner", "remembered")).response.status).toBe(200);
     expect((await signIn(send, ORIGIN, "owner", "forgotten")).response.status).toBe(401);
-    expect(await database(testEnv).select().from(user)).toEqual(before);
+    expect(await database(testEnv).select().from(subsonicUser)).toEqual(before);
     expect(await subsonicStatus("owner", "subsonic")).toBe("ok");
     expect(await subsonicStatus("owner", "remembered")).toBe(40);
+  });
+
+  it("keeps the console user's role, whatever it is", async () => {
+    await database(testEnv)
+      .update(consoleUser)
+      .set({ role: "read-only" })
+      .where(eq(consoleUser.id, ownerId));
+
+    const response = await reset({ token: TOKEN, username: "owner", password: "remembered" });
+
+    // A role this release does not know grants nothing, and the reset gives
+    // it nothing more.
+    expect(await response.json()).toEqual({
+      id: ownerId,
+      username: "Owner",
+      role: "read-only",
+      permissions: [],
+    });
+    const [row] = await database(testEnv)
+      .select({ role: consoleUser.role })
+      .from(consoleUser)
+      .where(eq(consoleUser.id, ownerId));
+    expect(row?.role).toBe("read-only");
   });
 
   it("refuses the same token value a second time", async () => {
@@ -539,7 +585,7 @@ describe("POST /api/setup/reset", () => {
     );
   });
 
-  it("refuses a Subsonic user's name, which no operator has", async () => {
+  it("refuses a Subsonic user's name, which no console user has", async () => {
     await expectRefusal(
       () => reset({ token: TOKEN, username: "listener", password: "x" }),
       400,
@@ -547,10 +593,10 @@ describe("POST /api/setup/reset", () => {
     );
   });
 
-  it("answers unknown_user for an operator deleted between its check and its batch", async () => {
+  it("answers unknown_user for a console user deleted between its check and its batch", async () => {
     const batch = d1.binding.batch.bind(d1.binding);
     vi.spyOn(d1.binding, "batch").mockImplementationOnce(async (statements) => {
-      await database(testEnv).delete(operator).where(eq(operator.id, ownerId));
+      await database(testEnv).delete(consoleUser).where(eq(consoleUser.id, ownerId));
       return batch(statements);
     });
 
@@ -579,8 +625,8 @@ describe("POST /api/setup/reset", () => {
     const response = await reset({ token: TOKEN, username: "OWNER", password: "found" });
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ id: ownerId, username: "Owner" });
-    await expectOperatorPassword(ownerId, "found");
+    expect(await response.json()).toMatchObject({ id: ownerId, username: "Owner" });
+    await expectConsolePassword(ownerId, "found");
     expect((await signIn(send, ORIGIN, " owner ", "found")).response.status).toBe(401);
   });
 
@@ -603,8 +649,8 @@ describe("POST /api/setup/reset", () => {
     );
   });
 
-  it("refuses when there is no operator, whatever Subsonic users there are", async () => {
-    await database(testEnv).delete(operator);
+  it("refuses when there is no console user, whatever Subsonic users there are", async () => {
+    await database(testEnv).delete(consoleUser);
 
     await expectRefusal(
       () => reset({ token: TOKEN, username: "owner", password: "x" }),
@@ -649,7 +695,7 @@ describe("POST /api/setup/reset", () => {
     const statuses = responses.map((response) => response.status);
     expect([...statuses].sort()).toEqual([200, 403]);
     expect(await responses[statuses.indexOf(403)]?.json()).toEqual({ error: "invalid_token" });
-    await expectOperatorPassword(ownerId, statuses[0] === 200 ? "first" : "second");
+    await expectConsolePassword(ownerId, statuses[0] === 200 ? "first" : "second");
     expect(await spentRows()).toHaveLength(1);
   });
 });

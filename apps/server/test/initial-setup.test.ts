@@ -1,5 +1,5 @@
 import { SELF } from "cloudflare:test";
-import { property, user } from "@stratosonic/db";
+import { property, subsonicUser } from "@stratosonic/db";
 import { beforeAll, describe, expect, it } from "vitest";
 import { decryptPassword, subsonicToken } from "../src/auth/crypto";
 import { database } from "../src/db";
@@ -19,7 +19,7 @@ const INITIAL_USER = "admin";
 const INITIAL_PASSWORD = "sesame";
 
 function users() {
-  return database(testEnv).select().from(user);
+  return database(testEnv).select().from(subsonicUser);
 }
 
 beforeAll(async () => {
@@ -101,7 +101,7 @@ describe("a second run", () => {
   it("does not recreate the user after it has been deleted", async () => {
     const db = database(testEnv);
     const [existing] = await users();
-    await db.delete(user);
+    await db.delete(subsonicUser);
 
     await runInitialSetup(testEnv);
 
@@ -109,7 +109,7 @@ describe("a second run", () => {
 
     // Put the fixture back for whatever runs next in this file.
     if (existing) {
-      await db.insert(user).values(existing);
+      await db.insert(subsonicUser).values(existing);
     }
   });
 });
@@ -119,7 +119,7 @@ describe("when the environment does not say what to create", () => {
     const db = database(testEnv);
     const [existing] = await users();
     const [flag] = await db.select().from(property);
-    await db.delete(user);
+    await db.delete(subsonicUser);
     await db.delete(property);
 
     await runInitialSetup({ ...testEnv, INITIAL_PASSWORD: undefined });
@@ -128,7 +128,7 @@ describe("when the environment does not say what to create", () => {
     expect(await db.select().from(property)).toHaveLength(0);
 
     // Put the fixture back for whatever runs next in this file.
-    if (existing) await db.insert(user).values(existing);
+    if (existing) await db.insert(subsonicUser).values(existing);
     if (flag) await db.insert(property).values(flag);
   });
 });

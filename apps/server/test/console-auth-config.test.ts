@@ -6,7 +6,7 @@ import {
   CookieJar,
   consoleRequest,
   SESSION_DATA_COOKIE,
-  seedOperator,
+  seedConsoleUser,
   signIn,
 } from "./console-auth-support";
 import { BASE, encryptionKey, testEnv } from "./support";
@@ -21,7 +21,7 @@ const app = createApp();
 const sendWith = (env: Env) => (request: Request) => app.request(request, undefined, env);
 
 beforeAll(async () => {
-  await seedOperator("Alice", "wonderland");
+  await seedConsoleUser("Alice", "wonderland");
 });
 
 afterEach(() => {

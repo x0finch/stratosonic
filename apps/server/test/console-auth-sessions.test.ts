@@ -1,15 +1,16 @@
 import { SELF } from "cloudflare:test";
-import { operatorSession } from "@stratosonic/db";
+import { consoleSession, consoleUser } from "@stratosonic/db";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { Hono } from "hono";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app";
-import { setOperatorPassword } from "../src/console-auth/credentials";
+import { setConsolePassword } from "../src/console-auth/credentials";
 import {
   type ConsoleEnv,
   loadConsoleAuth,
   requireFreshSession,
+  requirePermission,
   requireSession,
 } from "../src/console-auth/middleware";
 import { database } from "../src/db";
@@ -19,10 +20,11 @@ import {
   consoleRequest,
   cost,
   countingD1,
-  expectOperatorPassword,
+  expectConsolePassword,
+  GUEST_ROLE,
   type RecordedStatement,
   SESSION_DATA_COOKIE,
-  seedOperator,
+  seedConsoleUser,
   shape,
   signIn,
   subsonicPing,
@@ -46,20 +48,26 @@ const send = (request: Request) => app.request(request, undefined, env);
 
 /**
  * The guards later tickets put on their routes, on a route of their own: a
- * read behind the cache, and a write behind a fresh read. Operators have no
- * roles, so a session is all either checks.
+ * read behind the cache, and a write behind a fresh read, each with and
+ * without a permission its console user's role must grant.
  */
 const guarded = new Hono<ConsoleEnv>()
   .use(loadConsoleAuth)
   .get("/read", requireSession, (c) => c.json(c.var.session))
-  .post("/write", requireFreshSession, (c) => c.json(c.var.session));
+  .get("/scan-read", requireSession, requirePermission("library:scan"), (c) =>
+    c.json(c.var.session),
+  )
+  .post("/write", requireFreshSession, (c) => c.json(c.var.session))
+  .post("/scan-write", requireFreshSession, requirePermission("library:scan"), (c) =>
+    c.json(c.var.session),
+  );
 const sendGuarded = (request: Request) => guarded.request(request, undefined, env);
 
 let aliceId: string;
 
 beforeAll(async () => {
-  aliceId = await seedOperator("Alice", "wonderland");
-  await seedOperator("Bob", "builder");
+  aliceId = await seedConsoleUser("Alice", "wonderland");
+  await seedConsoleUser("Bob", "builder", GUEST_ROLE);
 });
 
 afterEach(() => {
@@ -88,13 +96,13 @@ function afterCookieCacheExpiry(minutes = 6) {
 async function aliceSessions(): Promise<number> {
   const rows = await database(testEnv)
     .select()
-    .from(operatorSession)
-    .where(eq(operatorSession.userId, aliceId));
+    .from(consoleSession)
+    .where(eq(consoleSession.userId, aliceId));
   return rows.length;
 }
 
 describe("the D1 cost of a session", () => {
-  it("sign-in reads the limiter, the operator and the account, and writes one session", async () => {
+  it("sign-in reads the limiter, the console user and the account, and writes one session", async () => {
     let jar: CookieJar | undefined;
     const statements = await measured(async () => {
       ({ jar } = await signIn(send, ORIGIN, "alice", "wonderland"));
@@ -104,9 +112,9 @@ describe("the D1 cost of a session", () => {
     expect(statements.map(shape)).toEqual([
       "select rate_limit", // this address's counter for /sign-in/username
       "insert rate_limit", // its first attempt; later ones update the row
-      "select operator", // by the generated `username` column
-      "select operator_account", // the credential account
-      "insert operator_session",
+      "select user", // by the generated `username` column
+      "select account", // the credential account
+      "insert session",
     ]);
   });
 
@@ -122,7 +130,7 @@ describe("the D1 cost of a session", () => {
     expect(statements).toEqual([]);
   });
 
-  it("past the cache's 5 minutes it reads the session and operator, then caches again", async () => {
+  it("past the cache's 5 minutes it reads the session and console user, then caches again", async () => {
     const { jar } = await signIn(send, ORIGIN, "alice", "wonderland");
     afterCookieCacheExpiry();
 
@@ -133,7 +141,7 @@ describe("the D1 cost of a session", () => {
     const recached = await measured(() => me(jar));
 
     expect(response?.status).toBe(200);
-    expect(expired.map(shape)).toEqual(["select operator_session", "select operator"]);
+    expect(expired.map(shape)).toEqual(["select session", "select user"]);
     expect(cost(expired).rowsWritten).toBe(0);
     // The middleware passes Better Auth's re-cached cookie on to the browser,
     // or every later check would read D1 again.
@@ -149,11 +157,7 @@ describe("the D1 cost of a session", () => {
 
     const statements = await measured(() => me(jar));
 
-    expect(statements.map(shape)).toEqual([
-      "select operator_session",
-      "select operator",
-      "update operator_session",
-    ]);
+    expect(statements.map(shape)).toEqual(["select session", "select user", "update session"]);
   });
 
   it("sign-out reads the session twice and deletes it", async () => {
@@ -164,24 +168,24 @@ describe("the D1 cost of a session", () => {
     );
 
     expect(statements.map(shape)).toEqual([
-      "select operator_session", // the session by token...
-      "select operator", // ...and its operator
-      "select operator_session", // deleteSession reads the row it deletes
-      "delete operator_session",
-      "select operator_account", // the accounts, for social providers' sign-out URLs
+      "select session", // the session by token...
+      "select user", // ...and its console user
+      "select session", // deleteSession reads the row it deletes
+      "delete session",
+      "select account", // the accounts, for social providers' sign-out URLs
     ]);
   });
 
-  it("setOperatorPassword revokes the sessions in the same single round trip", async () => {
+  it("setConsolePassword revokes the sessions in the same single round trip", async () => {
     await signIn(send, ORIGIN, "alice", "wonderland");
     await signIn(send, ORIGIN, "alice", "wonderland");
 
     const statements = await measured(() =>
-      setOperatorPassword(drizzle(d1.binding), encryptionKey(), aliceId, "wonderland"),
+      setConsolePassword(drizzle(d1.binding), encryptionKey(), aliceId, "wonderland"),
     );
 
     expect(cost(statements).roundTrips).toBe(1);
-    expect(statements.map(shape)).toEqual(["update operator_account", "delete operator_session"]);
+    expect(statements.map(shape)).toEqual(["update account", "delete session"]);
     expect(await aliceSessions()).toBe(0);
   });
 });
@@ -196,6 +200,7 @@ describe("requireSession and requireFreshSession", () => {
         id: expect.any(String),
         userId: aliceId,
         username: "Alice",
+        role: "owner",
       });
     });
     const write = await measured(async () => {
@@ -204,12 +209,12 @@ describe("requireSession and requireFreshSession", () => {
     });
 
     expect(read).toEqual([]);
-    expect(write.map(shape)).toEqual(["select operator_session", "select operator"]);
+    expect(write.map(shape)).toEqual(["select session", "select user"]);
   });
 
   it("see a deleted session: the fresh check at once, the cached one after 5 minutes", async () => {
     const { jar } = await signIn(send, ORIGIN, "alice", "wonderland");
-    await database(testEnv).delete(operatorSession).where(eq(operatorSession.userId, aliceId));
+    await database(testEnv).delete(consoleSession).where(eq(consoleSession.userId, aliceId));
 
     const read = await sendGuarded(consoleRequest(ORIGIN, "/read", { jar }));
     const write = await sendGuarded(consoleRequest(ORIGIN, "/write", { body: {}, jar }));
@@ -222,14 +227,77 @@ describe("requireSession and requireFreshSession", () => {
     expect((await sendGuarded(consoleRequest(ORIGIN, "/read", { jar }))).status).toBe(401);
   });
 
-  it("answer 401 without a session", async () => {
+  it("answer 401 without a session, before the permission check", async () => {
     for (const [method, path] of [
       ["GET", "/read"],
+      ["GET", "/scan-read"],
       ["POST", "/write"],
+      ["POST", "/scan-write"],
     ] as const) {
       const response = await sendGuarded(consoleRequest(ORIGIN, path, { method }));
       expect(response.status, path).toBe(401);
       expect(await response.json()).toEqual({ error: "unauthenticated" });
+    }
+  });
+});
+
+describe("requirePermission", () => {
+  async function setAliceRole(role: string) {
+    await database(testEnv).update(consoleUser).set({ role }).where(eq(consoleUser.id, aliceId));
+  }
+
+  it("lets through a console user whose role grants the permission", async () => {
+    const { jar } = await signIn(send, ORIGIN, "alice", "wonderland");
+
+    const read = await measured(async () => {
+      expect((await sendGuarded(consoleRequest(ORIGIN, "/scan-read", { jar }))).status).toBe(200);
+    });
+    const write = await sendGuarded(consoleRequest(ORIGIN, "/scan-write", { body: {}, jar }));
+
+    // The role came with the cookie cache: a read's check costs no D1 query.
+    expect(read).toEqual([]);
+    expect(write.status).toBe(200);
+  });
+
+  it("sees a role change: the fresh check at once, the cached one after 5 minutes", async () => {
+    const { jar } = await signIn(send, ORIGIN, "alice", "wonderland");
+    // A role this release does not know, which grants nothing.
+    await setAliceRole("read-only");
+
+    try {
+      const read = await sendGuarded(consoleRequest(ORIGIN, "/scan-read", { jar }));
+      const write = await sendGuarded(consoleRequest(ORIGIN, "/scan-write", { body: {}, jar }));
+      const plain = await sendGuarded(consoleRequest(ORIGIN, "/write", { body: {}, jar }));
+
+      // The cache vouches for the role it signed in with for up to 5 minutes.
+      expect(read.status).toBe(200);
+      expect(write.status).toBe(403);
+      expect(await write.json()).toEqual({ error: "forbidden" });
+      // A route that asks for no permission still takes the session.
+      expect(plain.status).toBe(200);
+      expect(await plain.json()).toMatchObject({ role: "read-only" });
+
+      afterCookieCacheExpiry();
+      const later = await sendGuarded(consoleRequest(ORIGIN, "/scan-read", { jar }));
+      expect(later.status).toBe(403);
+      expect(await later.json()).toEqual({ error: "forbidden" });
+    } finally {
+      await setAliceRole("owner");
+    }
+  });
+
+  it("refuses a console user whose role is empty, as it would any unknown one", async () => {
+    await setAliceRole("");
+
+    try {
+      const { jar } = await signIn(send, ORIGIN, "alice", "wonderland");
+
+      expect((await sendGuarded(consoleRequest(ORIGIN, "/scan-read", { jar }))).status).toBe(403);
+      expect(
+        (await sendGuarded(consoleRequest(ORIGIN, "/scan-write", { body: {}, jar }))).status,
+      ).toBe(403);
+    } finally {
+      await setAliceRole("owner");
     }
   });
 });
@@ -246,7 +314,7 @@ describe("a session deleted while it is being checked", () => {
       const deleteFirst =
         <T>(run: () => Promise<T>) =>
         async () => {
-          await inner.prepare("DELETE FROM operator_session WHERE token = ?").bind(token).run();
+          await inner.prepare("DELETE FROM session WHERE token = ?").bind(token).run();
           return run();
         };
       return {
@@ -262,9 +330,7 @@ describe("a session deleted while it is being checked", () => {
       get(target, property) {
         if (property === "prepare") {
           return (sql: string) =>
-            /^update "operator_session"/i.test(sql)
-              ? racing(target.prepare(sql))
-              : target.prepare(sql);
+            /^update "session"/i.test(sql) ? racing(target.prepare(sql)) : target.prepare(sql);
         }
         const value = Reflect.get(target, property);
         return typeof value === "function" ? value.bind(target) : value;
@@ -293,7 +359,7 @@ describe("a session deleted while it is being checked", () => {
   });
 });
 
-describe("a password set with setOperatorPassword", () => {
+describe("a password set with setConsolePassword", () => {
   it("signs in to the console, never to Subsonic, and the old one no longer does", async () => {
     const { jar } = await signIn(send, ORIGIN, "alice", "wonderland");
     const current = (await (
@@ -301,11 +367,11 @@ describe("a password set with setOperatorPassword", () => {
     ).json()) as { id: string };
     const other = await signIn(send, ORIGIN, "alice", "wonderland");
 
-    await setOperatorPassword(database(testEnv), encryptionKey(), aliceId, "looking-glass", {
+    await setConsolePassword(database(testEnv), encryptionKey(), aliceId, "looking-glass", {
       keepSessionId: current.id,
     });
 
-    await expectOperatorPassword(aliceId, "looking-glass");
+    await expectConsolePassword(aliceId, "looking-glass");
     expect((await signIn(send, ORIGIN, "alice", "looking-glass")).response.status).toBe(200);
     expect((await signIn(send, ORIGIN, "alice", "wonderland")).response.status).toBe(401);
     expect(

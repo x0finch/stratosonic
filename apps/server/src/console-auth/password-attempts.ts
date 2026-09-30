@@ -11,7 +11,7 @@ import type { Database } from "../db";
  * address, so this counts attempts in its `rate_limit` table under keys of
  * its own.
  *
- * The key is the session, `account-password:<session id>`, not the operator:
+ * The key is the session, `account-password:<session id>`, not the user:
  * a thief guessing with a stolen session must not be able to lock the victim
  * out of the one thing that revokes it, changing the password. Minting more
  * sessions to guess from needs the password, so a stolen session is worth

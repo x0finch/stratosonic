@@ -1,4 +1,4 @@
-import { operatorSession, operatorVerification, rateLimit } from "@stratosonic/db";
+import { consoleSession, consoleVerification, rateLimit } from "@stratosonic/db";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createConsoleAuth } from "../src/console-auth/auth";
 import {
@@ -12,7 +12,7 @@ import { database } from "../src/db";
 import type { Env } from "../src/env";
 import worker from "../src/index";
 import { ensureInitialSetup } from "../src/setup/initial-setup";
-import { cost, countingD1, seedOperator, shape } from "./console-auth-support";
+import { cost, countingD1, seedConsoleUser, shape } from "./console-auth-support";
 import { BASE, encryptionKey, testEnv } from "./support";
 
 /**
@@ -36,7 +36,7 @@ function id(prefix: string): string {
 }
 
 async function seedSessions(...expiresAt: number[]): Promise<void> {
-  await db.insert(operatorSession).values(
+  await db.insert(consoleSession).values(
     expiresAt.map((at) => {
       const sessionId = id("session");
       return {
@@ -66,7 +66,7 @@ async function seedRateLimits(...lastRequest: number[]): Promise<void> {
 }
 
 async function seedVerifications(...expiresAt: number[]): Promise<void> {
-  await db.insert(operatorVerification).values(
+  await db.insert(consoleVerification).values(
     expiresAt.map((at) => ({
       id: id("verification"),
       identifier: "reset-password",
@@ -79,11 +79,11 @@ async function seedVerifications(...expiresAt: number[]): Promise<void> {
 }
 
 async function remaining() {
-  const sessions = await db.select({ expiresAt: operatorSession.expiresAt }).from(operatorSession);
+  const sessions = await db.select({ expiresAt: consoleSession.expiresAt }).from(consoleSession);
   const rateLimits = await db.select({ lastRequest: rateLimit.lastRequest }).from(rateLimit);
   const verifications = await db
-    .select({ expiresAt: operatorVerification.expiresAt })
-    .from(operatorVerification);
+    .select({ expiresAt: consoleVerification.expiresAt })
+    .from(consoleVerification);
 
   return {
     session: sessions.map((row) => row.expiresAt.getTime()).sort((a, b) => a - b),
@@ -97,15 +97,11 @@ const NOTHING: PrunedRows = { session: 0, rateLimit: 0, verification: 0 };
 beforeAll(async () => {
   // The cron's bootstrap, done once here, so no test's D1 sees it.
   await ensureInitialSetup(testEnv);
-  owner = await seedOperator("prune-owner", "sesame");
+  owner = await seedConsoleUser("prune-owner", "sesame");
 });
 
 beforeEach(async () => {
-  await db.batch([
-    db.delete(operatorSession),
-    db.delete(rateLimit),
-    db.delete(operatorVerification),
-  ]);
+  await db.batch([db.delete(consoleSession), db.delete(rateLimit), db.delete(consoleVerification)]);
 });
 
 afterEach(() => {
@@ -168,9 +164,9 @@ describe("pruning the console's auth rows", () => {
     );
 
     expect(d1.statements.map(shape)).toEqual([
-      "delete operator_session",
+      "delete session",
       "delete rate_limit",
-      "delete operator_verification",
+      "delete verification",
     ]);
     expect(cost(d1.statements)).toMatchObject({ statements: 3, roundTrips: 1, rowsWritten: 0 });
   });
@@ -267,7 +263,7 @@ describe("the cron", () => {
     expect(statementsBeforePoke).toBe(3);
     expect(await remaining()).toEqual({ session: [NOW + 1], rateLimit: [NOW], verification: [] });
     expect(log).toHaveBeenCalledExactlyOnceWith(
-      "scan driver: a pass has started; pruned 2 expired console auth rows (operator_session 1, rate_limit 1, operator_verification 0)",
+      "scan driver: a pass has started; pruned 2 expired console auth rows (session 1, rate_limit 1, verification 0)",
     );
   });
 
@@ -301,7 +297,7 @@ describe("the cron", () => {
     await worker.scheduled(controllerAt(NOW), cronEnv);
 
     expect(error).toHaveBeenCalledExactlyOnceWith(
-      "scan driver: the poke failed; the next cron run pokes again; pruned 0 expired console auth rows (operator_session 0, rate_limit 0, operator_verification 0)",
+      "scan driver: the poke failed; the next cron run pokes again; pruned 0 expired console auth rows (session 0, rate_limit 0, verification 0)",
       expect.any(Error),
     );
   });

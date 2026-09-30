@@ -1,19 +1,18 @@
 import {
-  operator,
-  operatorAccount,
-  operatorSession,
-  operatorVerification,
+  consoleAccount,
+  consoleSession,
+  consoleUser,
+  consoleVerification,
   rateLimit,
 } from "@stratosonic/db";
 import { drizzle } from "drizzle-orm/d1";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { OPERATOR_MODEL_NAMES } from "../src/console-auth/auth";
-import { verifyOperatorPassword } from "../src/console-auth/password-hash";
-import { consoleRequest, type Send, seedOperator, signIn } from "./console-auth-support";
+import { verifyConsolePassword } from "../src/console-auth/password-hash";
+import { consoleRequest, type Send, seedConsoleUser, signIn } from "./console-auth-support";
 import { encryptionKey, testEnv } from "./support";
 
 /**
- * Better Auth's password hooks are bound to the operators' peppered
+ * Better Auth's password hooks are bound to the console users' peppered
  * HMAC-SHA256 (#99, ADR-0007): its default hasher, scrypt, must never run.
  * Each call costs about 100 ms of CPU against the Free plan's 10 ms.
  *
@@ -60,7 +59,7 @@ beforeAll(async () => {
 
   const app = createApp();
   send = (request) => app.request(request, undefined, testEnv);
-  await seedOperator("Alice", "wonderland");
+  await seedConsoleUser("Alice", "wonderland");
 });
 
 beforeEach(() => {
@@ -95,7 +94,7 @@ describe("the password hooks", () => {
     expect(scryptCalls()).toBe(0);
   });
 
-  it("hash to the operators' format, which verifies with the console's own routine", async () => {
+  it("hash to the console users' format, which verifies with the console's own routine", async () => {
     const auth = await createConsoleAuth({
       db: testEnv.DB,
       passphrase: encryptionKey(),
@@ -106,7 +105,7 @@ describe("the password hooks", () => {
     const hashed = await context.password.hash("looking-glass");
 
     expect(hashed).toMatch(/^hmac-sha256\$v1\$/);
-    expect(await verifyOperatorPassword(encryptionKey(), hashed, "looking-glass")).toBe(true);
+    expect(await verifyConsolePassword(encryptionKey(), hashed, "looking-glass")).toBe(true);
     expect(await context.password.verify({ hash: hashed, password: "looking-glass" })).toBe(true);
     expect(await context.password.verify({ hash: hashed, password: "wrong" })).toBe(false);
     expect(scryptCalls()).toBe(0);
@@ -120,17 +119,13 @@ describe("the password hooks", () => {
       database: drizzleAdapter(drizzle(testEnv.DB), {
         provider: "sqlite",
         schema: {
-          [OPERATOR_MODEL_NAMES.user]: operator,
-          [OPERATOR_MODEL_NAMES.session]: operatorSession,
-          [OPERATOR_MODEL_NAMES.account]: operatorAccount,
-          [OPERATOR_MODEL_NAMES.verification]: operatorVerification,
+          user: consoleUser,
+          session: consoleSession,
+          account: consoleAccount,
+          verification: consoleVerification,
           rateLimit,
         },
       }),
-      user: { modelName: OPERATOR_MODEL_NAMES.user },
-      session: { modelName: OPERATOR_MODEL_NAMES.session },
-      account: { modelName: OPERATOR_MODEL_NAMES.account },
-      verification: { modelName: OPERATOR_MODEL_NAMES.verification },
       emailAndPassword: { enabled: true },
     });
 

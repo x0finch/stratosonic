@@ -1,13 +1,14 @@
-import { newRandomId, operator, property, user } from "@stratosonic/db";
+import { consoleUser, newRandomId, property, subsonicUser } from "@stratosonic/db";
 import { sql } from "drizzle-orm";
 import { encryptPassword } from "../auth/crypto";
+import { OWNER_ROLE } from "../console-auth/permissions";
 import { type Database, database } from "../db";
 import type { Env } from "../env";
 import { countUsers } from "../users/repository";
 import { configuredSetupToken } from "./setup-token";
 
 /**
- * First-run bootstrap: the server creates its one admin user from the
+ * First-run bootstrap: the server creates its one Subsonic admin user from the
  * environment, so a fresh deployment can be logged into without a setup UI
  * (ADR-0004).
  *
@@ -20,10 +21,10 @@ import { configuredSetupToken } from "./setup-token";
  * Worker's secrets. They keep working for this release, and are how a
  * Subsonic user is created until the console creates them (#82).
  *
- * The same first run also says, in the log, how to create the console's first
- * operator when there is none and nothing can create one (#97, #99).
- * Operators are the console's own accounts, not Subsonic users, and the setup
- * token creates them (setup/setup-token.ts); the bootstrap never does.
+ * The same first run also says, in the log, how to create the console's owner
+ * when there is none and nothing can create one (#97, #99). Console users are
+ * the console's own accounts, not Subsonic users, and the setup token creates
+ * the owner (setup/setup-token.ts); the bootstrap never does.
  */
 
 /** Navidrome's `consts.InitialSetupFlagKey`. */
@@ -44,8 +45,8 @@ const INITIAL_SETUP_FLAG = "InitialSetup";
  */
 let attempted = false;
 
-/** Whether this isolate has already reported that no operator exists nor can be created. */
-let reportedNoOperator = false;
+/** Whether this isolate has already reported that no owner exists nor can be created. */
+let reportedNoOwner = false;
 
 /**
  * Runs the bootstrap at most once per isolate. Called from both Worker entry
@@ -81,11 +82,11 @@ export async function ensureInitialSetup(env: Env): Promise<void> {
 export async function runInitialSetup(env: Env): Promise<void> {
   const db = database(env);
 
-  const { done, hasOperator } = await readFirstRun(db, shouldCheckForOperator(env));
-  if (hasOperator === false) {
-    reportedNoOperator = true;
+  const { done, hasOwner } = await readFirstRun(db, shouldCheckForOwner(env));
+  if (hasOwner === false) {
+    reportedNoOwner = true;
     console.log(
-      "no operator exists: set SETUP_TOKEN (wrangler secret put SETUP_TOKEN) to create one in the console",
+      "no owner exists: set SETUP_TOKEN (wrangler secret put SETUP_TOKEN) to create one in the console",
     );
   }
 
@@ -111,31 +112,32 @@ export async function runInitialSetup(env: Env): Promise<void> {
 }
 
 /**
- * Whether the first run should ask if an operator exists: only while that
- * has not been reported in this isolate, and only when there is no usable
- * `SETUP_TOKEN`, since with one the console's `/setup` already offers to
- * create the operator.
+ * Whether the first run should ask if the console has an owner: only while
+ * that has not been reported in this isolate, and only when there is no
+ * usable `SETUP_TOKEN`, since with one the console's `/setup` already offers
+ * to create the owner.
  */
-function shouldCheckForOperator(env: Env): boolean {
-  return !reportedNoOperator && configuredSetupToken(env) === null;
+function shouldCheckForOwner(env: Env): boolean {
+  return !reportedNoOwner && configuredSetupToken(env) === null;
 }
 
 /**
- * Whether the flag is set and, when asked, whether any operator exists
- * (`null` when not asked), in one statement: the question about operators
- * costs a row read, never a round trip of its own.
+ * Whether the flag is set and, when asked, whether the console has an owner
+ * (`null` when not asked), in one statement: the question about the owner
+ * costs a row read from the index that allows only one, never a round trip of
+ * its own.
  */
 async function readFirstRun(
   db: Database,
-  checkForOperator: boolean,
-): Promise<{ done: boolean; hasOperator: boolean | null }> {
-  const row = await db.get<{ done: number; has_operator: number | null }>(sql`select
+  checkForOwner: boolean,
+): Promise<{ done: boolean; hasOwner: boolean | null }> {
+  const row = await db.get<{ done: number; has_owner: number | null }>(sql`select
     exists (select 1 from ${property} where ${property.id} = ${INITIAL_SETUP_FLAG}) as done,
-    ${checkForOperator ? sql`exists (select 1 from ${operator})` : sql`null`} as has_operator`);
+    ${checkForOwner ? sql`exists (select 1 from ${consoleUser} where ${consoleUser.role} = ${OWNER_ROLE})` : sql`null`} as has_owner`);
 
   return {
     done: row?.done === 1,
-    hasOperator: row?.has_operator == null ? null : row.has_operator === 1,
+    hasOwner: row?.has_owner == null ? null : row.has_owner === 1,
   };
 }
 
@@ -176,7 +178,7 @@ async function createInitialAdmin(env: Env, db: Database): Promise<boolean> {
 
   const now = new Date();
   await db
-    .insert(user)
+    .insert(subsonicUser)
     .values({
       id: newRandomId(),
       userName,

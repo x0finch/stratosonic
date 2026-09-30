@@ -2,15 +2,15 @@ import { describe, expect, it } from "vitest";
 import { encryptPassword } from "../src/auth/crypto";
 import {
   HASH_PREFIX,
-  hashOperatorPassword,
+  hashConsolePassword,
   PEPPER_INFO,
   SALT_BYTES,
-  verifyOperatorPassword,
+  verifyConsolePassword,
 } from "../src/console-auth/password-hash";
 import { encryptionKey } from "./support";
 
 /**
- * How an operator account's password is stored (#99, ADR-0007): HMAC-SHA256
+ * How a console user's password is stored (#99, ADR-0007): HMAC-SHA256
  * over a per-password salt and the password, keyed by a pepper that HKDF
  * derives from `PASSWORD_ENCRYPTION_KEY`, in a versioned format.
  */
@@ -43,9 +43,9 @@ async function expectedDigest(passphrase: string, salt: Uint8Array, password: st
   return new Uint8Array(await crypto.subtle.sign("HMAC", key, message));
 }
 
-describe("hashOperatorPassword", () => {
+describe("hashConsolePassword", () => {
   it("writes hmac-sha256$v1$<16-byte salt>$<32-byte digest>, in base64", async () => {
-    const stored = await hashOperatorPassword(encryptionKey(), "correct horse");
+    const stored = await hashConsolePassword(encryptionKey(), "correct horse");
 
     expect(PEPPER_INFO).toBe("stratosonic/console-password-pepper/v1");
     expect(stored).toMatch(/^hmac-sha256\$v1\$[A-Za-z0-9+/]{22}==\$[A-Za-z0-9+/]{43}=$/);
@@ -57,49 +57,49 @@ describe("hashOperatorPassword", () => {
   });
 
   it("salts every hash afresh, so one password never stores the same value twice", async () => {
-    const first = await hashOperatorPassword(encryptionKey(), "same");
-    const second = await hashOperatorPassword(encryptionKey(), "same");
+    const first = await hashConsolePassword(encryptionKey(), "same");
+    const second = await hashConsolePassword(encryptionKey(), "same");
 
     expect(first).not.toBe(second);
     expect(first.split("$")[2]).not.toBe(second.split("$")[2]);
   });
 
   it("never contains the password", async () => {
-    const stored = await hashOperatorPassword(encryptionKey(), "plain-to-see");
+    const stored = await hashConsolePassword(encryptionKey(), "plain-to-see");
 
     expect(stored).not.toContain("plain-to-see");
     expect(stored).not.toContain(btoa("plain-to-see"));
   });
 
   it("refuses an empty passphrase", async () => {
-    await expect(hashOperatorPassword("", "pw")).rejects.toThrow(/empty passphrase/);
+    await expect(hashConsolePassword("", "pw")).rejects.toThrow(/empty passphrase/);
   });
 });
 
-describe("verifyOperatorPassword", () => {
+describe("verifyConsolePassword", () => {
   it("accepts the password a hash was made from, and nothing else", async () => {
-    const stored = await hashOperatorPassword(encryptionKey(), "wonderland");
+    const stored = await hashConsolePassword(encryptionKey(), "wonderland");
 
-    expect(await verifyOperatorPassword(encryptionKey(), stored, "wonderland")).toBe(true);
-    expect(await verifyOperatorPassword(encryptionKey(), stored, "Wonderland")).toBe(false);
-    expect(await verifyOperatorPassword(encryptionKey(), stored, "wonderland ")).toBe(false);
-    expect(await verifyOperatorPassword(encryptionKey(), stored, "")).toBe(false);
+    expect(await verifyConsolePassword(encryptionKey(), stored, "wonderland")).toBe(true);
+    expect(await verifyConsolePassword(encryptionKey(), stored, "Wonderland")).toBe(false);
+    expect(await verifyConsolePassword(encryptionKey(), stored, "wonderland ")).toBe(false);
+    expect(await verifyConsolePassword(encryptionKey(), stored, "")).toBe(false);
   });
 
   it("takes any Unicode and the longest password, byte for byte", async () => {
     const password = `Ünïcødé 🎵 ${"p".repeat(1000)}`;
-    const stored = await hashOperatorPassword(encryptionKey(), password);
+    const stored = await hashConsolePassword(encryptionKey(), password);
 
-    expect(await verifyOperatorPassword(encryptionKey(), stored, password)).toBe(true);
-    expect(await verifyOperatorPassword(encryptionKey(), stored, password.normalize("NFD"))).toBe(
+    expect(await verifyConsolePassword(encryptionKey(), stored, password)).toBe(true);
+    expect(await verifyConsolePassword(encryptionKey(), stored, password.normalize("NFD"))).toBe(
       false,
     );
   });
 
   it("matches nothing under another key: the database alone is not enough", async () => {
-    const stored = await hashOperatorPassword(encryptionKey(), "wonderland");
+    const stored = await hashConsolePassword(encryptionKey(), "wonderland");
 
-    expect(await verifyOperatorPassword("another-passphrase", stored, "wonderland")).toBe(false);
+    expect(await verifyConsolePassword("another-passphrase", stored, "wonderland")).toBe(false);
   });
 
   it.each([
@@ -116,10 +116,10 @@ describe("verifyOperatorPassword", () => {
       async () => (await good()).replace(/[^$]+$/, () => "!".repeat(44)),
     ],
   ])("matches nothing with %s", async (_, stored) => {
-    expect(await verifyOperatorPassword(encryptionKey(), await stored(), "wonderland")).toBe(false);
+    expect(await verifyConsolePassword(encryptionKey(), await stored(), "wonderland")).toBe(false);
   });
 });
 
 function good(): Promise<string> {
-  return hashOperatorPassword(encryptionKey(), "wonderland");
+  return hashConsolePassword(encryptionKey(), "wonderland");
 }

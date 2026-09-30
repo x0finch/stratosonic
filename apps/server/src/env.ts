@@ -18,14 +18,14 @@ export interface Env extends Cloudflare.Env {
    */
   readonly INITIAL_PASSWORD?: string;
   /**
-   * The one-time token that creates the console's first operator, or later
-   * resets an operator's password (setup/setup-token.ts). At least 32
-   * characters, or it counts as unset; each value works once.
+   * The one-time token that creates the console's owner, or later resets a
+   * console user's password (setup/setup-token.ts). At least 32 characters,
+   * or it counts as unset; each value works once.
    */
   readonly SETUP_TOKEN?: string;
   /**
    * Passphrase the AES-GCM password-encryption key is derived from, and the
-   * admin console's session secret and operator-password pepper too
+   * admin console's session secret and the pepper of its users' passwords too
    * (console-auth/auth.ts, console-auth/password-hash.ts). Without it
    * Subsonic logins fail and every `/api` route answers 503.
    */

@@ -1,17 +1,17 @@
 import {
   isAcceptablePassword,
-  setOperatorPassword,
+  setConsolePassword,
   storedPasswordQuery,
 } from "../console-auth/credentials";
-import { requireFreshSession } from "../console-auth/middleware";
+import { requireFreshSession, requirePermission } from "../console-auth/middleware";
 import { countPasswordAttempt } from "../console-auth/password-attempts";
-import { verifyOperatorPassword } from "../console-auth/password-hash";
+import { verifyConsolePassword } from "../console-auth/password-hash";
 import { database } from "../db";
 import type { ApiApp } from "./app";
 import { invalidRequest, limitJsonBody, readJsonObject } from "./json-body";
 import { requireSameOrigin } from "./same-origin";
 
-/** The signed-in operator's own account (#81, "Change own password"; #99). */
+/** The signed-in console user's own account (#81, "Change own password"; #99). */
 export function registerAccountRoutes(api: ApiApp): void {
   /**
    * `POST /api/account/password` with `{currentPassword, newPassword}`.
@@ -22,11 +22,13 @@ export function registerAccountRoutes(api: ApiApp): void {
    * the session's count of attempts. After `MAX_PASSWORD_ATTEMPTS` attempts
    * within the window, the session's next ones, right or wrong, are
    * `429 rate_limited` and write nothing (console-auth/password-attempts.ts).
-   * A new password outside the accepted lengths is `400 invalid_password`.
+   * A new password outside the accepted lengths is `400 invalid_password`,
+   * and a console user whose role does not grant `account:change-password`
+   * is `403 forbidden` (console-auth/permissions.ts).
    *
-   * It is the operator's console password, and only that: no Subsonic
-   * password changes. The session is read from D1, as for every write, and
-   * it is the one session kept: the operator's others end with the old
+   * It is the console password, and only that: no Subsonic password changes.
+   * The session is read from D1, role and all, as for every write, and it is
+   * the one session kept: the console user's others end with the old
    * password.
    */
   api.post(
@@ -34,6 +36,7 @@ export function registerAccountRoutes(api: ApiApp): void {
     requireSameOrigin,
     limitJsonBody,
     requireFreshSession,
+    requirePermission("account:change-password"),
     async (c) => {
       const body = await readJsonObject(c);
       const { currentPassword, newPassword } = body ?? {};
@@ -57,12 +60,12 @@ export function registerAccountRoutes(api: ApiApp): void {
       }
       if (
         !stored?.password ||
-        !(await verifyOperatorPassword(c.var.passphrase, stored.password, currentPassword))
+        !(await verifyConsolePassword(c.var.passphrase, stored.password, currentPassword))
       ) {
         return c.json({ error: "wrong_password" }, 400);
       }
 
-      await setOperatorPassword(db, c.var.passphrase, userId, newPassword, {
+      await setConsolePassword(db, c.var.passphrase, userId, newPassword, {
         keepSessionId: sessionId,
       });
 

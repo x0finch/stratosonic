@@ -1,4 +1,4 @@
-import { operatorSession, operatorVerification, rateLimit } from "@stratosonic/db";
+import { consoleSession, consoleVerification, rateLimit } from "@stratosonic/db";
 import { inArray, lt } from "drizzle-orm";
 import type { Database } from "../db";
 
@@ -12,9 +12,8 @@ import type { Database } from "../db";
  * key's window resets, that is when an address comes back to a path after
  * its window is over; a caller rotating through fresh addresses never comes
  * back, so it never triggers the sweep and leaves a row behind for each
- * address. And `operator_verification`, though no flow the console serves
- * writes it, keeps whatever expired rows it has. Hence this bounded prune on
- * the cron.
+ * address. And `verification`, though no flow the console serves writes it,
+ * keeps whatever expired rows it has. Hence this bounded prune on the cron.
  *
  * A row is deleted only once Better Auth would treat it as absent anyway: a
  * session past `expires_at` is refused and deleted by the next check that
@@ -73,9 +72,8 @@ export interface PrunedRows {
 }
 
 /**
- * Deletes up to `limit` expired rows from each of `operator_session`,
- * `rate_limit` and `operator_verification`, in one batch, as of `now` (epoch
- * milliseconds).
+ * Deletes up to `limit` expired rows from each of `session`, `rate_limit` and
+ * `verification`, in one batch, as of `now` (epoch milliseconds).
  */
 export async function pruneExpiredAuthRows(
   db: Database,
@@ -86,14 +84,14 @@ export async function pruneExpiredAuthRows(
 
   const [sessions, rateLimits, verifications] = await db.batch([
     db
-      .delete(operatorSession)
+      .delete(consoleSession)
       .where(
         inArray(
-          operatorSession.id,
+          consoleSession.id,
           db
-            .select({ id: operatorSession.id })
-            .from(operatorSession)
-            .where(lt(operatorSession.expiresAt, at))
+            .select({ id: consoleSession.id })
+            .from(consoleSession)
+            .where(lt(consoleSession.expiresAt, at))
             .limit(limit),
         ),
       ),
@@ -108,14 +106,14 @@ export async function pruneExpiredAuthRows(
       ),
     ),
     db
-      .delete(operatorVerification)
+      .delete(consoleVerification)
       .where(
         inArray(
-          operatorVerification.id,
+          consoleVerification.id,
           db
-            .select({ id: operatorVerification.id })
-            .from(operatorVerification)
-            .where(lt(operatorVerification.expiresAt, at))
+            .select({ id: consoleVerification.id })
+            .from(consoleVerification)
+            .where(lt(consoleVerification.expiresAt, at))
             .limit(limit),
         ),
       ),
@@ -131,5 +129,5 @@ export async function pruneExpiredAuthRows(
 /** The prune's part of the cron's log line. */
 export function describePrunedRows(pruned: PrunedRows): string {
   const total = pruned.session + pruned.rateLimit + pruned.verification;
-  return `pruned ${total} expired console auth rows (operator_session ${pruned.session}, rate_limit ${pruned.rateLimit}, operator_verification ${pruned.verification})`;
+  return `pruned ${total} expired console auth rows (session ${pruned.session}, rate_limit ${pruned.rateLimit}, verification ${pruned.verification})`;
 }

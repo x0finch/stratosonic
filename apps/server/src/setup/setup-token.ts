@@ -1,4 +1,4 @@
-import { operator, property } from "@stratosonic/db";
+import { consoleUser, property } from "@stratosonic/db";
 import { eq, sql } from "drizzle-orm";
 import { constantTimeEquals } from "../auth/crypto";
 import type { CredentialStatement } from "../console-auth/credentials";
@@ -7,9 +7,10 @@ import type { Env } from "../env";
 
 /**
  * The setup token (#81, "Setup and recovery"): a Worker secret,
- * `SETUP_TOKEN`, that creates the first operator in the console while there
- * is none, and resets an operator's password once there is. Operators are the
- * console's own accounts (#99); Subsonic users play no part here.
+ * `SETUP_TOKEN`, that creates the console's owner, its first user, while
+ * there is no console user, and resets a console user's password once there
+ * is. Console users are the console's own accounts (#99); Subsonic users play
+ * no part here.
  *
  * Navidrome's `POST /auth/createAdmin` guards only on there being no user
  * yet (server/auth.go). A Worker is on a public `workers.dev` URL from its
@@ -97,25 +98,30 @@ function spentKey(digest: string): string {
 
 /** What setup and recovery decide on, read in one statement. */
 export interface SetupFacts {
-  /** Whether any operator exists. Subsonic users do not count. */
-  readonly hasOperators: boolean;
+  /** Whether any console user exists. Subsonic users do not count. */
+  readonly hasConsoleUsers: boolean;
   /** Whether the token with this digest has been used. */
   readonly spent: boolean;
-  /** The operator a recovery names, matched as sign-in matches a name. */
-  readonly target: { readonly id: string; readonly username: string } | null;
+  /** The console user a recovery names, matched as sign-in matches a name. */
+  readonly target: {
+    readonly id: string;
+    readonly username: string;
+    readonly role: string;
+  } | null;
 }
 
 interface SetupFactsRow {
-  has_operators: number;
+  has_console_users: number;
   spent: number;
   target_id: string | null;
   target_username: string | null;
+  target_role: string | null;
 }
 
 /**
- * Reads whether any operator exists, whether the token is spent and, for a
- * recovery, the operator it names, all in one statement. The name is folded
- * the way sign-in folds it, SQLite's ASCII-only `lower()`, and looked up by
+ * Reads whether any console user exists, whether the token is spent and, for
+ * a recovery, the console user it names, all in one statement. The name is
+ * folded the way sign-in folds it, SQLite's ASCII-only `lower()`, and looked up by
  * the generated `username` column, whose unique index serves the lookup;
  * without a name the target is `null`.
  */
@@ -125,43 +131,47 @@ export async function readSetupFacts(
   username: string | null = null,
 ): Promise<SetupFacts> {
   const row =
-    await db.get<SetupFactsRow>(sql`select exists (select 1 from ${operator}) as has_operators,
+    await db.get<SetupFactsRow>(sql`select exists (select 1 from ${consoleUser}) as has_console_users,
     exists (select 1 from ${property} where ${property.id} = ${spentKey(digest)}) as spent,
     target.id as target_id,
-    target.display_username as target_username
+    target.display_username as target_username,
+    target.role as target_role
   from (select 1)
   left join (
-    select ${operator.id} as id, ${operator.displayUsername} as display_username
-    from ${operator}
-    where ${operator.username} = lower(${username})
+    select ${consoleUser.id} as id, ${consoleUser.displayUsername} as display_username,
+      ${consoleUser.role} as role
+    from ${consoleUser}
+    where ${consoleUser.username} = lower(${username})
   ) as target on true`);
 
   return {
-    hasOperators: row?.has_operators === 1,
+    hasConsoleUsers: row?.has_console_users === 1,
     spent: row?.spent === 1,
     target:
-      row?.target_id != null ? { id: row.target_id, username: row.target_username ?? "" } : null,
+      row?.target_id != null
+        ? { id: row.target_id, username: row.target_username ?? "", role: row.target_role ?? "" }
+        : null,
   };
 }
 
 /**
  * The state the console shows. Setup needs a usable token that is unspent,
- * and no operator; recovery the same token and at least one operator.
+ * and no console user; recovery the same token and at least one console user.
  */
 export function setupState(facts: SetupFacts | null): SetupState {
   if (facts === null || facts.spent) {
     return "closed";
   }
 
-  return facts.hasOperators ? "reset-available" : "needs-setup";
+  return facts.hasConsoleUsers ? "reset-available" : "needs-setup";
 }
 
 /**
  * Records the token as spent, for a setup's or a recovery's batch, but only
- * if the operator it wrote is there when the batch runs: when another setup
- * won the race, the operator was not inserted, and when a recovery's
- * operator was deleted after its check, there is none to reset, and this
- * writes nothing either, so the token stays unspent.
+ * if the console user it wrote is there when the batch runs: when another
+ * setup won the race, the console user was not inserted, and when a
+ * recovery's console user was deleted after its check, there is none to
+ * reset, and this writes nothing either, so the token stays unspent.
  *
  * It is a plain insert, so when a racing request has spent the same value
  * first the key exists, the insert fails, and D1 rolls the whole batch back,
@@ -170,7 +180,7 @@ export function setupState(facts: SetupFacts | null): SetupState {
 export function markSpentFor(
   db: Database,
   digest: string,
-  operatorId: string,
+  consoleUserId: string,
 ): CredentialStatement {
   return db.insert(property).select(
     db
@@ -178,8 +188,8 @@ export function markSpentFor(
         id: sql<string>`${spentKey(digest)}`.as("id"),
         value: sql<string>`${new Date().toISOString()}`.as("value"),
       })
-      .from(operator)
-      .where(eq(operator.id, operatorId)),
+      .from(consoleUser)
+      .where(eq(consoleUser.id, consoleUserId)),
   );
 }
 

@@ -18,7 +18,7 @@ import { createTestHarness } from "wrangler";
 // Worker even then, not the console.
 const NAVIGATION = { headers: { "Sec-Fetch-Mode": "navigate" } };
 
-/** A setup token long enough to be used, for the console's first operator. */
+/** A setup token long enough to be used, for the console's first console user. */
 const SETUP_TOKEN = "0123456789abcdef0123456789abcdef";
 
 /** The harness answers with Miniflare's `Response`, not the Workers one. */
@@ -126,9 +126,9 @@ describe.each([
     });
 
     // Better Auth in Wrangler's own bundle, rather than in Vitest's module
-    // graph: setup creates an operator, who signs in, and the Subsonic admin
+    // graph: setup creates a console user, who signs in, and the Subsonic admin
     // the first run made does not.
-    it("keep /api/auth signing an operator in, and no Subsonic user", async () => {
+    it("keep /api/auth signing a console user in, and no Subsonic user", async () => {
       const setUp = await server.fetch("/api/setup", {
         method: "POST",
         headers: { "Content-Type": "application/json", Origin: origin },
@@ -142,11 +142,11 @@ describe.each([
           headers: { "Content-Type": "application/json", "CF-Connecting-IP": address },
           body: JSON.stringify({ username, password }),
         });
-      const operator = await signIn("owner", "console", "192.0.2.1");
+      const consoleSignIn = await signIn("owner", "console", "192.0.2.1");
       const subsonicAdmin = await signIn("admin", "sesame", "192.0.2.2");
 
-      expect(operator.status).toBe(200);
-      expect(await operator.json()).toMatchObject({ user: { displayUsername: "owner" } });
+      expect(consoleSignIn.status).toBe(200);
+      expect(await consoleSignIn.json()).toMatchObject({ user: { displayUsername: "owner" } });
       expect(subsonicAdmin.status).toBe(401);
     });
   });
