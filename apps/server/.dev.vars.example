@@ -9,13 +9,13 @@
 #
 # Passphrase the AES-GCM key that encrypts stored Subsonic passwords is derived
 # from (ADR-0003), and the admin console's session secret and the pepper of its
-# operators' password hashes too (ADR-0007). Changing it after users exist makes
+# users' password hashes too (ADR-0007). Changing it after users exist makes
 # their passwords unreadable, and nobody can log in.
 PASSWORD_ENCRYPTION_KEY = "change-me-too"
 
-# One-time token that creates the console's first operator (/setup) while there
-# is none, and resets an operator's password (/setup/reset) once there is.
-# Operators are the console's own accounts, not Subsonic users. At least 32
+# One-time token that creates the console's owner (/setup) while there is no
+# console user, and resets the owner's password (/setup/reset) once there is.
+# Console users are the console's own accounts, not Subsonic users. At least 32
 # characters, or it is ignored; generate one with `openssl rand -hex 32`. Each
 # value works once: to recover again, set a new one. This placeholder is too
 # short, so setup stays closed until it is replaced.
@@ -23,6 +23,7 @@ SETUP_TOKEN = "change-me"
 
 # Deprecated: password of the Subsonic admin user created on first run,
 # alongside the INITIAL_USER var in wrangler.jsonc. It is only read while the
-# user table is empty. It still works in this release, and is how a Subsonic
-# user is created until the console manages them; it never makes an operator.
+# Subsonic user table is empty. It still works in this release, and is how a
+# Subsonic user is created until the console manages them; it never makes a
+# console user.
 # INITIAL_PASSWORD = "change-me"

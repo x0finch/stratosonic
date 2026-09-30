@@ -13,29 +13,33 @@ and never written to `wrangler.jsonc`. For `wrangler dev`, copy
 
 - `PASSWORD_ENCRYPTION_KEY`: the passphrase every Subsonic password is
   encrypted under (ADR-0003), and the source of the console's session secret
-  and of the pepper its operators' passwords are hashed with (ADR-0007).
-  Without it Subsonic logins fail and every `/api` route answers 503.
-  Changing it after users exist locks everyone out.
-- `SETUP_TOKEN`: a one-time token for creating and recovering the console's
-  operators, described below.
+  and of the pepper console passwords are hashed with (ADR-0007). Without it
+  Subsonic logins fail and every `/api` route answers 503. Changing it after
+  users exist locks everyone out.
+- `SETUP_TOKEN`: a one-time token for creating the console's owner and
+  recovering a console password, described below.
 
-## Operators and Subsonic users
+## Console users and Subsonic users
 
-The console has accounts of its own, **operators**, which are separate from
-Subsonic users:
+The console has users of its own, **console users**, which are separate from
+**Subsonic users**:
 
-- an operator signs in to the console and never to Subsonic (a Subsonic
-  client given an operator's name and password gets error 40);
+- a console user signs in to the console and never to Subsonic (a Subsonic
+  client given a console user's name and password gets error 40);
 - a Subsonic user signs in to Subsonic and never to the console;
-- changing an operator's password changes no Subsonic password.
+- changing a console password changes no Subsonic password.
 
-Operators have no roles: each can do all the console does. Their passwords
-are stored as a peppered HMAC-SHA256, one way, while Subsonic passwords stay
-reversibly encrypted, because Subsonic's token auth needs them back
-(ADR-0003, ADR-0007).
+"Admin" means only the Subsonic role. A console user is named by their role
+instead: the only one for now is **owner**, who can do all the console does,
+and there is at most one. Console passwords are stored as a peppered
+HMAC-SHA256, one way, while Subsonic passwords stay reversibly encrypted,
+because Subsonic's token auth needs them back (ADR-0003, ADR-0007).
 
-Subsonic users come from `INITIAL_USER` / `INITIAL_PASSWORD` (deprecated,
-below) for now, and from the console once it manages them (#82).
+The console's users live in Better Auth's standard tables (`user`,
+`session`, `account`, `verification`); the Subsonic users, in Navidrome's
+shape, live in `subsonic_user`. Subsonic users come from `INITIAL_USER` /
+`INITIAL_PASSWORD` (deprecated, below) for now, and from the console once it
+manages them (#82).
 
 ## First run
 
@@ -46,27 +50,48 @@ openssl rand -hex 32              # prints the token; keep it for the next steps
 wrangler secret put SETUP_TOKEN   # paste it when asked
 ```
 
-`/setup` in the console asks for the token, with the operator's name and
-password. It works only while there is no operator, whatever Subsonic users
-there are, and only once. The token must be at least 32 characters; a
+`/setup` in the console asks for the token, with the owner's name and
+password. It works only while there is no console user, whatever Subsonic
+users there are, and only once. The token must be at least 32 characters; a
 shorter value is ignored (the Worker logs that it is) and setup stays closed.
-Until an operator exists and while no usable token is set, the Worker logs
-`no operator exists: set SETUP_TOKEN (wrangler secret put SETUP_TOKEN) to
-create one in the console` once per isolate.
+While there is no owner and no usable token is set, the Worker logs `no owner
+exists: set SETUP_TOKEN (wrangler secret put SETUP_TOKEN) to create one in
+the console` once per isolate.
 
-## Recovering an operator
+## Upgrading a deployed server to the console's own users
 
-If an operator's password is forgotten, set a **new** token value (a value
-that has been used once is refused from then on) and open `/setup/reset`:
+The release that brings console users (#99) ships migration 0008, which
+renames the Subsonic `user` table to `subsonic_user`, with every row and
+foreign key, and creates the console's tables under Better Auth's names. The
+deploy workflow applies the migration and then deploys the Worker, so:
+
+- Between the two steps, the Worker still running is the old one, which looks
+  Subsonic users up in `user`: Subsonic clients get authentication errors for
+  that short window, until the new code is live. Nothing is lost; they sign in
+  again once it is.
+- If the release has to be undone, D1 Time Travel restores the database to
+  its state before the migration (`wrangler d1 time-travel restore
+  stratosonic_db --timestamp=<an RFC 3339 time before the deploy>`), and the
+  previous Worker version can be rolled back to (`wrangler rollback`).
+- After the first deploy, set `SETUP_TOKEN` as above and create the owner at
+  `/setup`.
+- The existing Subsonic admin, and every other Subsonic user, keeps working
+  with the same name and password; they are Subsonic users, not console users,
+  and cannot sign in to the console.
+
+## Recovering the owner
+
+If the owner's password is forgotten, set a **new** token value (a value that
+has been used once is refused from then on) and open `/setup/reset`:
 
 ```sh
 openssl rand -hex 32
 wrangler secret put SETUP_TOKEN
 ```
 
-The reset asks for the token, the operator's name and a new password, and
-ends every console session of that operator. It cannot reset a Subsonic
-user's password.
+The reset asks for the token, the owner's name and a new password, and ends
+every console session of the owner; the role stays as it is. It cannot reset a
+Subsonic user's password.
 
 The routes behind these pages are `POST /api/setup` and
 `POST /api/setup/reset`, which take `{"token", "username", "password"}` as
@@ -81,15 +106,15 @@ curl https://<worker>/api/setup/reset \
 
 ## Deprecated: `INITIAL_USER` / `INITIAL_PASSWORD`
 
-The first Subsonic user, an admin, comes from the `INITIAL_USER` var in
+The first Subsonic user, a Subsonic admin, comes from the `INITIAL_USER` var in
 `wrangler.jsonc` and an `INITIAL_PASSWORD` secret, created on the first request
-while the user table is empty. It is a Subsonic user only: it cannot sign in to
-the console, and it is not an operator. They keep working in this release, and
-are how a Subsonic user is created until the console manages them (#82), but
-they keep a password in the Worker's secrets: delete `INITIAL_PASSWORD` once
-the user exists (`wrangler secret delete INITIAL_PASSWORD`). With
-`INITIAL_PASSWORD` set but `INITIAL_USER` or `PASSWORD_ENCRYPTION_KEY` missing,
-the Worker warns that no initial Subsonic user was created.
+while the Subsonic user table is empty. It is a Subsonic user only: it cannot
+sign in to the console. They keep working in this release, and are how a
+Subsonic user is created until the console manages them (#82), but they keep a
+password in the Worker's secrets: delete `INITIAL_PASSWORD` once the user
+exists (`wrangler secret delete INITIAL_PASSWORD`). With `INITIAL_PASSWORD` set
+but `INITIAL_USER` or `PASSWORD_ENCRYPTION_KEY` missing, the Worker warns that
+no initial Subsonic user was created.
 
 ## Scripts
 

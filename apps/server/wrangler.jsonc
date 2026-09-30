@@ -62,17 +62,18 @@
   // `.dev.vars` (see .dev.vars.example and README.md):
   //   - `PASSWORD_ENCRYPTION_KEY`, which every Subsonic password is encrypted
   //     under, and which the console's session secret and the pepper of its
-  //     operators' password hashes are derived from;
+  //     console users' password hashes are derived from;
   //   - `SETUP_TOKEN`, at least 32 characters (`openssl rand -hex 32`), which
-  //     creates the console's first operator at `/setup` and, set to a new
-  //     value, resets an operator's password at `/setup/reset`. Each value
-  //     works once. Operators are the console's own accounts, separate from
-  //     Subsonic users.
+  //     creates the console's owner at `/setup` and, set to a new value,
+  //     resets the owner's password at `/setup/reset`. Each value works once.
+  //     Console users are the console's own accounts, separate from Subsonic
+  //     users.
   //
   // Deprecated: `INITIAL_USER` below and the `INITIAL_PASSWORD` secret create
   // the first Subsonic user, an admin, on first run. They still work in this
   // release, and are how a Subsonic user is created until the console manages
-  // them, but they keep a password in the secrets and never make an operator.
+  // them, but they keep a password in the secrets and never make a console
+  // user.
   "vars": {
     "INITIAL_USER": "admin"
   },

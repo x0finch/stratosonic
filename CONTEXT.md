@@ -53,16 +53,24 @@ The opaque id a client passes to `getCoverArt`; for an album it is the album's
 own id (`al-<id>`), and an artist reuses its primary album's cover.
 _Avoid_: image id, artwork id.
 
-**User**:
-A Subsonic account: what a Subsonic client signs in as, with a password kept
-reversibly encrypted (ADR-0003). An admin user holds Subsonic's admin role.
-_Avoid_: Account (alone), Operator.
+**Subsonic user**:
+An account a Subsonic client signs in as, kept in `subsonic_user`, with a
+password stored reversibly encrypted (ADR-0003). A Subsonic admin is a
+Subsonic user with Subsonic's admin role.
+_Avoid_: Account (alone), User (alone, where a console user could be meant).
 
-**Operator**:
-An account of the admin console, which signs in to the console and never to
-Subsonic. Operators are separate from users and have no roles; their
-passwords are hashed one way (ADR-0007).
-_Avoid_: Admin, Administrator (both are the Subsonic role), Console user.
+**Console user**:
+An account of the admin console, kept in Better Auth's `user` table, which
+signs in to the console and never to Subsonic. It is named by its role (the
+only one for now is the owner, of whom there is at most one), and its
+password is hashed one way (ADR-0007).
+_Avoid_: Admin, Administrator (both mean the Subsonic role), Operator.
+
+**Role**:
+What a console user may do: a named set of permissions, which routes check
+by permission, never by role name. A role the server does not know grants
+nothing.
+_Avoid_: Admin flag, Group.
 
 **Scan**:
 The scheduled (cron) process in the Worker that reads tags from R2 objects,
