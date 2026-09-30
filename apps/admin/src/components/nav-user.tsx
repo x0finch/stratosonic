@@ -47,7 +47,7 @@ export function NavUser({ user }: { user: Me }) {
     // Never shown as signed out while the session may live on: ask the server
     // who is signed in instead, and say in a toast that it failed.
     onError: (error) => {
-      toastError(error, { title: "Sign-out failed" });
+      toastError(error, "Sign-out failed");
       return queryClient.invalidateQueries({ queryKey: meQuery.queryKey });
     },
   });

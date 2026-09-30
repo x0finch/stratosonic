@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useRouter } from "@tanstack/react-router";
 import { cn } from "cn";
-import { type ComponentProps, type FormEvent, useEffect } from "react";
+import type { ComponentProps, FormEvent } from "react";
 
+import { ErrorAlert } from "@/components/error-alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
@@ -15,7 +16,8 @@ import { toastError } from "@/lib/toasts";
  * The login-01 block's form, signing in with a username rather than an email.
  * Its "Forgot your password?" link is the setup token's reset, and its sign-up
  * line the first-run setup, each shown only while `GET /api/setup` allows it.
- * A failed sign-in says why in a toast.
+ * A failed sign-in says why in a toast; a server that cannot say what the
+ * setup token may do says why on the page, for as long as that lasts.
  */
 export function LoginForm({
   redirectTo,
@@ -38,15 +40,6 @@ export function LoginForm({
     onError: (error) => toastError(error),
   });
 
-  // A server that refuses every `/api` call (without its encryption key, say)
-  // refuses the setup state as well, and says why before anyone types. The
-  // fixed id keeps a second render of the same failure from stacking a toast.
-  useEffect(() => {
-    if (setupState.error) {
-      toastError(setupState.error, { id: "setup-state" });
-    }
-  }, [setupState.error]);
-
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -66,6 +59,12 @@ export function LoginForm({
         <CardContent>
           <form onSubmit={onSubmit}>
             <FieldGroup>
+              {/* A server that refuses every `/api` call (without its
+                  encryption key, say) refuses the setup state as well, and
+                  says why here, before anyone types. That is the state of the
+                  page, not an action's outcome, so it stays until it changes
+                  rather than going with a toast. */}
+              {setupState.error && <ErrorAlert error={setupState.error} />}
               <Field>
                 <FieldLabel htmlFor="username">Username</FieldLabel>
                 <Input

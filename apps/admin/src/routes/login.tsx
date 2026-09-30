@@ -15,7 +15,8 @@ export const Route = createFileRoute("/login")({
     ...(typeof search.redirect === "string" && { redirect: search.redirect }),
   }),
   // Already signed in: straight on to where the sign-in would lead. A server
-  // that cannot say is left to the form, which shows why.
+  // that cannot say who is signed in is left to the form, which says on the
+  // page why the setup state cannot be read either.
   beforeLoad: async ({ context, search }) => {
     const me = await context.queryClient.ensureQueryData(meQuery).catch(() => null);
     if (me) {
