@@ -7,17 +7,17 @@
  *
  * Not part of the test suite or CI. It needs a Worker serving the built
  * console (`pnpm --filter @stratosonic/server dev`) on a database with no
- * operator and `SETUP_TOKEN` set, or, for a database that already has its
- * operator, `OPERATOR_USER` and `OPERATOR_PASSWORD` for it (the first-run
- * setup is skipped). Chromium comes from Playwright's browser cache
+ * console user and `SETUP_TOKEN` set, or, for a database that already has its
+ * owner, `OWNER_USER` and `OWNER_PASSWORD` for it (the first-run setup is
+ * skipped). Chromium comes from Playwright's browser cache
  * (`PLAYWRIGHT_BROWSERS_PATH`, or `playwright-core install chromium`).
  *
- * Operators are the console's own accounts, separate from Subsonic users
- * (#99), so every Subsonic `ping` with the operator's credentials must fail
- * with error 40, by `p=` and by token. With `SUBSONIC_USER` and
+ * Console users are the console's own accounts, separate from Subsonic users
+ * (#99), so every Subsonic `ping` with the owner's credentials must fail with
+ * error 40, by `p=` and by token. With `SUBSONIC_USER` and
  * `SUBSONIC_PASSWORD` (the `INITIAL_*` Subsonic user, say) it also checks
  * that the Subsonic user cannot sign in to the console, and that its `ping`
- * stays ok through every change of the operator's password.
+ * stays ok through every change of the owner's password.
  *
  * It walks, in order: the router guard; first-run setup, with a wrong token
  * and a mismatched confirmation on the way, then the first sign-in;
@@ -49,13 +49,13 @@ import { chromium } from "playwright-core";
 const BASE_URL = (process.env.BASE_URL ?? "http://localhost:8787").replace(/\/$/, "");
 const SETUP_TOKEN = process.env.SETUP_TOKEN;
 const RESET_TOKEN = process.env.RESET_TOKEN;
-const USERNAME = process.env.OPERATOR_USER ?? "operator";
+const USERNAME = process.env.OWNER_USER ?? "owner";
 const SUBSONIC_USER = process.env.SUBSONIC_USER;
 const SUBSONIC_PASSWORD = process.env.SUBSONIC_PASSWORD;
 const SCREENSHOTS = process.env.SCREENSHOTS;
 
 const passwords = {
-  first: process.env.OPERATOR_PASSWORD ?? "first-run password",
+  first: process.env.OWNER_PASSWORD ?? "first-run password",
   changed: "changed in the console",
   reset: "reset with a setup token",
 };
@@ -139,10 +139,10 @@ async function ping(username, password) {
   return answers[0];
 }
 
-/** That Subsonic refuses the operator's credentials, as a wrong password. */
-async function checkOperatorCannotPing(password) {
+/** That Subsonic refuses the owner's console credentials, as a wrong password. */
+async function checkOwnerCannotPing(password) {
   const answer = await ping(USERNAME, password);
-  check(answer === 40, `Subsonic ping with the operator's credentials answered ${answer}, not 40`);
+  check(answer === 40, `Subsonic ping with the owner's credentials answered ${answer}, not 40`);
 }
 
 /** That the Subsonic user, when there is one to check, still pings. */
@@ -260,7 +260,7 @@ async function main() {
       if (initialState !== "needs-setup") {
         return "skipped";
       }
-      check(SETUP_TOKEN, "the database has no operator: set SETUP_TOKEN");
+      check(SETUP_TOKEN, "the database has no console user: set SETUP_TOKEN");
       await page.goto(`${BASE_URL}/login`);
       await page.getByRole("link", { name: "Set up the server" }).click();
       await page.waitForURL((url) => url.pathname === "/setup");
@@ -270,7 +270,7 @@ async function main() {
         await page.getByLabel("Username").fill(USERNAME);
         await page.getByLabel("Password", { exact: true }).fill(password);
         await page.getByLabel("Confirm password").fill(confirm);
-        await page.getByRole("button", { name: "Create operator account" }).click();
+        await page.getByRole("button", { name: "Create owner account" }).click();
       };
 
       await fill(SETUP_TOKEN, `${password} (typo)`);
@@ -282,13 +282,16 @@ async function main() {
 
       await fill(SETUP_TOKEN, password);
       await page.waitForURL((url) => url.pathname === "/login");
-      await page.getByText("The operator account is created").waitFor();
+      await page.getByText("The owner account is created").waitFor();
       check((await setupState()) === "closed", "the setup token is not spent");
-      await checkOperatorCannotPing(password);
+      await checkOwnerCannotPing(password);
       await checkSubsonicUserPings();
       await shot(page, "login-after-setup");
       await signIn(page, password, { expectAt: "/" });
-      await page.getByRole("button", { name: new RegExp(USERNAME) }).waitFor();
+      const menu = page.getByRole("button", { name: new RegExp(USERNAME) });
+      await menu.waitFor();
+      const label = await menu.textContent();
+      check(label?.includes("Owner"), `the user menu says ${label}, not the role Owner`);
       await shot(page, "overview");
     });
 
@@ -354,8 +357,8 @@ async function main() {
       await shot(page, "account-changed");
       const old = password;
       password = passwords.changed;
-      await checkOperatorCannotPing(password);
-      await checkOperatorCannotPing(old);
+      await checkOwnerCannotPing(password);
+      await checkOwnerCannotPing(old);
       await checkSubsonicUserPings();
       // This session was kept.
       await page.reload();
@@ -404,7 +407,7 @@ async function main() {
       await page.getByRole("link", { name: "Reset with a setup token" }).click();
       await page.waitForURL((url) => url.pathname === "/setup/reset");
       await page.getByLabel("Setup token").fill(RESET_TOKEN);
-      await page.getByLabel("Operator username").fill(USERNAME);
+      await page.getByLabel("Owner username").fill(USERNAME);
       await page.getByLabel("New password", { exact: true }).fill(passwords.reset);
       await page.getByLabel("Confirm password").fill(passwords.reset);
       await shot(page, "reset");
@@ -413,7 +416,7 @@ async function main() {
       await page.getByText("The password is reset").waitFor();
       password = passwords.reset;
       await signIn(page, password, { expectAt: "/" });
-      await checkOperatorCannotPing(password);
+      await checkOwnerCannotPing(password);
       await checkSubsonicUserPings();
       check((await setupState()) === "closed", "the reset token is not spent");
     });
