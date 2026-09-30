@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useRouter } from "@tanstack/react-router";
 import { cn } from "cn";
 import { CircleCheckIcon } from "lucide-react";
-import type { ComponentProps, FormEvent } from "react";
+import { type ComponentProps, type FormEvent, useEffect } from "react";
 
 import { ErrorAlert } from "@/components/error-alert";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -64,6 +64,20 @@ export function LoginForm({
   }
 
   const done = notice ? NOTICES[notice] : undefined;
+
+  // A notice says what a setup screen did just before, once. When an error
+  // takes its place, it is dropped from the URL too, so a reload or a copied
+  // link does not bring it back.
+  const noticeReplaced = Boolean(notice && (mutation.error || setupState.error));
+  useEffect(() => {
+    if (noticeReplaced) {
+      void router.navigate({
+        to: "/login",
+        search: (search) => ({ ...search, notice: undefined }),
+        replace: true,
+      });
+    }
+  }, [noticeReplaced, router]);
 
   return (
     <div className={cn("flex flex-col gap-6", className)} {...props}>

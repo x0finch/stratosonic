@@ -20,15 +20,18 @@
  * stays ok through every change of the owner's password.
  *
  * It walks, in order: the router guard; first-run setup, with a wrong token
- * and a mismatched confirmation on the way, then the first sign-in;
+ * and a mismatched confirmation on the way, then a wrong password, whose
+ * error drops the setup's notice from the URL, and the first sign-in;
  * sign-out and sign-in; a wrong password, and a Subsonic user's; a deep link
  * opened while signed out, which sign-in returns to; the account page's
  * validation and a password change, after which a Subsonic `ping` with
  * neither password is ok; signing out from the account page, which lands on
  * plain `/login` and signs in to the overview; a session that ends while on a
- * page, which sign-in returns to; a reset with a new setup token; dark mode;
- * and a phone-sized viewport. The reset needs a token the first run did not
- * spend, so the script waits, up to five minutes, for `GET /api/setup` to say
+ * page, which sign-in returns to; a reset with a new setup token, whose
+ * notice says all of the account's sessions are signed out and leaves the URL
+ * on a wrong password too; dark mode; and a phone-sized viewport. The reset
+ * needs a token the first run did not spend, so the script waits, up to five
+ * minutes, for `GET /api/setup` to say
  * `reset-available`: put `RESET_TOKEN` in `SETUP_TOKEN` (apps/server/.dev.vars)
  * and restart `wrangler dev` when it asks. Without `RESET_TOKEN` the reset is
  * skipped. It signs in more often than the server's limit of 5 a minute
@@ -208,6 +211,25 @@ async function signIn(page, password, { expectAt, username = USERNAME } = {}) {
   }
 }
 
+/**
+ * That the sign-in screen's notice, the setup screens' report, leaves the URL
+ * once an error takes its place: a reload must not bring it back.
+ */
+async function checkNoticeDroppedOnError(page, notice, password) {
+  const before = new URL(page.url()).searchParams.get("notice");
+  check(before === notice, `the sign-in screen's notice is ${before}, not ${notice}`);
+  await signIn(page, `${password} (wrong)`);
+  await page.getByText("Wrong username or password").waitFor();
+  await page.waitForURL((url) => !url.searchParams.has("notice"));
+  await page.getByText("Wrong username or password").waitFor();
+  await page.reload();
+  await page.getByRole("button", { name: "Sign in" }).waitFor();
+  check(
+    (await page.getByRole("alert").count()) === 0,
+    "a notice or an error is still shown after a reload",
+  );
+}
+
 async function openUserMenu(page) {
   await page.getByRole("button", { name: new RegExp(USERNAME) }).click();
 }
@@ -287,6 +309,7 @@ async function main() {
       await checkOwnerCannotPing(password);
       await checkSubsonicUserPings();
       await shot(page, "login-after-setup");
+      await checkNoticeDroppedOnError(page, "set-up", password);
       await signIn(page, password, { expectAt: "/" });
       const menu = page.getByRole("button", { name: new RegExp(USERNAME) });
       await menu.waitFor();
@@ -416,6 +439,7 @@ async function main() {
       await page.getByText("The password is reset").waitFor();
       await page.getByText("All sessions of that account are signed out.").waitFor();
       password = passwords.reset;
+      await checkNoticeDroppedOnError(page, "reset", password);
       await signIn(page, password, { expectAt: "/" });
       await checkOwnerCannotPing(password);
       await checkSubsonicUserPings();
