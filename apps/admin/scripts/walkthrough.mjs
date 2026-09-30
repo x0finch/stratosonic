@@ -299,7 +299,7 @@ async function main() {
       await page.getByRole("heading", { name: "Account" }).waitFor();
     });
 
-    await step("sign-out from a page goes to plain /login, then sign-in to the overview", async () => {
+    await step("sign-out from /account goes to plain /login, then to the overview", async () => {
       check(new URL(page.url()).pathname === "/account", `on ${page.url()}, not /account`);
       await signOut(page);
       await signIn(page, password, { expectAt: "/" });
