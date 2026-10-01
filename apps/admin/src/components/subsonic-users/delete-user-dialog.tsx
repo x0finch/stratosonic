@@ -22,13 +22,10 @@ import { toastError, toastSuccess } from "@/lib/toasts";
  */
 export function DeleteUserDialog({
   user,
-  playlists,
   open,
   onOpenChange,
 }: {
   user: SubsonicUser | null;
-  /** How many playlists the user owns, from what the page has loaded. */
-  playlists: number | undefined;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
@@ -65,7 +62,7 @@ export function DeleteUserDialog({
           <AlertDialogTitle>Delete {user?.username}?</AlertDialogTitle>
           <AlertDialogDescription>
             {user?.username} can no longer sign in from a Subsonic client.{" "}
-            {deleteConsequences(playlists)} This cannot be undone.
+            {user && deleteConsequences(user.playlistCount)} This cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

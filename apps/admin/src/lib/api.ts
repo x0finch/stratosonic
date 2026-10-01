@@ -214,6 +214,8 @@ export interface SubsonicUser {
   createdAt: string;
   updatedAt: string;
   lastAccessAt: string | null;
+  /** How many playlists they own, which a delete would take with them. */
+  playlistCount: number;
 }
 
 export async function fetchSubsonicUsers(): Promise<SubsonicUser[]> {

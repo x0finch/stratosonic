@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { InfoIcon, PlusIcon, UsersIcon } from "lucide-react";
 import { useState } from "react";
@@ -29,7 +29,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { meQuery, type SubsonicUser, subsonicUsersQuery } from "@/lib/api";
 import { can } from "@/lib/roles";
-import { adminRequired, playlistCountFrom } from "@/lib/subsonic-users";
+import { adminRequired } from "@/lib/subsonic-users";
 
 export const Route = createFileRoute("/_shell/users")({
   component: SubsonicUsers,
@@ -49,7 +49,6 @@ interface DialogState {
  * passwords and deletes. The server checks both on every route regardless.
  */
 function SubsonicUsers() {
-  const queryClient = useQueryClient();
   const { data: me } = useQuery(meQuery);
   const readable = can(me, "subsonic-users:read");
   const writable = can(me, "subsonic-users:write");
@@ -138,9 +137,6 @@ function SubsonicUsers() {
           />
           <DeleteUserDialog
             user={dialog.user}
-            playlists={
-              dialog.user ? playlistCountFrom(queryClient, dialog.user.username) : undefined
-            }
             open={dialog.open === "delete"}
             onOpenChange={close}
           />

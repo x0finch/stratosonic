@@ -20,7 +20,6 @@ import {
   deleteConsequences,
   formatDay,
   formatLastAccess,
-  playlistCountFrom,
   USER_FIELDS_BY_CODE,
   userChanges,
 } from "@/lib/subsonic-users";
@@ -33,6 +32,7 @@ function user(overrides: Partial<SubsonicUser> = {}): SubsonicUser {
     createdAt: "2026-09-30T12:00:00.000Z",
     updatedAt: "2026-09-30T12:00:00.000Z",
     lastAccessAt: null,
+    playlistCount: 0,
     ...overrides,
   };
 }
@@ -225,12 +225,6 @@ describe("deleteConsequences", () => {
     );
     expect(deleteConsequences(0)).toBe(`${annotations}. They have no playlists.`);
   });
-
-  it("names no number it does not know", () => {
-    expect(deleteConsequences(undefined)).toBe(
-      `${annotations}, and their playlists are deleted too, including the playlist files in the bucket. ${imported}`,
-    );
-  });
 });
 
 describe("the table's dates", () => {
@@ -240,27 +234,6 @@ describe("the table's dates", () => {
       /^Sep 30, 2026, 11:30\sPM$/,
     );
     expect(formatLastAccess(null)).toBe("Never");
-  });
-});
-
-describe("playlistCountFrom", () => {
-  const playlists = [{ owner: "alice" }, { owner: "bob" }, { owner: "alice" }, { owner: null }];
-
-  it("counts the user's playlists in the Overview's library read", () => {
-    const queryClient = new QueryClient();
-    queryClient.setQueryData(["overview", "library"], { playlists });
-
-    expect(playlistCountFrom(queryClient, "alice")).toBe(2);
-    expect(playlistCountFrom(queryClient, "carol")).toBe(0);
-  });
-
-  it("knows no number without that read, or once a user write made it stale", async () => {
-    const queryClient = new QueryClient();
-    expect(playlistCountFrom(queryClient, "alice")).toBeUndefined();
-
-    queryClient.setQueryData(["overview", "library"], { playlists });
-    await afterUserWrite(queryClient);
-    expect(playlistCountFrom(queryClient, "alice")).toBeUndefined();
   });
 });
 

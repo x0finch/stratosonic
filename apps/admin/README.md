@@ -201,8 +201,9 @@ screen are in `src/lib/subsonic-users.ts`.
   `username_taken`, `invalid_password`) stays beside its field.
 - A delete also deletes the user's stars, ratings, play counts, bookmarks
   and play queue, and their playlists with the `.m3u` files in the bucket;
-  the confirmation says so. A playlist the scan imported from the bucket
-  belongs to whoever was the first Subsonic admin when it was imported, so
-  deleting that user deletes those files too.
+  the confirmation says so, with how many playlists the users API counts
+  for them. A playlist the scan imported from the bucket belongs to whoever
+  was the first Subsonic admin when it was imported, so deleting that user
+  deletes those files too.
 - The list is read on page load and again after every write, and is never
   polled: only the console changes it.
