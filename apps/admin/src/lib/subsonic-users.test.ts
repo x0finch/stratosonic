@@ -213,20 +213,22 @@ describe("userChanges", () => {
 
 describe("deleteConsequences", () => {
   const annotations = "Their stars, ratings, play counts, bookmarks and play queue are deleted";
+  // Bucket playlists belong to the first Subsonic admin at import time.
+  const imported = "Playlists imported from the bucket count as theirs when they own them.";
 
   it("says the owner's sentence, with the number of playlists", () => {
     expect(deleteConsequences(3)).toBe(
-      `${annotations}, and their 3 playlists are deleted too, including the playlist files in the bucket.`,
+      `${annotations}, and their 3 playlists are deleted too, including the playlist files in the bucket. ${imported}`,
     );
     expect(deleteConsequences(1)).toBe(
-      `${annotations}, and their 1 playlist is deleted too, including its playlist file in the bucket.`,
+      `${annotations}, and their 1 playlist is deleted too, including its playlist file in the bucket. ${imported}`,
     );
     expect(deleteConsequences(0)).toBe(`${annotations}. They have no playlists.`);
   });
 
   it("names no number it does not know", () => {
     expect(deleteConsequences(undefined)).toBe(
-      `${annotations}, and their playlists are deleted too, including the playlist files in the bucket.`,
+      `${annotations}, and their playlists are deleted too, including the playlist files in the bucket. ${imported}`,
     );
   });
 });

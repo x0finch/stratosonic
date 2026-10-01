@@ -56,19 +56,25 @@ export function userChanges(
  * question 1): what the foreign keys cascade, and the user's playlists with
  * their `.m3u` files in the bucket. `playlists` is the number they own, or
  * `undefined` when the console cannot know it.
+ *
+ * A playlist the scan imported from the bucket (an `.m3u` uploaded with
+ * rclone, or migrated from Navidrome) belongs to whoever was the first
+ * Subsonic admin when it was imported, so deleting that user deletes those
+ * files too: the sentence says so wherever playlists may go.
  */
 export function deleteConsequences(playlists: number | undefined): string {
   const annotations = "Their stars, ratings, play counts, bookmarks and play queue are deleted";
+  const imported = "Playlists imported from the bucket count as theirs when they own them.";
   if (playlists === undefined) {
-    return `${annotations}, and their playlists are deleted too, including the playlist files in the bucket.`;
+    return `${annotations}, and their playlists are deleted too, including the playlist files in the bucket. ${imported}`;
   }
   if (playlists === 0) {
     return `${annotations}. They have no playlists.`;
   }
   if (playlists === 1) {
-    return `${annotations}, and their 1 playlist is deleted too, including its playlist file in the bucket.`;
+    return `${annotations}, and their 1 playlist is deleted too, including its playlist file in the bucket. ${imported}`;
   }
-  return `${annotations}, and their ${playlists.toLocaleString("en")} playlists are deleted too, including the playlist files in the bucket.`;
+  return `${annotations}, and their ${playlists.toLocaleString("en")} playlists are deleted too, including the playlist files in the bucket. ${imported}`;
 }
 
 /**
