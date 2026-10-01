@@ -43,11 +43,21 @@ Analytics API. It needs two secrets:
    ```
 
 The token stays on the server: the console is sent only numbers. Each
-refresh is one GraphQL request, cached in the isolate for 5 minutes, so the
-panel costs no D1 and at most one Cloudflare API call per 5 minutes per
-isolate. With the token set but not the account id, the Worker logs a warning
-once per isolate and the panel stays hidden. A token Cloudflare refuses makes
-`GET /api/usage` answer `502 {"error":"analytics_unavailable","reason":"unauthorized"}`.
+refresh is two GraphQL requests (one, if the first fails): every figure but
+one, then the Durable Objects' active time, which no Cloudflare page documents
+and so is asked for on its own. If that second request fails, only the
+duration is left blank, and the Worker logs it once per isolate. A refresh is
+cached in the isolate for 5 minutes, so the panel costs no D1 and at most two
+Cloudflare API calls per 5 minutes per isolate. With the token set but not the
+account id, the Worker logs a warning once per isolate and the panel stays
+hidden.
+
+A token Cloudflare refuses makes `GET /api/usage` answer
+`502 {"error":"analytics_unavailable","reason":"unauthorized"}`. So does a
+dataset the account cannot query (Cloudflare answers "does not have access to
+the path"), which fails the whole request: the Worker's log line gives the
+error's path (for example `viewer/accounts/0/r2Storage`), which tells the two
+apart.
 
 ## Console users and Subsonic users
 

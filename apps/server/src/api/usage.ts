@@ -16,7 +16,7 @@ export function registerUsageRoutes(api: ApiApp): void {
    *   `upstream`.
    *
    * A read, so the cookie cache vouches for the session, and the answer comes
-   * from the isolate's cache or one GraphQL request: no D1 at all.
+   * from the isolate's cache or at most two GraphQL requests: no D1 at all.
    */
   api.get("/usage", requireSession, requirePermission("usage:read"), async (c) => {
     // Looked up on each call, so that a test can stand in for it.

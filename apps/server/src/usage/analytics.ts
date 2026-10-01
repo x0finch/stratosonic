@@ -6,13 +6,16 @@ import type { Env } from "../env";
  * Analytics API with a read-only token, next to the free plan's limits.
  *
  * The free-tier limits are per account, so the numbers are account-wide
- * totals, not filtered by script, database or bucket. Every dataset is in one
- * query, sent as one `POST`: one subrequest per refresh. The result is cached
- * in the isolate, never in D1 (which would write a row per refresh) nor in the
- * Cache API (inert on `workers.dev`, ADR-0004).
+ * totals, not filtered by script, database or bucket. A refresh is two small
+ * `POST`s, at most two subrequests: `USAGE_QUERY`, every dataset in one query,
+ * and, once that has answered, `ACTIVE_TIME_QUERY` for the one field
+ * Cloudflare's docs do not name. The result is cached in the isolate, never in
+ * D1 (which would write a row per refresh) nor in the Cache API (inert on
+ * `workers.dev`, ADR-0004).
  *
  * The token is only ever sent to Cloudflare: what the console gets is numbers,
- * and what the log gets is a reason, an HTTP status and error codes.
+ * and what the log gets is a reason, an HTTP status, error codes and error
+ * paths.
  */
 
 /** Cloudflare's GraphQL Analytics API. */
@@ -82,20 +85,25 @@ export const R2_CLASS_B_ACTIONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The one query. Every dataset and field is named in Cloudflare's docs
- * (the Workers metrics tutorial, and the D1, Durable Objects and R2 metrics
- * pages) except `durableObjectsPeriodicGroups.sum.activeTime`, which those
- * pages leave to introspection: the first live call confirms it (#117).
+ * The main query, with only the datasets, fields and filter operators that
+ * Cloudflare's docs show: the Workers metrics tutorial
+ * (`workersInvocationsAdaptive`, `datetime_geq`/`_leq`), the D1 metrics page
+ * (`d1AnalyticsAdaptiveGroups`, `date_geq`/`_leq`, `rowsRead`, `rowsWritten`),
+ * the Durable Objects metrics page (`date_gt`, `sum.requests`,
+ * `sum.cpuTime`) and the R2 metrics page. A field the schema rejects fails a
+ * whole GraphQL query, so nothing unverified goes in here.
  *
  * Groups without dimensions add up the whole filter, so one row comes back
- * for each of those; R2 groups by action type and by bucket.
+ * for each of those; R2 groups by action type and by bucket (an account on
+ * the free plan may have up to 1,000 buckets).
  *
- * The counters cover today (UTC) and, for R2's operations, the month to date.
- * Storage is a level, not a counter, so it covers the last 24 hours instead:
- * a window from midnight would hold no sample just after 00:00 UTC, and read
- * as an empty account.
+ * The counters cover today (UTC): `date_gt: $yesterday` is today, since no
+ * day after it has data yet. R2's operations cover the month to date. Storage
+ * is a level, not a counter, so it covers the last 24 hours instead: a window
+ * from midnight would hold no sample just after 00:00 UTC, and read as an
+ * empty account.
  */
-export const USAGE_QUERY = `query Usage($account: string!, $day: Date!, $dayStart: Time!, $now: Time!, $monthStart: Time!, $storageSince: Time!) {
+export const USAGE_QUERY = `query Usage($account: string!, $day: Date!, $yesterday: Date!, $dayStart: Time!, $now: Time!, $monthStart: Time!, $storageSince: Time!) {
   viewer { accounts(filter: { accountTag: $account }) {
     workers: workersInvocationsAdaptive(limit: 1, filter: { datetime_geq: $dayStart, datetime_leq: $now }) {
       sum { requests errors }
@@ -103,25 +111,42 @@ export const USAGE_QUERY = `query Usage($account: string!, $day: Date!, $dayStar
     d1: d1AnalyticsAdaptiveGroups(limit: 1, filter: { date_geq: $day, date_leq: $day }) {
       sum { rowsRead rowsWritten }
     }
-    doInvocations: durableObjectsInvocationsAdaptiveGroups(limit: 1, filter: { date_geq: $day, date_leq: $day }) {
+    doInvocations: durableObjectsInvocationsAdaptiveGroups(limit: 1, filter: { date_gt: $yesterday }) {
       sum { requests }
     }
-    doPeriodic: durableObjectsPeriodicGroups(limit: 1, filter: { date_geq: $day, date_leq: $day }) {
-      sum { cpuTime activeTime }
+    doPeriodic: durableObjectsPeriodicGroups(limit: 1, filter: { date_gt: $yesterday }) {
+      sum { cpuTime }
     }
     r2Ops: r2OperationsAdaptiveGroups(limit: 100, filter: { datetime_geq: $monthStart, datetime_leq: $now }) {
       sum { requests } dimensions { actionType }
     }
-    r2Storage: r2StorageAdaptiveGroups(limit: 100, filter: { datetime_geq: $storageSince, datetime_leq: $now }) {
+    r2Storage: r2StorageAdaptiveGroups(limit: 1000, filter: { datetime_geq: $storageSince, datetime_leq: $now }) {
       max { payloadSize metadataSize objectCount } dimensions { bucketName }
     }
   } }
 }`;
 
 /**
- * What the panel shows. A number Cloudflare's answer did not carry is `null`
- * rather than a guess: a field renamed upstream blanks one figure instead of
- * failing the panel. A dataset with no rows is `0`: nothing was used.
+ * Today's Durable Object active (wall-clock) time, in microseconds, which
+ * the duration limit is measured in. `durableObjectsPeriodicGroups.sum.
+ * activeTime` is the one field the panel needs that no Cloudflare page names
+ * (the Durable Objects metrics page leaves it to introspection), so it is
+ * asked for on its own: if the guess is wrong, only `durationGbSeconds` is
+ * `null`, and the rest of the panel stands.
+ */
+export const ACTIVE_TIME_QUERY = `query DurableObjectActiveTime($account: string!, $yesterday: Date!) {
+  viewer { accounts(filter: { accountTag: $account }) {
+    doPeriodic: durableObjectsPeriodicGroups(limit: 1, filter: { date_gt: $yesterday }) {
+      sum { activeTime }
+    }
+  } }
+}`;
+
+/**
+ * What the panel shows. A figure missing from the answer is `null` rather
+ * than a guess, and a dataset with no rows is `0`: nothing was used. A field
+ * the schema rejects would fail its whole query instead, so the only
+ * unverified field is isolated in its own request (`ACTIVE_TIME_QUERY`).
  */
 export interface UsageReport {
   readonly configured: true;
@@ -185,20 +210,24 @@ export const USAGE_TTL_MS = {
   upstream: 60_000,
 } as const satisfies Record<"ok" | UsageFailure, number>;
 
-/** How long the GraphQL request may take before it counts as `upstream`. */
+/** How long each GraphQL request may take before it counts as `upstream`. */
 const FETCH_TIMEOUT_MS = 10_000;
 
 /**
  * The isolate's last outcome. Only a resolved value is kept, never a promise
  * shared across requests, as in setup/initial-setup.ts: a request awaiting
  * I/O begun by another request's context can be cancelled out from under it.
- * Several requests, or several isolates, may therefore each fetch once, which
- * stays far below the API's 300 queries per 5 minutes.
+ * Several requests, or several isolates, may therefore each refresh once. A
+ * refresh counts as at most seven queries (six datasets, then one), far below
+ * the API's 300 per 5 minutes.
  */
 let cached: { accountId: string; value: Outcome; expiresAt: number } | null = null;
 
 /** Whether this isolate has reported a token without an account id. */
 let warnedAboutMissingAccount = false;
+
+/** Whether this isolate has reported that the active-time query failed. */
+let warnedAboutActiveTime = false;
 
 export interface UsageDependencies {
   /** The `fetch` the GraphQL request goes through. */
@@ -210,7 +239,7 @@ export interface UsageDependencies {
 /**
  * The usage panel's answer: `unconfigured` without both secrets (and nothing
  * fetched), otherwise the cached outcome while it lasts, and a fresh one
- * fetched with one GraphQL request when it does not.
+ * fetched with `USAGE_QUERY`, then `ACTIVE_TIME_QUERY`, when it does not.
  */
 export async function readUsage(
   env: Pick<Env, "CF_ANALYTICS_TOKEN" | "CF_ACCOUNT_ID">,
@@ -232,9 +261,10 @@ export async function readUsage(
   return value;
 }
 
-/** Forgets the cached outcome. For tests. */
+/** Forgets the cached outcome, and what this isolate has warned about. For tests. */
 export function forgetCachedUsage(): void {
   cached = null;
+  warnedAboutActiveTime = false;
 }
 
 /** The two secrets, trimmed, or `null` unless both are set. */
@@ -262,18 +292,22 @@ function usageConfig(
 export const STORAGE_WINDOW_MS = 24 * 60 * 60_000;
 
 /**
- * The query's windows: the UTC day, its start and its month's first day for
- * the counters, and the last 24 hours for storage.
+ * The queries' windows: the UTC day, the day before it, the day's start and
+ * its month's first day for the counters, and the last 24 hours for storage.
  */
 export function usageWindow(now: number) {
   const iso = new Date(now).toISOString();
   const day = iso.slice(0, 10);
   const monthStart = `${iso.slice(0, 7)}-01`;
+  const yesterday = new Date(Date.parse(`${day}T00:00:00Z`) - 86_400_000)
+    .toISOString()
+    .slice(0, 10);
   return {
     day,
     monthStart,
     variables: {
       day,
+      yesterday,
       dayStart: `${day}T00:00:00Z`,
       now: iso,
       monthStart: `${monthStart}T00:00:00Z`,
@@ -288,6 +322,61 @@ async function fetchUsage(
   now: number,
 ): Promise<Outcome> {
   const window = usageWindow(now);
+  const ask = (query: string, variables: Record<string, string>) =>
+    postQuery(fetchImpl, token, query, { account: accountId, ...variables });
+
+  const usage = await ask(USAGE_QUERY, window.variables);
+  if (!usage.ok) {
+    console.warn(`usage: Cloudflare's GraphQL API gave no usage (${usage.reason})`, usage.detail);
+    return { status: "unavailable", reason: usage.reason };
+  }
+
+  // Asked only once the main query has answered, so a failed refresh costs one
+  // subrequest, and whatever this one answers, the panel keeps its figures.
+  const activeTime = await ask(ACTIVE_TIME_QUERY, { yesterday: window.variables.yesterday });
+  let activeTimeUs: number | null = null;
+  if (activeTime.ok) {
+    activeTimeUs = sumOf(activeTime.account.doPeriodic, "sum", "activeTime");
+  } else if (!warnedAboutActiveTime) {
+    warnedAboutActiveTime = true;
+    console.warn(
+      `usage: the Durable Object active-time query failed (${activeTime.reason}); the duration is left out`,
+      activeTime.detail,
+    );
+  }
+
+  return {
+    status: "ok",
+    report: buildReport(
+      usage.account,
+      activeTimeUs,
+      window.day,
+      window.monthStart,
+      new Date(now).toISOString(),
+    ),
+  };
+}
+
+type QueryResult =
+  | { readonly ok: true; readonly account: Record<string, unknown> }
+  | { readonly ok: false; readonly reason: UsageFailure; readonly detail: Record<string, unknown> };
+
+/**
+ * Sends one GraphQL query and returns its one account block, or why there is
+ * none, with what may be logged about it: an HTTP status, error codes and
+ * error paths, never a message, which is free text.
+ */
+async function postQuery(
+  fetchImpl: typeof fetch,
+  token: string,
+  query: string,
+  variables: Record<string, string>,
+): Promise<QueryResult> {
+  const failure = (reason: UsageFailure, detail: Record<string, unknown>): QueryResult => ({
+    ok: false,
+    reason,
+    detail,
+  });
 
   let response: Response;
   try {
@@ -298,61 +387,68 @@ async function fetchUsage(
         "content-type": "application/json",
         accept: "application/json",
       },
-      body: JSON.stringify({
-        query: USAGE_QUERY,
-        variables: { account: accountId, ...window.variables },
-      }),
+      body: JSON.stringify({ query, variables }),
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
   } catch (error) {
-    // Only the error's name: a message is free text.
-    return failed("upstream", { request: errorName(error) });
+    return failure("upstream", { request: errorName(error) });
   }
 
-  if (response.status === 401 || response.status === 403) {
-    return failed("unauthorized", { status: response.status });
-  }
   if (response.status === 429) {
-    return failed("rate_limited", { status: response.status });
+    await discard(response);
+    return failure("rate_limited", { status: response.status });
+  }
+  if (response.status === 401 || response.status === 403) {
+    // Read only for its error codes and paths, which say whether the token was
+    // refused or one dataset is out of the account's reach.
+    const errors = graphqlErrors(await response.json().catch(() => null));
+    return failure("unauthorized", { status: response.status, ...describeErrors(errors) });
   }
 
   let body: unknown;
   try {
     body = await response.json();
   } catch {
-    return failed("upstream", { status: response.status, body: "not JSON" });
+    return failure("upstream", { status: response.status, body: "not JSON" });
   }
 
   const errors = graphqlErrors(body);
   if (errors.length > 0) {
-    const codes = errors.map((error) => error.code ?? "none");
-    return failed(classifyErrors(errors), { status: response.status, codes });
+    return failure(classifyErrors(errors), {
+      status: response.status,
+      ...describeErrors(errors),
+    });
   }
   if (!response.ok) {
-    return failed("upstream", { status: response.status });
+    return failure("upstream", { status: response.status });
   }
 
   const account = first(at(body, "data", "viewer", "accounts"));
   if (!isRecord(account)) {
-    return failed("upstream", { status: response.status, body: "no account" });
+    return failure("upstream", { status: response.status, body: "no account" });
   }
-
-  return {
-    status: "ok",
-    report: buildReport(account, window.day, window.monthStart, new Date(now).toISOString()),
-  };
+  return { ok: true, account };
 }
 
-/** The panel's figures, from the one account block of the answer. */
+/** Lets go of a body that is not read. */
+async function discard(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Nothing is left to release.
+  }
+}
+
+/** The panel's figures, from the main query's account block and the active time. */
 export function buildReport(
   account: Record<string, unknown>,
+  activeTimeUs: number | null,
   day: string,
   monthStart: string,
   fetchedAt: string,
 ): UsageReport {
-  // Both in microseconds.
+  // In microseconds, as `activeTime` is.
   const cpuTimeUs = sumOf(account.doPeriodic, "sum", "cpuTime");
-  const activeTimeUs = sumOf(account.doPeriodic, "sum", "activeTime");
   const r2Ops = r2Operations(account.r2Ops);
 
   return {
@@ -442,6 +538,8 @@ function sumOf(rows: unknown, group: string, field: string): number | null {
 interface GraphqlError {
   readonly code: string | null;
   readonly message: string;
+  /** Where in the query it arose, e.g. `viewer/accounts/0/r2Storage`. */
+  readonly path: string | null;
 }
 
 function graphqlErrors(body: unknown): GraphqlError[] {
@@ -452,11 +550,24 @@ function graphqlErrors(body: unknown): GraphqlError[] {
   return errors.map((error) => {
     const code = at(error, "extensions", "code");
     const message = at(error, "message");
+    const path = at(error, "path");
     return {
       code: typeof code === "string" ? code : null,
       message: typeof message === "string" ? message : "",
+      path:
+        Array.isArray(path) && path.every((part) => ["string", "number"].includes(typeof part))
+          ? path.join("/")
+          : null,
     };
   });
+}
+
+/** What the log may say about the errors: their codes and paths. */
+function describeErrors(errors: readonly GraphqlError[]): Record<string, unknown> {
+  return {
+    codes: errors.map((error) => error.code ?? "none"),
+    paths: errors.map((error) => error.path ?? "none"),
+  };
 }
 
 /**
@@ -464,7 +575,9 @@ function graphqlErrors(body: unknown): GraphqlError[] {
  * (developers.cloudflare.com/analytics/graphql-api/account-based-rate-limiting/,
  * "Rate limit errors"). A token without the permission, or for another
  * account, is `authz` ("not authorized for that account"); a token Cloudflare
- * does not know is an authentication error.
+ * does not know is an authentication error. A dataset the account cannot
+ * query ("does not have access to the path") is refused the same way, and
+ * fails the whole query: the logged error path tells the two apart.
  */
 function classifyErrors(errors: readonly GraphqlError[]): UsageFailure {
   if (errors.some((error) => error.code === "budget")) {
@@ -481,12 +594,6 @@ function classifyErrors(errors: readonly GraphqlError[]): UsageFailure {
     return "unauthorized";
   }
   return "upstream";
-}
-
-/** Logs why there are no numbers, with nothing but a reason, a status and codes. */
-function failed(reason: UsageFailure, detail: Record<string, unknown>): Outcome {
-  console.warn(`usage: Cloudflare's GraphQL API gave no usage (${reason})`, detail);
-  return { status: "unavailable", reason };
 }
 
 function errorName(error: unknown): string {

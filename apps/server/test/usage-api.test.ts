@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app";
 import type { Env } from "../src/env";
-import { forgetCachedUsage, GRAPHQL_ENDPOINT } from "../src/usage/analytics";
+import { ACTIVE_TIME_QUERY, forgetCachedUsage, GRAPHQL_ENDPOINT } from "../src/usage/analytics";
 import {
   type CookieJar,
   consoleRequest,
@@ -11,6 +11,7 @@ import {
   seedConsoleUser,
   signIn,
 } from "./console-auth-support";
+import activeTimeSample from "./fixtures/cloudflare-active-time-response.json";
 import sample from "./fixtures/cloudflare-usage-response.json";
 import { testEnv } from "./support";
 
@@ -59,14 +60,20 @@ function getUsage(env: Env, jar?: CookieJar) {
   return app.request(consoleRequest(ORIGIN, "/api/usage", { jar }), undefined, env);
 }
 
-/** Stands in for the Worker's `fetch`, answering each call with `answer`. */
-function stubFetch(answer: () => Response) {
-  return vi.spyOn(globalThis, "fetch").mockImplementation(async () => answer());
+/**
+ * Stands in for the Worker's `fetch`: the main query gets `answer`, the
+ * active-time query its sample.
+ */
+function stubFetch(answer: () => Response = () => Response.json(sample)) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (_, init) => {
+    const { query } = JSON.parse(String(init?.body));
+    return query === ACTIVE_TIME_QUERY ? Response.json(activeTimeSample) : answer();
+  });
 }
 
 describe("GET /api/usage", () => {
   it("answers configured: false without the secrets, and calls nobody", async () => {
-    const fetchSpy = stubFetch(() => Response.json(sample));
+    const fetchSpy = stubFetch();
 
     const response = await getUsage(unconfigured, owner);
 
@@ -75,8 +82,8 @@ describe("GET /api/usage", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("answers today's usage with the secrets, from one GraphQL request", async () => {
-    const fetchSpy = stubFetch(() => Response.json(sample));
+  it("answers today's usage with the secrets, from two GraphQL requests", async () => {
+    const fetchSpy = stubFetch();
 
     const response = await getUsage(configured, owner);
 
@@ -90,18 +97,20 @@ describe("GET /api/usage", () => {
       r2: { classA: 1200, classB: 34000, storageBytes: 52_345_678_901, objectCount: 6100 },
     });
     expect(JSON.stringify(body)).not.toContain(TOKEN);
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect(String(fetchSpy.mock.calls[0]?.[0])).toBe(GRAPHQL_ENDPOINT);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    for (const [url] of fetchSpy.mock.calls) {
+      expect(String(url)).toBe(GRAPHQL_ENDPOINT);
+    }
   });
 
   it("answers from the isolate's cache within 5 minutes", async () => {
-    const fetchSpy = stubFetch(() => Response.json(sample));
+    const fetchSpy = stubFetch();
 
     await getUsage(configured, owner);
     const again = await getUsage(configured, owner);
 
     expect(again.status).toBe(200);
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
   it.each([
@@ -122,7 +131,7 @@ describe("GET /api/usage", () => {
   );
 
   it("makes no D1 round trip, configured or not", async () => {
-    stubFetch(() => Response.json(sample));
+    stubFetch();
 
     for (const env of [unconfigured, configured]) {
       d1.reset();
@@ -132,7 +141,7 @@ describe("GET /api/usage", () => {
   });
 
   it("answers 401 without a session, and calls nobody", async () => {
-    const fetchSpy = stubFetch(() => Response.json(sample));
+    const fetchSpy = stubFetch();
 
     const response = await getUsage(configured);
 
@@ -142,7 +151,7 @@ describe("GET /api/usage", () => {
   });
 
   it("answers 403 forbidden to a role without usage:read, and calls nobody", async () => {
-    const fetchSpy = stubFetch(() => Response.json(sample));
+    const fetchSpy = stubFetch();
 
     const response = await getUsage(configured, guest);
 

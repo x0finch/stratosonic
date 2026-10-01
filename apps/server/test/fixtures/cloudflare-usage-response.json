@@ -6,7 +6,7 @@
           "workers": [{ "sum": { "requests": 1234, "errors": 2 } }],
           "d1": [{ "sum": { "rowsRead": 81234, "rowsWritten": 412 } }],
           "doInvocations": [{ "sum": { "requests": 840 } }],
-          "doPeriodic": [{ "sum": { "cpuTime": 51234000, "activeTime": 2441406250 } }],
+          "doPeriodic": [{ "sum": { "cpuTime": 51234000 } }],
           "r2Ops": [
             { "dimensions": { "actionType": "GetObject" }, "sum": { "requests": 30000 } },
             { "dimensions": { "actionType": "HeadObject" }, "sum": { "requests": 3500 } },

@@ -1,0 +1,8 @@
+{
+  "data": {
+    "viewer": {
+      "accounts": [{ "doPeriodic": [{ "sum": { "activeTime": 2441406250 } }] }]
+    }
+  },
+  "errors": null
+}
