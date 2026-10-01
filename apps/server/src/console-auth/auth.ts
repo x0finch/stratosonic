@@ -11,11 +11,7 @@ import { isAPIError } from "better-auth/api";
 import { betterAuth } from "better-auth/minimal";
 import { username } from "better-auth/plugins/username";
 import { drizzle } from "drizzle-orm/d1";
-import {
-  MAX_PASSWORD_LENGTH,
-  MAX_USERNAME_LENGTH,
-  MIN_PASSWORD_LENGTH,
-} from "../users/validation";
+import { MAX_PASSWORD_LENGTH, MAX_USERNAME_LENGTH, MIN_PASSWORD_LENGTH } from "../users/validation";
 import { foldConsoleUsername } from "./credentials";
 import { hashConsolePassword, verifyConsolePassword } from "./password-hash";
 

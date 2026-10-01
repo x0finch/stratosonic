@@ -1,10 +1,6 @@
 import type { Context } from "hono";
 import { encryptPassword } from "../auth/crypto";
-import {
-  requireFreshSession,
-  requirePermission,
-  requireSession,
-} from "../console-auth/middleware";
+import { requireFreshSession, requirePermission, requireSession } from "../console-auth/middleware";
 import { database } from "../db";
 import { deleteSubsonicUser } from "../users/delete";
 import {
