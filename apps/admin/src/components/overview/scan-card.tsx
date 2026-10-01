@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/card";
 import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
 import { requestScan, type ScanStatus } from "@/lib/api";
 import { formatCount, formatDateTime, formatDuration, formatRelative } from "@/lib/format";
 import { afterScanRequest } from "@/lib/overview";
@@ -25,7 +26,7 @@ import { toastError, toastSuccess } from "@/lib/toasts";
  * The bar is determinate while the last pass's track count is known, the
  * best denominator there is: R2's listing gives no total (#82). Before any
  * pass, between the poke and the first step, and while playlists import,
- * it is indeterminate.
+ * it is indeterminate, with a spinner beside its label.
  */
 export function ScanCard({
   scan,
@@ -116,8 +117,10 @@ function ScanProgress({ scan }: { scan: ScanStatus }) {
         value={determinate ? Math.min(tracks, estimatedTotal) : null}
         max={determinate ? estimatedTotal : 100}
         getAriaValueText={() => text || label}
-        className="[&_[data-slot=progress-indicator][data-indeterminate]]:w-full [&_[data-slot=progress-indicator][data-indeterminate]]:animate-pulse"
       >
+        {/* An indeterminate bar has nothing to fill, so the spinner shows the
+            pass at work. The bar already says so to assistive technology. */}
+        {determinate ? null : <Spinner aria-hidden="true" />}
         <ProgressLabel>{label}</ProgressLabel>
         <ProgressValue>{() => text}</ProgressValue>
       </Progress>
