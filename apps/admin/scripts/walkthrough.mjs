@@ -298,6 +298,7 @@ async function main() {
       const { search } = new URL(page.url());
       check(search === "", `the overview went to /login${search}`);
       await page.getByRole("button", { name: "Sign in" }).waitFor();
+      await shot(page, "login-from-overview");
     });
 
     await step("first-run setup", async () => {
