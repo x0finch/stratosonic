@@ -203,7 +203,8 @@ screen are in `src/lib/subsonic-users.ts`.
   and play queue, and their playlists with the `.m3u` files in the bucket;
   the confirmation says so, with how many playlists the users API counts
   for them. A playlist the scan imported from the bucket belongs to whoever
-  was the first Subsonic admin when it was imported, so deleting that user
-  deletes those files too.
+  was the first Subsonic admin when it was imported, so the confirmation
+  also says that these are included: "This includes playlists the scan
+  imported from the bucket while they were the first Subsonic admin."
 - The list is read on page load and again after every write, and is never
   polled: only the console changes it.

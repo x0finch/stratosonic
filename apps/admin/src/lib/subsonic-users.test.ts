@@ -214,7 +214,8 @@ describe("userChanges", () => {
 describe("deleteConsequences", () => {
   const annotations = "Their stars, ratings, play counts, bookmarks and play queue are deleted";
   // Bucket playlists belong to the first Subsonic admin at import time.
-  const imported = "Playlists imported from the bucket count as theirs when they own them.";
+  const imported =
+    "This includes playlists the scan imported from the bucket while they were the first Subsonic admin.";
 
   it("says the owner's sentence, with the number of playlists", () => {
     expect(deleteConsequences(3)).toBe(
