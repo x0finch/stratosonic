@@ -190,11 +190,25 @@ export interface ScanReport {
 
 /** Everything a pass shows the outside world, in one query. */
 export async function readScanReport(db: Database): Promise<ScanReport> {
-  const stored = await readProperties(db, [
+  return toScanReport(await scanReportQuery(db));
+}
+
+/**
+ * `readScanReport`'s statement, unrun, for a caller that sends it in a
+ * `db.batch` with others (the console's overview, api/overview.ts);
+ * `toScanReport` reads what it returns.
+ */
+export function scanReportQuery(db: Database) {
+  return propertiesQuery(db, [
     SCAN_PROGRESS_KEY,
     PLAYLIST_IMPORT_PROGRESS_KEY,
     LAST_SCAN_SUMMARY_KEY,
   ]);
+}
+
+/** The rows `scanReportQuery` returns, as `readScanReport` answers them. */
+export function toScanReport(rows: Awaited<ReturnType<typeof scanReportQuery>>): ScanReport {
+  const stored = parsedProperties(rows);
 
   return {
     progress: readProgress(stored.get(SCAN_PROGRESS_KEY)),
@@ -264,11 +278,19 @@ async function readProperties(
   db: Database,
   ids: readonly string[],
 ): Promise<Map<string, Record<string, unknown>>> {
-  const rows = await db
+  return parsedProperties(await propertiesQuery(db, ids));
+}
+
+function propertiesQuery(db: Database, ids: readonly string[]) {
+  return db
     .select()
     .from(property)
     .where(inArray(property.id, [...ids]));
+}
 
+function parsedProperties(
+  rows: Awaited<ReturnType<typeof propertiesQuery>>,
+): Map<string, Record<string, unknown>> {
   const found = new Map<string, Record<string, unknown>>();
   for (const row of rows) {
     const parsed = parseObject(row.value);
