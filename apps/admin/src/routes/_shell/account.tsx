@@ -19,12 +19,13 @@ export const Route = createFileRoute("/_shell/account")({
 function Account() {
   const { data: me } = useQuery(meQuery);
 
+  // A page of one form: the form keeps its own width, centered in the shell's column.
   return (
-    <div className="px-4 lg:px-6">
+    <div className="mx-auto w-full max-w-md">
       {can(me, "account:change-password") ? (
-        <ChangePasswordForm className="max-w-md" username={me?.username ?? ""} />
+        <ChangePasswordForm username={me?.username ?? ""} />
       ) : (
-        <Alert className="max-w-md">
+        <Alert>
           <InfoIcon />
           <AlertTitle>Nothing to change here</AlertTitle>
           <AlertDescription>Your role does not let you change your password.</AlertDescription>

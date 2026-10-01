@@ -16,18 +16,16 @@ export const Route = createFileRoute("/_shell/")({
 
 function Overview() {
   return (
-    <div className="px-4 lg:px-6">
-      <Empty>
-        <EmptyHeader>
-          <EmptyMedia variant="icon">
-            <LayoutDashboardIcon />
-          </EmptyMedia>
-          <EmptyTitle>Nothing here yet</EmptyTitle>
-          <EmptyDescription>
-            The overview of the library and its scans will appear here.
-          </EmptyDescription>
-        </EmptyHeader>
-      </Empty>
-    </div>
+    <Empty>
+      <EmptyHeader>
+        <EmptyMedia variant="icon">
+          <LayoutDashboardIcon />
+        </EmptyMedia>
+        <EmptyTitle>Nothing here yet</EmptyTitle>
+        <EmptyDescription>
+          The overview of the library and its scans will appear here.
+        </EmptyDescription>
+      </EmptyHeader>
+    </Empty>
   );
 }

@@ -1,9 +1,8 @@
 import { Link, type LinkProps, useMatchRoute } from "@tanstack/react-router";
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 
 import {
   SidebarGroup,
-  SidebarGroupContent,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
@@ -16,18 +15,20 @@ export interface NavItem {
   icon: ReactNode;
 }
 
+/**
+ * The sidebar-08 block's nav-main. No console page has subpages yet, so the
+ * block's collapsible subitems, and the group label above them, are left out.
+ */
 export function NavMain({ items }: { items: NavItem[] }) {
   return (
     <SidebarGroup>
-      <SidebarGroupContent className="flex flex-col gap-2">
-        <SidebarMenu>
-          {items.map((item) => (
-            <SidebarMenuItem key={item.title}>
-              <NavButton item={item} tooltip={item.title} />
-            </SidebarMenuItem>
-          ))}
-        </SidebarMenu>
-      </SidebarGroupContent>
+      <SidebarMenu>
+        {items.map((item) => (
+          <SidebarMenuItem key={item.title}>
+            <NavButton item={item} tooltip={item.title} />
+          </SidebarMenuItem>
+        ))}
+      </SidebarMenu>
     </SidebarGroup>
   );
 }
@@ -36,14 +37,22 @@ export function NavMain({ items }: { items: NavItem[] }) {
  * One sidebar entry: a link when its page exists, and a disabled button
  * holding its place until then.
  */
-export function NavButton({ item, tooltip }: { item: NavItem; tooltip?: string }) {
+export function NavButton({
+  item,
+  tooltip,
+  size,
+}: {
+  item: NavItem;
+  tooltip?: string;
+  size?: ComponentProps<typeof SidebarMenuButton>["size"];
+}) {
   const matchRoute = useMatchRoute();
 
   // No tooltip on a placeholder: a disabled button takes no pointer events to
   // show one on, and the tooltip trigger would drop the `disabled` it needs.
   if (item.to === undefined) {
     return (
-      <SidebarMenuButton disabled>
+      <SidebarMenuButton size={size} disabled>
         {item.icon}
         <span>{item.title}</span>
       </SidebarMenuButton>
@@ -52,6 +61,7 @@ export function NavButton({ item, tooltip }: { item: NavItem; tooltip?: string }
 
   return (
     <SidebarMenuButton
+      size={size}
       tooltip={tooltip}
       isActive={Boolean(matchRoute({ to: item.to }))}
       render={<Link to={item.to} />}

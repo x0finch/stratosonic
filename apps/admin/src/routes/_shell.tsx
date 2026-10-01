@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Outlet, redirect, useRouter } from "@tanstack/react-router";
-import { type CSSProperties, useEffect } from "react";
+import { useEffect } from "react";
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { NotFound } from "@/components/not-found";
@@ -25,7 +25,16 @@ export const Route = createFileRoute("/_shell")({
   notFoundComponent: NotFound,
 });
 
-/** The dashboard-01 block's layout, with each route rendered where its content was. */
+/**
+ * The sidebar-08 block's layout, with each route rendered where its content
+ * was, in one centered column: every page gets the block's padding and the
+ * same width, which fills the content area on a laptop and stops at
+ * `max-w-7xl` on a wider screen (#107).
+ *
+ * The shell is one viewport tall and never scrolls itself: the sidebar and
+ * the header stay put, and a page taller than the screen scrolls inside the
+ * inset, below the header, whose rounded corners clip it.
+ */
 function Shell() {
   const { data: me } = useQuery(meQuery);
   const router = useRouter();
@@ -46,22 +55,13 @@ function Shell() {
   }
 
   return (
-    <SidebarProvider
-      style={
-        {
-          "--sidebar-width": "calc(var(--spacing) * 72)",
-          "--header-height": "calc(var(--spacing) * 12)",
-        } as CSSProperties
-      }
-    >
-      <AppSidebar variant="inset" user={me} />
-      <SidebarInset>
+    <SidebarProvider className="h-svh overflow-hidden">
+      <AppSidebar user={me} />
+      <SidebarInset className="min-h-0 overflow-hidden">
         <SiteHeader />
-        <div className="flex flex-1 flex-col">
-          <div className="@container/main flex flex-1 flex-col gap-2">
-            <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
-              <Outlet />
-            </div>
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-4 p-4 pt-0">
+            <Outlet />
           </div>
         </div>
       </SidebarInset>

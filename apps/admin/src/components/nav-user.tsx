@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useRouter } from "@tanstack/react-router";
-import { CircleUserRoundIcon, EllipsisVerticalIcon, LogOutIcon } from "lucide-react";
+import { BadgeCheckIcon, ChevronsUpDownIcon, LogOutIcon } from "lucide-react";
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
@@ -29,7 +29,7 @@ function initials(name: string): string {
 }
 
 /**
- * The dashboard-01 block's nav-user: the signed-in console user's name and
+ * The sidebar-08 block's nav-user: the signed-in console user's name and
  * role, the account page, if the role lets them change their password, and
  * sign-out. Console users have no avatar or email, so the avatar is the
  * name's initials and the second line the role, "Owner".
@@ -61,17 +61,17 @@ export function NavUser({ user }: { user: Me }) {
           <DropdownMenuTrigger
             render={<SidebarMenuButton size="lg" className="aria-expanded:bg-muted" />}
           >
-            <Avatar className="size-8 rounded-lg grayscale">
-              <AvatarFallback className="rounded-lg">{initials(user.username)}</AvatarFallback>
+            <Avatar>
+              <AvatarFallback>{initials(user.username)}</AvatarFallback>
             </Avatar>
             <div className="grid flex-1 text-left text-sm leading-tight">
               <span className="truncate font-medium">{user.username}</span>
-              <span className="truncate text-xs text-foreground/70">{role}</span>
+              <span className="truncate text-xs">{role}</span>
             </div>
-            <EllipsisVerticalIcon className="ml-auto size-4" />
+            <ChevronsUpDownIcon className="ml-auto size-4" />
           </DropdownMenuTrigger>
           <DropdownMenuContent
-            className="min-w-56"
+            className="min-w-56 rounded-lg"
             side={isMobile ? "bottom" : "right"}
             align="end"
             sideOffset={4}
@@ -79,14 +79,12 @@ export function NavUser({ user }: { user: Me }) {
             <DropdownMenuGroup>
               <DropdownMenuLabel className="p-0 font-normal">
                 <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
-                  <Avatar className="size-8">
-                    <AvatarFallback className="rounded-lg">
-                      {initials(user.username)}
-                    </AvatarFallback>
+                  <Avatar>
+                    <AvatarFallback>{initials(user.username)}</AvatarFallback>
                   </Avatar>
                   <div className="grid flex-1 text-left text-sm leading-tight">
                     <span className="truncate font-medium">{user.username}</span>
-                    <span className="truncate text-xs text-muted-foreground">{role}</span>
+                    <span className="truncate text-xs">{role}</span>
                   </div>
                 </div>
               </DropdownMenuLabel>
@@ -96,7 +94,7 @@ export function NavUser({ user }: { user: Me }) {
               <>
                 <DropdownMenuGroup>
                   <DropdownMenuItem render={<Link to="/account" />}>
-                    <CircleUserRoundIcon />
+                    <BadgeCheckIcon />
                     Account
                   </DropdownMenuItem>
                 </DropdownMenuGroup>

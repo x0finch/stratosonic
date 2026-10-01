@@ -81,7 +81,8 @@ pnpm exec shadcn add <component>   # in apps/admin
 ```
 
 The shell layout (`app-sidebar.tsx`, `nav-main.tsx`, `nav-secondary.tsx`,
-`nav-user.tsx`, `site-header.tsx`) is adapted from the `dashboard-01` block;
+`nav-user.tsx`, `site-header.tsx`) is adapted from the `sidebar-08` block,
+with every page in one centered column (`src/routes/_shell.tsx`);
 the sign-in, setup and account forms (`login-form.tsx`, `setup-form.tsx`,
 `change-password-form.tsx`) and their full-screen page (`auth-layout.tsx`)
 from the `login-01` block; and `mode-toggle.tsx` is the one from shadcn/ui's
