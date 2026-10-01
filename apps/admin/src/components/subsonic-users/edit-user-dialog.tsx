@@ -78,7 +78,10 @@ function EditUserForm({ user, onDone }: { user: SubsonicUser; onDone: () => void
       },
       onError: (error) => {
         if (!report(error, form, target)) {
+          // Not a field's to show: the dialog closes, so that its backdrop
+          // does not blur the toast that says why.
           toastError(error);
+          onDone();
         }
       },
     });
