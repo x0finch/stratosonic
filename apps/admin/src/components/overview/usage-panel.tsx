@@ -53,6 +53,7 @@ export function UsagePanel({
           <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-4">
             <Group title="Workers">
               <Meter
+                name="Workers requests"
                 label="Requests"
                 value={usage.workers.requests}
                 limit={usage.workers.limit.requests}
@@ -60,8 +61,14 @@ export function UsagePanel({
               <Note>{figure(usage.workers.errors)} errors</Note>
             </Group>
             <Group title="D1">
-              <Meter label="Rows read" value={usage.d1.rowsRead} limit={usage.d1.limit.rowsRead} />
               <Meter
+                name="D1 rows read"
+                label="Rows read"
+                value={usage.d1.rowsRead}
+                limit={usage.d1.limit.rowsRead}
+              />
+              <Meter
+                name="D1 rows written"
                 label="Rows written"
                 value={usage.d1.rowsWritten}
                 limit={usage.d1.limit.rowsWritten}
@@ -69,11 +76,13 @@ export function UsagePanel({
             </Group>
             <Group title="Durable Objects">
               <Meter
+                name="Durable Object requests"
                 label="Requests"
                 value={usage.durableObjects.requests}
                 limit={usage.durableObjects.limit.requests}
               />
               <Meter
+                name="Durable Object duration (GB-s)"
                 label="Duration (GB-s)"
                 value={usage.durableObjects.durationGbSeconds}
                 limit={usage.durableObjects.limit.durationGbSeconds}
@@ -82,16 +91,19 @@ export function UsagePanel({
             </Group>
             <Group title="R2">
               <Meter
+                name="R2 Class A operations"
                 label="Class A operations"
                 value={usage.r2.classA}
                 limit={usage.r2.limit.classA}
               />
               <Meter
+                name="R2 Class B operations"
                 label="Class B operations"
                 value={usage.r2.classB}
                 limit={usage.r2.limit.classB}
               />
               <Meter
+                name="R2 storage, 24-hour peak"
                 label="Storage, 24-hour peak"
                 value={usage.r2.storageBytes}
                 limit={usage.r2.limit.storageBytes}
@@ -121,14 +133,20 @@ function Note({ children }: { children: ReactNode }) {
 
 /**
  * One figure against its limit, as a bar with the share beside it. A figure
- * the answer left out leaves the bar empty and says so with a dash.
+ * the answer left out leaves the bar empty and says so with a dash. The bar
+ * is named in full ("Workers requests"), not by the short label its group's
+ * heading explains.
  */
 function Meter({
+  name,
   label,
   value,
   limit,
   format = wholeCount,
 }: {
+  /** What the bar measures in full, for assistive technology. */
+  name: string;
+  /** What it shows beside the bar, under its group's heading. */
   label: string;
   value: UsageFigure;
   limit: number;
@@ -141,10 +159,13 @@ function Meter({
     <Progress
       value={value === null ? null : Math.min(value, limit)}
       max={limit}
-      getAriaValueText={() => (value === null ? `${label}: unknown` : `${text}, ${share}`)}
+      getAriaValueText={() => (value === null ? `${name}: unknown` : `${text}, ${share}`)}
       className="gap-1.5"
     >
-      <ProgressLabel className="text-xs font-normal text-muted-foreground">{label}</ProgressLabel>
+      <ProgressLabel className="text-xs font-normal text-muted-foreground">
+        <span className="sr-only">{name}</span>
+        <span aria-hidden="true">{label}</span>
+      </ProgressLabel>
       <ProgressValue className="text-xs">{() => share}</ProgressValue>
       <span className="order-last w-full text-xs tabular-nums">{text}</span>
     </Progress>
