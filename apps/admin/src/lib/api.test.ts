@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, changePassword, fetchMe, fetchUsage, requestScan, signIn } from "@/lib/api";
+import {
+  ApiError,
+  changePassword,
+  fetchMe,
+  fetchUsage,
+  requestScan,
+  retryUnlessRefused,
+  signIn,
+} from "@/lib/api";
 import { describeError } from "@/lib/errors";
 
 function answer(status: number, body: unknown, headers: Record<string, string> = {}) {
@@ -120,6 +128,30 @@ describe("the API client", () => {
     answer(502, undefined);
 
     expect((await refusal(fetchMe())).code).toBe("http_502");
+  });
+});
+
+describe("retrying a failed read", () => {
+  it("never retries a refusal, so a lost session signs out at once", () => {
+    for (const status of [400, 401, 403, 404, 429]) {
+      expect(retryUnlessRefused(0, new ApiError(status, "x", ""))).toBe(false);
+    }
+  });
+
+  it("retries anything else up to three times", () => {
+    for (const error of [
+      new ApiError(500, "internal", ""),
+      new ApiError(502, "analytics_unavailable", ""),
+      new ApiError(0, "network", ""),
+      new TypeError("odd"),
+    ]) {
+      expect([0, 1, 2, 3].map((count) => retryUnlessRefused(count, error))).toEqual([
+        true,
+        true,
+        true,
+        false,
+      ]);
+    }
   });
 });
 

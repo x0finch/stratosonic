@@ -136,6 +136,17 @@ async function call<T>(method: "GET" | "POST", path: string, body?: unknown): Pr
   return payload as T;
 }
 
+/**
+ * Whether a failed read is worth another try, as TanStack Query's `retry`
+ * asks: up to three times, as its default, but never a refusal (a 4xx),
+ * which would only be refused again. A session that has ended then signs
+ * the console out at once (main.tsx), not after the retries' backoff.
+ */
+export function retryUnlessRefused(failureCount: number, error: unknown): boolean {
+  const refused = error instanceof ApiError && error.status >= 400 && error.status < 500;
+  return !refused && failureCount < 3;
+}
+
 /** The signed-in console user, or `null` without a session. */
 export async function fetchMe(): Promise<Me | null> {
   try {

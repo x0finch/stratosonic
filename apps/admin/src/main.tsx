@@ -7,7 +7,7 @@ import "./index.css";
 import { ThemeProvider } from "@/components/theme-provider.tsx";
 import { Toaster } from "@/components/ui/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { ApiError, meQuery } from "@/lib/api";
+import { ApiError, meQuery, retryUnlessRefused } from "@/lib/api";
 import { routeTree } from "./routeTree.gen";
 
 /**
@@ -25,6 +25,7 @@ function signOutWhenUnauthenticated(error: unknown): void {
 }
 
 const queryClient: QueryClient = new QueryClient({
+  defaultOptions: { queries: { retry: retryUnlessRefused } },
   queryCache: new QueryCache({ onError: signOutWhenUnauthenticated }),
   mutationCache: new MutationCache({ onError: signOutWhenUnauthenticated }),
 });
