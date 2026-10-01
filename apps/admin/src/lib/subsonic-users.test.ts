@@ -202,6 +202,9 @@ describe("userChanges", () => {
   it("sends only what the edit dialog changed", () => {
     const alice = user();
     expect(userChanges(alice, { username: "alice", isAdmin: false })).toBeNull();
+    // The server trims a name: spaces around it are no change.
+    expect(userChanges(alice, { username: " alice ", isAdmin: false })).toBeNull();
+    expect(userChanges(alice, { username: " bob ", isAdmin: false })).toEqual({ username: "bob" });
     expect(userChanges(alice, { username: "Alice", isAdmin: false })).toEqual({
       username: "Alice",
     });

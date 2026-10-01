@@ -43,8 +43,10 @@ export function userChanges(
   edited: { username: string; isAdmin: boolean },
 ): { username?: string; isAdmin?: boolean } | null {
   const changes: { username?: string; isAdmin?: boolean } = {};
-  if (edited.username !== user.username) {
-    changes.username = edited.username;
+  // The server trims a name, so spaces around it change nothing.
+  const username = edited.username.trim();
+  if (username !== user.username) {
+    changes.username = username;
   }
   if (edited.isAdmin !== user.isAdmin) {
     changes.isAdmin = edited.isAdmin;
