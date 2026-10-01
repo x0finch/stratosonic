@@ -302,7 +302,9 @@ describe("PATCH /api/subsonic-users/:id", () => {
     const response = await edit(bobId, { username: " robert " });
 
     expect(response.status).toBe(200);
-    const { user } = (await response.json()) as { user: SubsonicUserView };
+    const text = await response.text();
+    expect(text).not.toMatch(/password/i);
+    const { user } = JSON.parse(text) as { user: SubsonicUserView };
     expect(user).toMatchObject({ id: bobId, username: "robert", isAdmin: false });
     expect(await ping("bob", "builder")).toBe(40);
     expect(await ping("robert", "builder")).toBe("ok");
