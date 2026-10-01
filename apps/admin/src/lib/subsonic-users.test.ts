@@ -1,4 +1,4 @@
-import { MutationObserver, QueryClient } from "@tanstack/react-query";
+import { MutationObserver, QueryClient, QueryObserver } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -350,5 +350,71 @@ describe("userWriteOptions", () => {
     await write.done;
 
     expect(write.queryClient.getQueryState(subsonicUsersQuery.queryKey)?.isInvalidated).toBe(true);
+  });
+
+  describe("with the list on screen, re-read slowly", () => {
+    /**
+     * The users page's list query, active, so the write's re-read waits for
+     * it; its answer comes when the test says.
+     */
+    function slowList(queryClient: QueryClient) {
+      let answer: (() => void) | undefined;
+      let reads = 0;
+      const observer = new QueryObserver(queryClient, {
+        queryKey: subsonicUsersQuery.queryKey,
+        queryFn: () =>
+          new Promise<SubsonicUser[]>((resolve) => {
+            reads += 1;
+            answer = () => resolve([]);
+          }),
+        staleTime: Number.POSITIVE_INFINITY,
+      });
+      const unsubscribe = observer.subscribe(() => {});
+      return { unsubscribe, reads: () => reads, answer: () => answer?.() };
+    }
+
+    async function tick() {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    it("toasts a field's refusal once if the dialog closes during the re-read", async () => {
+      let mounted = true;
+      const write = harness((error) => mounted && (error as ApiError).code === "username_taken");
+      const list = slowList(write.queryClient);
+      await write.started;
+      list.answer();
+      await tick();
+
+      // The refusal arrives while the dialog is open; the dialog closes while
+      // the list is read again, before the per-call callbacks would show it.
+      write.answer()?.reject(new ApiError(409, "username_taken", ""));
+      await tick();
+      expect(list.reads()).toBe(2);
+      mounted = false;
+      write.unsubscribe();
+      list.answer();
+      await write.done;
+
+      expect(write.notices).toEqual([["error", "username_taken"]]);
+      expect(write.perCall).toEqual([]);
+      list.unsubscribe();
+    });
+
+    it("leaves a field's refusal to a dialog still open after the re-read", async () => {
+      const write = harness((error) => (error as ApiError).code === "username_taken");
+      const list = slowList(write.queryClient);
+      await write.started;
+      list.answer();
+      await tick();
+
+      write.answer()?.reject(new ApiError(409, "username_taken", ""));
+      await tick();
+      list.answer();
+      await write.done;
+
+      expect(write.notices).toEqual([]);
+      expect(write.perCall).toEqual(["error"]);
+      list.unsubscribe();
+    });
   });
 });

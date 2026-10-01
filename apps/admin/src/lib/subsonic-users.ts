@@ -109,7 +109,9 @@ export interface UserWriteNotices {
  *
  * `fieldShown` says whether the dialog will show a refusal beside a field,
  * which then raises no toast; a dialog that is gone shows none, and the
- * refusal is a toast after all.
+ * refusal is a toast after all. It is asked once the re-read is done: Query
+ * runs the per-call callbacks only after `onSettled` settles, so a dialog
+ * that closes during the re-read would otherwise lose the refusal.
  */
 export function userWriteOptions<TData, TVariables>(
   queryClient: QueryClient,
@@ -126,12 +128,12 @@ export function userWriteOptions<TData, TVariables>(
       const { title, description } = write.succeeded(data, variables);
       notices.success(title, description);
     },
-    onError: (error) => {
-      if (!write.fieldShown?.(error)) {
+    onSettled: async (_data, error) => {
+      await afterUserWrite(queryClient);
+      if (error && !write.fieldShown?.(error)) {
         notices.error(error);
       }
     },
-    onSettled: () => afterUserWrite(queryClient),
   };
 }
 
