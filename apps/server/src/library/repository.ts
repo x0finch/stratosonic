@@ -231,17 +231,51 @@ export async function findTrack(
  * its sort builder turns into descending counts and an ascending name).
  */
 export async function listGenres(db: Database): Promise<GenreView[]> {
+  return toGenreViews(await genresQuery(db));
+}
+
+/**
+ * `listGenres`' statement, unrun, for a caller that sends it in a `db.batch`
+ * with others (the console's overview, api/overview.ts); `toGenreViews` reads
+ * what it returns.
+ */
+export function genresQuery(db: Database) {
   const songCount = sql<number>`count(*)`;
   const albumCount = sql<number>`count(distinct ${track.albumId})`;
 
-  const rows = await db
+  return db
     .select({ name: track.genre, songCount, albumCount })
     .from(track)
     .where(isNotNull(track.genre))
     .groupBy(track.genre)
     .orderBy(desc(songCount), desc(albumCount), asc(track.genre));
+}
 
+/** The rows `genresQuery` returns, as `listGenres` answers them. */
+export function toGenreViews(rows: Awaited<ReturnType<typeof genresQuery>>): GenreView[] {
   return rows.map((row) => ({ ...row, name: genreName(row.name) }));
+}
+
+/**
+ * The library's size, for the console's overview (#82, "API: overview"), as
+ * a statement for its `db.batch`: how many artists and albums there are, and
+ * the tracks, seconds and bytes the albums add up to.
+ *
+ * The three sums read what each album stores - its `song_count`, `duration`
+ * and `size`, which the scan recomputes (scanner/repository.ts) - so the
+ * statement reads the album rows and none of the far more numerous tracks.
+ * `coalesce` makes an empty library zeros rather than nulls.
+ */
+export function libraryTotalsQuery(db: Database) {
+  return db
+    .select({
+      artists: sql<number>`(select count(*) from artist)`,
+      albums: sql<number>`count(*)`,
+      tracks: sql<number>`coalesce(sum(${album.songCount}), 0)`,
+      duration: sql<number>`coalesce(sum(${album.duration}), 0)`,
+      size: sql<number>`coalesce(sum(${album.size}), 0)`,
+    })
+    .from(album);
 }
 
 /**

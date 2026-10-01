@@ -28,7 +28,10 @@ describe("the permissions", () => {
         "account:change-password",
         "subsonic-users:read",
         "subsonic-users:write",
+        "library:read",
+        "activity:read",
         "library:scan",
+        "usage:read",
       ]),
     );
   });

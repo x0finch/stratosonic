@@ -24,6 +24,10 @@ export const PINNED_ENV = {
   PASSWORD_ENCRYPTION_KEY: "test-password-encryption-key",
   // Empty counts as unset (`configuredSetupToken`), as it does in CI.
   SETUP_TOKEN: "",
+  // Empty counts as unset: the usage panel is not configured, and nothing
+  // calls Cloudflare's API.
+  CF_ANALYTICS_TOKEN: "",
+  CF_ACCOUNT_ID: "",
 } as const satisfies Record<StringEnvKey, string>;
 
 /**
