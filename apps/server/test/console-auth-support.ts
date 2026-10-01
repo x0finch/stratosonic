@@ -37,7 +37,14 @@ export interface CountingD1 {
  * Drizzle's D1 driver reads through `raw()`, which carries no meta, so `raw()`
  * is answered from `all()` (whose meta has the row counts) and each row turned
  * back into an array in column order. That is only sound without a join, whose
- * duplicate column names an object would collapse, so a join is refused.
+ * duplicate column names an object would collapse (`track.id` and `album.id`
+ * are both `id`), so a joined select runs twice: `all()` for D1's own
+ * `rows_read`, recorded as the one round trip it stands for, and `raw()` for
+ * the rows, column for column. Reading twice changes nothing, so only a
+ * select is answered that way; any other joined statement is refused.
+ *
+ * A batch needs none of this: D1 answers each of its statements with its
+ * meta, and Drizzle reads a batched result from the row objects itself.
  */
 export function countingD1(inner: D1Database): CountingD1 {
   const statements: RecordedStatement[] = [];
@@ -69,7 +76,13 @@ export function countingD1(inner: D1Database): CountingD1 {
       },
       async raw(options?: { columnNames?: boolean }) {
         if (/\bjoin\b/i.test(sql)) {
-          throw new Error(`countingD1 cannot answer a join through raw(): ${sql}`);
+          if (!/^\s*select\b/i.test(sql)) {
+            throw new Error(`countingD1 cannot answer a joined write through raw(): ${sql}`);
+          }
+          await run();
+          return options?.columnNames
+            ? statement.raw({ columnNames: true })
+            : statement.raw({ columnNames: false });
         }
         const { results } = await run();
         const rows = results.map((row) => Object.values(row));
