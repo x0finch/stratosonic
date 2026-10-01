@@ -1,8 +1,11 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { FormEvent } from "react";
 
 import { PasswordInput } from "@/components/subsonic-users/password-input";
-import { UserFieldError, useUserFieldErrors } from "@/components/subsonic-users/user-form";
+import {
+  UserFieldError,
+  useUserFieldErrors,
+  useUserWrite,
+} from "@/components/subsonic-users/user-form";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -15,8 +18,6 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { type SubsonicUser, setSubsonicPassword } from "@/lib/api";
-import { afterUserWrite } from "@/lib/subsonic-users";
-import { toastError, toastSuccess } from "@/lib/toasts";
 
 /**
  * Sets a Subsonic user's password. No current password is asked for: a
@@ -35,19 +36,22 @@ export function SetPasswordDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        {user && <SetPasswordForm user={user} onDone={() => onOpenChange(false)} />}
+        {user && <SetPasswordForm key={user.id} user={user} onDone={() => onOpenChange(false)} />}
       </DialogContent>
     </Dialog>
   );
 }
 
 function SetPasswordForm({ user, onDone }: { user: SubsonicUser; onDone: () => void }) {
-  const queryClient = useQueryClient();
   const { fieldErrors, clear, report, onChange } = useUserFieldErrors();
 
-  const mutation = useMutation({
+  const mutation = useUserWrite({
     mutationFn: (password: string) => setSubsonicPassword(user.id, password),
-    onSettled: () => afterUserWrite(queryClient),
+    succeeded: () => ({
+      title: "Password set",
+      description: `${user.username} signs in with the new password from now on; the old one no longer works.`,
+    }),
+    fields: true,
   });
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
@@ -56,18 +60,12 @@ function SetPasswordForm({ user, onDone }: { user: SubsonicUser; onDone: () => v
     const form = new FormData(target);
     clear();
     mutation.mutate(String(form.get("password") ?? ""), {
-      onSuccess: () => {
-        toastSuccess(
-          "Password set",
-          `${user.username} signs in with the new password from now on; the old one no longer works.`,
-        );
-        onDone();
-      },
+      // The toast is the mutation's (useUserWrite); this is only the dialog's part.
+      onSuccess: onDone,
       onError: (error) => {
         if (!report(error, form, target)) {
           // Not a field's to show: the dialog closes, so that its backdrop
           // does not blur the toast that says why.
-          toastError(error);
           onDone();
         }
       },

@@ -1,5 +1,4 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-
+import { useUserWrite } from "@/components/subsonic-users/user-form";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -11,8 +10,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { deleteSubsonicUser, type SubsonicUser } from "@/lib/api";
-import { afterUserWrite, deleteConsequences } from "@/lib/subsonic-users";
-import { toastError, toastSuccess } from "@/lib/toasts";
+import { deleteConsequences } from "@/lib/subsonic-users";
 
 /**
  * Deletes a Subsonic user after confirming, saying what goes with them (#82,
@@ -29,30 +27,20 @@ export function DeleteUserDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const queryClient = useQueryClient();
-
-  const mutation = useMutation({
-    mutationFn: deleteSubsonicUser,
-    onSettled: () => afterUserWrite(queryClient),
+  const mutation = useUserWrite({
+    mutationFn: (target: SubsonicUser) => deleteSubsonicUser(target.id),
+    succeeded: (_, target) => ({
+      title: "Subsonic user deleted",
+      description: `${target.username} can no longer sign in from a Subsonic client.`,
+    }),
   });
 
   function onDelete() {
     if (!user) {
       return;
     }
-    mutation.mutate(user.id, {
-      onSuccess: () => {
-        toastSuccess(
-          "Subsonic user deleted",
-          `${user.username} can no longer sign in from a Subsonic client.`,
-        );
-        onOpenChange(false);
-      },
-      onError: (error) => {
-        toastError(error);
-        onOpenChange(false);
-      },
-    });
+    // Either way the dialog closes; the toast is the mutation's (useUserWrite).
+    mutation.mutate(user, { onSettled: () => onOpenChange(false) });
   }
 
   return (

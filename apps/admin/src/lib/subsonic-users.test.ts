@@ -1,4 +1,4 @@
-import { QueryClient } from "@tanstack/react-query";
+import { MutationObserver, QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -22,6 +22,8 @@ import {
   formatLastAccess,
   USER_FIELDS_BY_CODE,
   userChanges,
+  userNamesMatch,
+  userWriteOptions,
 } from "@/lib/subsonic-users";
 
 function user(overrides: Partial<SubsonicUser> = {}): SubsonicUser {
@@ -250,5 +252,100 @@ describe("afterUserWrite", () => {
     expect(queryClient.getQueryState(subsonicUsersQuery.queryKey)?.isInvalidated).toBe(true);
     expect(queryClient.getQueryState(["overview", "library"])?.isInvalidated).toBe(true);
     expect(queryClient.getQueryState(["overview", "live"])?.isInvalidated).toBe(false);
+  });
+});
+
+describe("userNamesMatch", () => {
+  it("is the server's comparison: equal but for ASCII case", () => {
+    expect(userNamesMatch("alice", "Alice")).toBe(true);
+    expect(userNamesMatch("ALICE", "alice")).toBe(true);
+    expect(userNamesMatch("alice", "alicia")).toBe(false);
+    // Only ASCII folds, as the server's rule does.
+    expect(userNamesMatch("émile", "Émile")).toBe(false);
+  });
+});
+
+describe("userWriteOptions", () => {
+  /**
+   * A write through a MutationObserver, as useMutation makes one, that
+   * answers when the test says, with the notices it raised and the per-call
+   * callbacks that ran.
+   */
+  function harness(fieldShown?: (error: unknown) => boolean) {
+    const queryClient = new QueryClient();
+    const notices: unknown[][] = [];
+    const perCall: string[] = [];
+    let answer: { resolve(value: string): void; reject(error: unknown): void } | undefined;
+    const options = userWriteOptions<string, string>(
+      queryClient,
+      {
+        success: (title, description) => notices.push(["success", title, description]),
+        error: (error) => notices.push(["error", (error as ApiError).code]),
+      },
+      {
+        mutationFn: () =>
+          new Promise<string>((resolve, reject) => {
+            answer = { resolve, reject };
+          }),
+        succeeded: (data, name) => ({ title: "Saved", description: `${name}: ${data}` }),
+        fieldShown,
+      },
+    );
+    const observer = new MutationObserver(queryClient, options);
+    // A mounted component: useMutation subscribes to its observer.
+    const unsubscribe = observer.subscribe(() => {});
+    const done = observer
+      .mutate("alice", {
+        onSuccess: () => perCall.push("success"),
+        onError: () => perCall.push("error"),
+      })
+      .catch(() => undefined);
+    const started = new Promise((resolve) => setTimeout(resolve, 0));
+    return { queryClient, notices, perCall, unsubscribe, done, started, answer: () => answer };
+  }
+
+  it("raises the outcome's toast though the dialog closed mid-write", async () => {
+    const write = harness();
+    await write.started;
+    // The dialog closes, and its useMutation unsubscribes, before the answer.
+    write.unsubscribe();
+    write.answer()?.resolve("ok");
+    await write.done;
+
+    expect(write.notices).toEqual([["success", "Saved", "alice: ok"]]);
+    // TanStack Query skips the per-call callbacks of an unmounted observer.
+    expect(write.perCall).toEqual([]);
+  });
+
+  it("raises a refusal's toast though the dialog closed mid-write", async () => {
+    const write = harness(() => false);
+    await write.started;
+    write.unsubscribe();
+    write.answer()?.reject(new ApiError(409, "last_admin", ""));
+    await write.done;
+
+    expect(write.notices).toEqual([["error", "last_admin"]]);
+    expect(write.perCall).toEqual([]);
+  });
+
+  it("leaves a field's refusal to the dialog while it shows it", async () => {
+    const write = harness((error) => (error as ApiError).code === "username_taken");
+    await write.started;
+    write.answer()?.reject(new ApiError(409, "username_taken", ""));
+    await write.done;
+
+    expect(write.notices).toEqual([]);
+    expect(write.perCall).toEqual(["error"]);
+  });
+
+  it("reads the users again however the write ends", async () => {
+    const write = harness();
+    write.queryClient.setQueryData(subsonicUsersQuery.queryKey, []);
+    await write.started;
+    write.unsubscribe();
+    write.answer()?.reject(new ApiError(500, "internal", ""));
+    await write.done;
+
+    expect(write.queryClient.getQueryState(subsonicUsersQuery.queryKey)?.isInvalidated).toBe(true);
   });
 });

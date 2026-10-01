@@ -1,4 +1,4 @@
-import type { QueryClient } from "@tanstack/react-query";
+import type { MutationOptions, QueryClient } from "@tanstack/react-query";
 
 import { type SubsonicUser, subsonicUsersQuery } from "@/lib/api";
 import { libraryQuery } from "@/lib/overview";
@@ -89,6 +89,58 @@ export function afterUserWrite(queryClient: QueryClient): Promise<void> {
     queryClient.invalidateQueries({ queryKey: subsonicUsersQuery.queryKey }),
     queryClient.invalidateQueries({ queryKey: libraryQuery.queryKey }),
   ]).then(() => undefined);
+}
+
+/** How a user write tells what it did: the page's toasts (lib/toasts.ts). */
+export interface UserWriteNotices {
+  success(title: string, description: string): void;
+  error(error: unknown): void;
+}
+
+/**
+ * The options of a user write's mutation. The outcome's toast and the
+ * re-read are the mutation's own, which TanStack Query runs however the
+ * write ends: a callback passed to `mutate` runs only while the component
+ * that called it is mounted, so a dialog closed mid-write would lose them.
+ * That per-call callback is left only what needs the dialog: closing it,
+ * and showing a refusal beside its field.
+ *
+ * `fieldShown` says whether the dialog will show a refusal beside a field,
+ * which then raises no toast; a dialog that is gone shows none, and the
+ * refusal is a toast after all.
+ */
+export function userWriteOptions<TData, TVariables>(
+  queryClient: QueryClient,
+  notices: UserWriteNotices,
+  write: {
+    mutationFn: (variables: TVariables) => Promise<TData>;
+    succeeded: (data: TData, variables: TVariables) => { title: string; description: string };
+    fieldShown?: (error: unknown) => boolean;
+  },
+): MutationOptions<TData, unknown, TVariables> {
+  return {
+    mutationFn: write.mutationFn,
+    onSuccess: (data, variables) => {
+      const { title, description } = write.succeeded(data, variables);
+      notices.success(title, description);
+    },
+    onError: (error) => {
+      if (!write.fieldShown?.(error)) {
+        notices.error(error);
+      }
+    },
+    onSettled: () => afterUserWrite(queryClient),
+  };
+}
+
+/**
+ * Whether two names are one to the server: equal but for ASCII case, as
+ * the unique index on `lower(user_name)` and Subsonic sign-in compare them
+ * (apps/server users/repository.ts, `userNamesMatch`).
+ */
+export function userNamesMatch(left: string, right: string): boolean {
+  const fold = (value: string) => value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+  return fold(left) === fold(right);
 }
 
 /** A day, for the table's Created column, in the browser's locale and zone. */

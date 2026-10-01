@@ -1,4 +1,5 @@
-import { type FormEvent, type ReactNode, useCallback, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import {
   Field,
@@ -15,7 +16,50 @@ import {
   stillCurrent,
   withoutFieldError,
 } from "@/lib/field-errors";
-import { ADMIN_HELP, USER_FIELDS_BY_CODE } from "@/lib/subsonic-users";
+import {
+  ADMIN_HELP,
+  USER_FIELDS_BY_CODE,
+  type UserWriteNotices,
+  userWriteOptions,
+} from "@/lib/subsonic-users";
+import { toastError, toastSuccess } from "@/lib/toasts";
+
+/** The page's toasts, as a user write raises them. */
+const TOASTS: UserWriteNotices = {
+  success: toastSuccess,
+  error: (error) => toastError(error),
+};
+
+/**
+ * A user write: its toast and the list's re-read run on the mutation itself,
+ * so they hold even when the dialog closes before the answer comes back
+ * (`userWriteOptions`). With `fields`, a refusal that belongs to a field is
+ * left to the dialog to show beside it, while the dialog is still there.
+ */
+export function useUserWrite<TData, TVariables>(write: {
+  mutationFn: (variables: TVariables) => Promise<TData>;
+  succeeded: (data: TData, variables: TVariables) => { title: string; description: string };
+  fields?: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  return useMutation(
+    userWriteOptions(queryClient, TOASTS, {
+      mutationFn: write.mutationFn,
+      succeeded: write.succeeded,
+      fieldShown: write.fields
+        ? (error) => mounted.current && fieldErrorsFrom(error, USER_FIELDS_BY_CODE) !== undefined
+        : undefined,
+    }),
+  );
+}
 
 /**
  * The field errors of one of the page's dialogs, kept as the console's other

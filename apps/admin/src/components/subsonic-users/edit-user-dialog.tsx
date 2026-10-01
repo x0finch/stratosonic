@@ -1,4 +1,3 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { TriangleAlertIcon } from "lucide-react";
 import { type FormEvent, useState } from "react";
 
@@ -6,6 +5,7 @@ import {
   AdminSwitchField,
   UserFieldError,
   useUserFieldErrors,
+  useUserWrite,
 } from "@/components/subsonic-users/user-form";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -22,8 +22,7 @@ import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { type SubsonicUser, updateSubsonicUser } from "@/lib/api";
 import { MAX_USERNAME_LENGTH } from "@/lib/errors";
-import { afterUserWrite, userChanges } from "@/lib/subsonic-users";
-import { toastError, toastSuccess } from "@/lib/toasts";
+import { userChanges, userNamesMatch } from "@/lib/subsonic-users";
 
 /**
  * Renames a Subsonic user, or turns **Subsonic admin** on or off. The server
@@ -41,25 +40,30 @@ export function EditUserDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        {user && <EditUserForm user={user} onDone={() => onOpenChange(false)} />}
+        {user && <EditUserForm key={user.id} user={user} onDone={() => onOpenChange(false)} />}
       </DialogContent>
     </Dialog>
   );
 }
 
 function EditUserForm({ user, onDone }: { user: SubsonicUser; onDone: () => void }) {
-  const queryClient = useQueryClient();
   const [username, setUsername] = useState(user.username);
   const [isAdmin, setIsAdmin] = useState(user.isAdmin);
   const { fieldErrors, clear, report, onChange } = useUserFieldErrors();
 
-  const mutation = useMutation({
+  const mutation = useUserWrite({
     mutationFn: (changes: { username?: string; isAdmin?: boolean }) =>
       updateSubsonicUser(user.id, changes),
-    onSettled: () => afterUserWrite(queryClient),
+    succeeded: (saved) => ({
+      title: "Subsonic user saved",
+      description: savedDescription(user, saved),
+    }),
+    fields: true,
   });
 
-  const renamed = username.trim() !== user.username && username.trim() !== "";
+  // A rename signs the user's clients out only if the server sees another
+  // name: a change of case alone is the same name to Subsonic sign-in.
+  const renamed = username.trim() !== "" && !userNamesMatch(username.trim(), user.username);
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -72,15 +76,12 @@ function EditUserForm({ user, onDone }: { user: SubsonicUser; onDone: () => void
       return;
     }
     mutation.mutate(changes, {
-      onSuccess: (saved) => {
-        toastSuccess("Subsonic user saved", savedDescription(user, saved));
-        onDone();
-      },
+      // The toast is the mutation's (useUserWrite); this is only the dialog's part.
+      onSuccess: onDone,
       onError: (error) => {
         if (!report(error, form, target)) {
           // Not a field's to show: the dialog closes, so that its backdrop
           // does not blur the toast that says why.
-          toastError(error);
           onDone();
         }
       },

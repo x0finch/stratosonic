@@ -1,4 +1,3 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
 
 import { PasswordInput } from "@/components/subsonic-users/password-input";
@@ -6,6 +5,7 @@ import {
   AdminSwitchField,
   UserFieldError,
   useUserFieldErrors,
+  useUserWrite,
 } from "@/components/subsonic-users/user-form";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,8 +21,6 @@ import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { createSubsonicUser } from "@/lib/api";
 import { MAX_USERNAME_LENGTH } from "@/lib/errors";
-import { afterUserWrite } from "@/lib/subsonic-users";
-import { toastError, toastSuccess } from "@/lib/toasts";
 
 /**
  * Creates a Subsonic user: a username, a password and the **Subsonic admin**
@@ -49,13 +47,16 @@ export function CreateUserDialog({
 }
 
 function CreateUserForm({ adminRequired, onDone }: { adminRequired: boolean; onDone: () => void }) {
-  const queryClient = useQueryClient();
   const [isAdmin, setIsAdmin] = useState(adminRequired);
   const { fieldErrors, clear, report, onChange } = useUserFieldErrors();
 
-  const mutation = useMutation({
+  const mutation = useUserWrite({
     mutationFn: createSubsonicUser,
-    onSettled: () => afterUserWrite(queryClient),
+    succeeded: (user) => ({
+      title: "Subsonic user created",
+      description: `${user.username} can now sign in from a Subsonic client.`,
+    }),
+    fields: true,
   });
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
@@ -70,18 +71,12 @@ function CreateUserForm({ adminRequired, onDone }: { adminRequired: boolean; onD
         isAdmin: adminRequired || isAdmin,
       },
       {
-        onSuccess: (user) => {
-          toastSuccess(
-            "Subsonic user created",
-            `${user.username} can now sign in from a Subsonic client.`,
-          );
-          onDone();
-        },
+        // The toast is the mutation's (useUserWrite); this is only the dialog's part.
+        onSuccess: onDone,
         onError: (error) => {
           if (!report(error, form, target)) {
             // Not a field's to show: the dialog closes, so that its backdrop
             // does not blur the toast that says why.
-            toastError(error);
             onDone();
           }
         },
