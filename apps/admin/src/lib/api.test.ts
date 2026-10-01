@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, changePassword, fetchMe, signIn } from "@/lib/api";
+import {
+  ApiError,
+  changePassword,
+  fetchMe,
+  fetchUsage,
+  requestScan,
+  retryUnlessRefused,
+  signIn,
+} from "@/lib/api";
 import { describeError } from "@/lib/errors";
 
 function answer(status: number, body: unknown, headers: Record<string, string> = {}) {
@@ -39,6 +47,18 @@ describe("the API client", () => {
       credentials: "same-origin",
       headers: { Accept: "application/json", "Content-Type": "application/json" },
       body: JSON.stringify({ username: "admin", password: "sesame" }),
+    });
+  });
+
+  it("asks for a scan with an empty JSON object, as every write sends", async () => {
+    const fetch = answer(200, { outcome: "started", scan: { running: true } });
+
+    expect((await requestScan()).outcome).toBe("started");
+    expect(fetch).toHaveBeenCalledWith("/api/library/scan", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: "{}",
     });
   });
 
@@ -111,6 +131,30 @@ describe("the API client", () => {
   });
 });
 
+describe("retrying a failed read", () => {
+  it("never retries a refusal, so a lost session signs out at once", () => {
+    for (const status of [400, 401, 403, 404, 429]) {
+      expect(retryUnlessRefused(0, new ApiError(status, "x", ""))).toBe(false);
+    }
+  });
+
+  it("retries anything else up to three times", () => {
+    for (const error of [
+      new ApiError(500, "internal", ""),
+      new ApiError(502, "analytics_unavailable", ""),
+      new ApiError(0, "network", ""),
+      new TypeError("odd"),
+    ]) {
+      expect([0, 1, 2, 3].map((count) => retryUnlessRefused(count, error))).toEqual([
+        true,
+        true,
+        true,
+        false,
+      ]);
+    }
+  });
+});
+
 describe("describeError", () => {
   it("has words for every refusal the auth screens meet", () => {
     for (const code of [
@@ -134,6 +178,39 @@ describe("describeError", () => {
       "internal",
     ]) {
       expect(describeError(new ApiError(400, code, "")).title).not.toBe("Something went wrong");
+    }
+  });
+
+  it("says why the usage panel's analytics are unavailable", async () => {
+    const titles = new Set<string>();
+    for (const reason of ["unauthorized", "rate_limited", "upstream"]) {
+      answer(502, { error: "analytics_unavailable", reason });
+      const error = await refusal(fetchUsage());
+      expect([error.status, error.code, error.reason]).toEqual([
+        502,
+        "analytics_unavailable",
+        reason,
+      ]);
+      const message = describeError(error);
+      expect(message.title).not.toBe("Something went wrong");
+      titles.add(message.title);
+    }
+    expect(titles.size).toBe(3);
+    expect(
+      describeError(new ApiError(502, "analytics_unavailable", "", undefined, "new")).title,
+    ).toBe(
+      describeError(new ApiError(502, "analytics_unavailable", "", undefined, "upstream")).title,
+    );
+    expect(describeError(new ApiError(502, "analytics_unavailable", "")).title).toBe(
+      "Cloudflare's analytics did not answer",
+    );
+  });
+
+  it("has words for the refusals the Overview meets", () => {
+    // Every Overview route's permission check, its session check and a
+    // handler that threw, such as a scan driver that could not be poked.
+    for (const code of ["forbidden", "unauthenticated", "internal", "network"]) {
+      expect(describeError(new ApiError(403, code, "")).title).not.toBe("Something went wrong");
     }
   });
 

@@ -1,5 +1,5 @@
 /**
- * A headless Chromium walkthrough of the console's auth screens (#91), against
+ * A headless Chromium walkthrough of the console (#91, #119), against
  * a running Worker:
  *
  *   BASE_URL=http://localhost:8787 SETUP_TOKEN=… \
@@ -31,9 +31,15 @@
  * submit, and a password change, after which a Subsonic `ping` with neither
  * password is ok; signing out from the account page, which lands on plain
  * `/login` and signs in to the overview; a session that ends while on a page,
- * which sign-in returns to; dark mode; and a phone-sized viewport. It signs in
- * more often than the server's limit of 5 a minute allows, so it meets the
- * rate limit's message on the way, and waits it out.
+ * which sign-in returns to; the Overview (#82), whose usage panel is absent
+ * from a server without an analytics token, and whose **Scan now** starts a
+ * pass that the page follows to its end, when it reads the library again
+ * (within `SCAN_TIMEOUT` seconds, 120 by default: give the Worker a small
+ * library, such as the fixture files, in its bucket); dark mode, on the
+ * account page, the sign-in screen and the Overview; and a phone-sized
+ * viewport, where neither the account page nor the Overview scrolls
+ * sideways. It signs in more often than the server's limit of 5 a minute
+ * allows, so it meets the rate limit's message on the way, and waits it out.
  *
  * What a form did, or why it failed, is a toast (#101): the walkthrough waits
  * for a new one, in the toaster's live region, with the expected words.
@@ -58,6 +64,8 @@ const USERNAME = process.env.OWNER_USER ?? "owner";
 const SUBSONIC_USER = process.env.SUBSONIC_USER;
 const SUBSONIC_PASSWORD = process.env.SUBSONIC_PASSWORD;
 const SCREENSHOTS = process.env.SCREENSHOTS;
+/** How long a pass started with Scan now may take to finish, in seconds. */
+const SCAN_TIMEOUT_MS = Number(process.env.SCAN_TIMEOUT ?? 120) * 1000;
 
 const passwords = {
   first: process.env.OWNER_PASSWORD ?? "first-run password",
@@ -106,6 +114,11 @@ async function step(name, run) {
     stepFailure = error;
     throw error;
   }
+}
+
+/** The path a response answers. */
+function pathOf(response) {
+  return new URL(response.url()).pathname;
 }
 
 async function setupState() {
@@ -524,6 +537,88 @@ async function main() {
       await page.getByRole("heading", { name: "Account" }).waitFor();
     });
 
+    await step("the Overview, without a usage panel when there is no token", async () => {
+      const usage = page.waitForResponse((response) => pathOf(response) === "/api/usage");
+      await page.goto(`${BASE_URL}/`);
+      await page.getByText("Library scan", { exact: true }).waitFor();
+      await page.getByText("Artists", { exact: true }).waitFor();
+      await page.getByText("Recently added", { exact: true }).waitFor();
+      const answer = await usage;
+      check(answer.ok(), `GET /api/usage answered ${answer.status()}`);
+      const configured = (await answer.json()).configured;
+      const panel = page.getByText("Free-tier usage", { exact: true });
+      if (configured) {
+        await panel.waitFor();
+      } else {
+        // Give the page a moment to render what it read, then look.
+        await page.waitForTimeout(500);
+        check((await panel.count()) === 0, "the usage panel shows without an analytics token");
+      }
+      await shot(page, "overview");
+      return configured ? "the server has an analytics token: the panel shows" : undefined;
+    });
+
+    await step("Scan now starts a pass, and its end reads the library again", async () => {
+      check(new URL(page.url()).pathname === "/", `on ${page.url()}, not the Overview`);
+      // The reads, in the order the page made them: the scan request's
+      // answer and each live answer as it arrives, with what they say of the
+      // pass, and each library read as it is asked for.
+      const reads = [];
+      const onResponse = async (response) => {
+        const path = pathOf(response);
+        if (path === "/api/overview/live" || path === "/api/library/scan") {
+          const read = { kind: path === "/api/library/scan" ? "scan" : "live" };
+          reads.push(read);
+          read.running = (await response.json().catch(() => null))?.scan?.running;
+        }
+      };
+      const onRequest = (request) => {
+        if (new URL(request.url()).pathname === "/api/overview/library") {
+          reads.push({ kind: "library" });
+        }
+      };
+      page.on("response", onResponse);
+      page.on("request", onRequest);
+      try {
+        await markToasts(page);
+        const [request] = await Promise.all([
+          page.waitForResponse((response) => pathOf(response) === "/api/library/scan"),
+          page.getByRole("button", { name: "Scan now" }).click(),
+        ]);
+        check(request.ok(), `POST /api/library/scan answered ${request.status()}`);
+        const { outcome } = await request.json();
+        await expectToast(
+          page,
+          outcome === "started" ? "Scan started" : "A scan is already running",
+        );
+        const card = page.locator('[data-slot="card"]').filter({ hasText: "Library scan" });
+        await card.getByText(/A scan is running|Importing playlists/).waitFor();
+        await shot(page, "overview-scanning");
+
+        // The live route is read every 10 s during a pass, and the read that
+        // finds it over reads the library again. A fixture library passes in
+        // seconds.
+        await card.getByText(/Last scan finished/).waitFor({ timeout: SCAN_TIMEOUT_MS });
+        const readAgain = () => {
+          const ended = reads.findIndex(
+            (read, index) =>
+              read.kind === "live" &&
+              read.running === false &&
+              reads.slice(0, index).some((before) => before.running === true),
+          );
+          return ended >= 0 && reads.slice(ended + 1).some((read) => read.kind === "library");
+        };
+        for (let waited = 0; !readAgain() && waited < 5_000; waited += 100) {
+          await page.waitForTimeout(100);
+        }
+        check(readAgain(), `the library was not read after the pass: ${JSON.stringify(reads)}`);
+        await shot(page, "overview-scanned");
+      } finally {
+        page.off("response", onResponse);
+        page.off("request", onRequest);
+      }
+    });
+
     await step("dark mode", async () => {
       await page.goto(`${BASE_URL}/account`);
       await page.getByRole("button", { name: "Toggle theme" }).click();
@@ -540,6 +635,13 @@ async function main() {
       );
       await shot(page, "login-dark");
       await signIn(page, password, { expectAt: "/" });
+      await page.getByText("Library scan", { exact: true }).waitFor();
+      await page.locator('[data-slot="chart"], [data-slot="empty"]').first().waitFor();
+      check(
+        await page.evaluate(() => document.documentElement.classList.contains("dark")),
+        "the Overview is not dark",
+      );
+      await shot(page, "overview-dark");
       await page.getByRole("button", { name: "Toggle theme" }).click();
       await page.getByRole("menuitem", { name: "Light" }).click();
     });
@@ -562,6 +664,11 @@ async function main() {
       await signIn(mobile, password, { expectAt: "/account" });
       check(!(await overflows()), "the account page scrolls sideways");
       await shot(mobile, "mobile-account");
+      await mobile.goto(`${BASE_URL}/`);
+      await mobile.getByText("Library scan", { exact: true }).waitFor();
+      await mobile.getByText("Recently added", { exact: true }).waitFor();
+      check(!(await overflows()), "the Overview scrolls sideways");
+      await shot(mobile, "mobile-overview");
 
       await mobile.getByRole("button", { name: "Toggle Sidebar" }).first().click();
       await openUserMenu(mobile);
