@@ -168,6 +168,25 @@ describe("the end of a pass", () => {
     expect(libraryIsStale(queryClient)).toBe(true);
   });
 
+  it("is seen by the live query itself, from the read before", async () => {
+    const queryClient = clientWithLibrary();
+    queryClient.setQueryData(liveQuery.queryKey, live(true));
+    const { receivedAt: _, ...ended } = live(false);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(ended), { status: 200 })),
+    );
+
+    await queryClient.fetchQuery(liveQuery);
+    expect(libraryIsStale(queryClient)).toBe(true);
+
+    // The next idle read ends nothing more.
+    await queryClient.fetchQuery({ ...libraryQuery, staleTime: 0 });
+    expect(libraryIsStale(queryClient)).toBe(false);
+    await queryClient.fetchQuery({ ...liveQuery, staleTime: 0 });
+    expect(libraryIsStale(queryClient)).toBe(false);
+  });
+
   it("leaves the library alone while nothing ended", () => {
     const queryClient = clientWithLibrary();
 

@@ -53,9 +53,12 @@ export const libraryQuery = queryOptions({
 
 export const liveQuery = queryOptions({
   queryKey: ["overview", "live"],
-  queryFn: async (): Promise<LiveRead> => {
-    const live = await fetchLiveOverview();
-    return { ...live, receivedAt: Date.now() };
+  // Each read is compared with the one before it, still in the cache, so
+  // the library is read again once a pass ends, whichever read sees it end.
+  queryFn: async ({ client, queryKey }): Promise<LiveRead> => {
+    const next = { ...(await fetchLiveOverview()), receivedAt: Date.now() };
+    followLive(client, client.getQueryData<LiveRead>(queryKey), next);
+    return next;
   },
   staleTime: 0,
   refetchInterval: (query) => liveRefetchInterval(query.state.data),
