@@ -63,6 +63,12 @@ export function GenreChart({ genres }: { genres: GenreCount[] | undefined }) {
           >
             <BarChart
               accessibilityLayer
+              // The focusable chart's name and description, as its svg's
+              // <title> and <desc>; the arrow keys then step through the bars.
+              title="Tracks by genre"
+              desc={shown
+                .map((genre) => `${genre.name}: ${formatCount(genre.songCount)} tracks`)
+                .join(", ")}
               data={shown}
               layout="vertical"
               margin={{ left: 0, right: 48 }}
