@@ -831,14 +831,14 @@ async function main() {
           page,
           outcome === "started" ? "Scan started" : "A scan is already running",
         );
-        const card = page.locator('[data-slot="card"]').filter({ hasText: "Library scan" });
-        await card.getByText(/A scan is running|Importing playlists/).waitFor();
+        const scanSection = page.getByRole("region", { name: "Library scan" });
+        await scanSection.getByText(/A scan is running|Importing playlists/).waitFor();
         await shot(page, "overview-scanning");
 
         // The live route is read every 10 s during a pass, and the read that
         // finds it over reads the library again. A fixture library passes in
         // seconds.
-        await card.getByText(/Last scan finished/).waitFor({ timeout: SCAN_TIMEOUT_MS });
+        await scanSection.getByText(/Last scan finished/).waitFor({ timeout: SCAN_TIMEOUT_MS });
         const readAgain = () => {
           const ended = reads.findIndex(
             (read, index) =>

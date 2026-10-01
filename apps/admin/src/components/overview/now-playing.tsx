@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { Section } from "@/components/section";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -30,38 +30,35 @@ export function NowPlaying({
   const now = useTicker(entries?.some((entry) => entry.state === "playing") ?? false);
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Now playing</CardTitle>
-        <CardDescription>
-          {entries === undefined || entries.length === 0
-            ? "Who is listening in a Subsonic client"
-            : `${entries.length} listening`}
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        {entries === undefined ? (
-          <Skeleton className="h-16 w-full" />
-        ) : entries.length === 0 ? (
-          <Empty className="p-4">
-            <EmptyHeader>
-              <EmptyTitle>Nobody is listening</EmptyTitle>
-              <EmptyDescription>What a Subsonic client plays shows here.</EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        ) : (
-          <ul className="flex flex-col gap-4">
-            {entries.map((entry) => (
-              <Listener
-                key={`${entry.username}\u0000${entry.playerName}`}
-                entry={entry}
-                positionMs={estimatePositionMs(entry, receivedAt, now)}
-              />
-            ))}
-          </ul>
-        )}
-      </CardContent>
-    </Card>
+    <Section
+      title="Now playing"
+      description={
+        entries === undefined || entries.length === 0
+          ? "Who is listening in a Subsonic client"
+          : `${entries.length} listening`
+      }
+    >
+      {entries === undefined ? (
+        <Skeleton className="h-16 w-full" />
+      ) : entries.length === 0 ? (
+        <Empty className="p-4">
+          <EmptyHeader>
+            <EmptyTitle>Nobody is listening</EmptyTitle>
+            <EmptyDescription>What a Subsonic client plays shows here.</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      ) : (
+        <ul className="flex flex-col gap-4">
+          {entries.map((entry) => (
+            <Listener
+              key={`${entry.username}\u0000${entry.playerName}`}
+              entry={entry}
+              positionMs={estimatePositionMs(entry, receivedAt, now)}
+            />
+          ))}
+        </ul>
+      )}
+    </Section>
   );
 }
 

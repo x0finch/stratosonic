@@ -1,4 +1,4 @@
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section } from "@/components/section";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -19,60 +19,54 @@ import { formatCount, formatDateTime, formatRelative } from "@/lib/format";
  */
 export function RecentAlbums({ albums, now }: { albums: RecentAlbum[] | undefined; now: number }) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Recently added</CardTitle>
-        <CardDescription>The albums the scans added last</CardDescription>
-      </CardHeader>
-      <CardContent>
-        {albums === undefined ? (
-          <Skeleton className="h-64 w-full" />
-        ) : albums.length === 0 ? (
-          <Empty>
-            <EmptyHeader>
-              <EmptyTitle>No albums yet</EmptyTitle>
-              <EmptyDescription>Albums appear here once a scan has indexed them.</EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Album</TableHead>
-                <TableHead className="hidden md:table-cell">Year</TableHead>
-                <TableHead className="hidden text-right sm:table-cell">Tracks</TableHead>
-                <TableHead className="text-right">Added</TableHead>
+    <Section title="Recently added" description="The albums the scans added last">
+      {albums === undefined ? (
+        <Skeleton className="h-64 w-full" />
+      ) : albums.length === 0 ? (
+        <Empty>
+          <EmptyHeader>
+            <EmptyTitle>No albums yet</EmptyTitle>
+            <EmptyDescription>Albums appear here once a scan has indexed them.</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Album</TableHead>
+              <TableHead className="hidden md:table-cell">Year</TableHead>
+              <TableHead className="hidden text-right sm:table-cell">Tracks</TableHead>
+              <TableHead className="text-right">Added</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {albums.map((album) => (
+              <TableRow key={album.id}>
+                <TableCell className="max-w-44 whitespace-normal sm:max-w-64">
+                  <div className="truncate font-medium" title={album.name}>
+                    {album.name}
+                  </div>
+                  <div className="truncate text-muted-foreground" title={album.artist}>
+                    {album.artist}
+                  </div>
+                </TableCell>
+                <TableCell className="hidden tabular-nums md:table-cell">
+                  {album.year ?? "–"}
+                </TableCell>
+                <TableCell className="hidden text-right tabular-nums sm:table-cell">
+                  {formatCount(album.songCount)}
+                </TableCell>
+                <TableCell
+                  className="text-right text-muted-foreground"
+                  title={formatDateTime(album.createdAt)}
+                >
+                  {formatRelative(album.createdAt, now)}
+                </TableCell>
               </TableRow>
-            </TableHeader>
-            <TableBody>
-              {albums.map((album) => (
-                <TableRow key={album.id}>
-                  <TableCell className="max-w-44 whitespace-normal sm:max-w-64">
-                    <div className="truncate font-medium" title={album.name}>
-                      {album.name}
-                    </div>
-                    <div className="truncate text-muted-foreground" title={album.artist}>
-                      {album.artist}
-                    </div>
-                  </TableCell>
-                  <TableCell className="hidden tabular-nums md:table-cell">
-                    {album.year ?? "–"}
-                  </TableCell>
-                  <TableCell className="hidden text-right tabular-nums sm:table-cell">
-                    {formatCount(album.songCount)}
-                  </TableCell>
-                  <TableCell
-                    className="text-right text-muted-foreground"
-                    title={formatDateTime(album.createdAt)}
-                  >
-                    {formatRelative(album.createdAt, now)}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
-      </CardContent>
-    </Card>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+    </Section>
   );
 }

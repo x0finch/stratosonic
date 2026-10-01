@@ -1,6 +1,6 @@
 import { Bar, BarChart, LabelList, XAxis, YAxis } from "recharts";
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section } from "@/components/section";
 import {
   type ChartConfig,
   ChartContainer,
@@ -34,71 +34,64 @@ export function GenreChart({ genres }: { genres: GenreCount[] | undefined }) {
     : undefined;
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Genres</CardTitle>
-        <CardDescription>
-          {genres === undefined
-            ? "Tracks by genre"
-            : genres.length > SHOWN
-              ? `Tracks in the ${SHOWN} largest of ${formatCount(genres.length)} genres`
-              : "Tracks by genre"}
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        {shown === undefined ? (
-          <Skeleton className="h-64 w-full" />
-        ) : shown.length === 0 ? (
-          <Empty>
-            <EmptyHeader>
-              <EmptyTitle>No genres</EmptyTitle>
-              <EmptyDescription>None of the tracks scanned so far names a genre.</EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        ) : (
-          <ChartContainer
-            config={chartConfig}
-            className="aspect-auto w-full"
-            style={{ height: shown.length * BAR_HEIGHT + 8 }}
+    <Section
+      title="Genres"
+      description={
+        genres !== undefined && genres.length > SHOWN
+          ? `Tracks in the ${SHOWN} largest of ${formatCount(genres.length)} genres`
+          : "Tracks by genre"
+      }
+    >
+      {shown === undefined ? (
+        <Skeleton className="h-64 w-full" />
+      ) : shown.length === 0 ? (
+        <Empty>
+          <EmptyHeader>
+            <EmptyTitle>No genres</EmptyTitle>
+            <EmptyDescription>None of the tracks scanned so far names a genre.</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      ) : (
+        <ChartContainer
+          config={chartConfig}
+          className="aspect-auto w-full"
+          style={{ height: shown.length * BAR_HEIGHT + 8 }}
+        >
+          <BarChart
+            accessibilityLayer
+            // The focusable chart's name and description, as its svg's
+            // <title> and <desc>; the arrow keys then step through the bars.
+            title="Tracks by genre"
+            desc={shown
+              .map((genre) => `${genre.name}: ${formatCount(genre.songCount)} tracks`)
+              .join(", ")}
+            data={shown}
+            layout="vertical"
+            margin={{ left: 0, right: 48 }}
           >
-            <BarChart
-              accessibilityLayer
-              // The focusable chart's name and description, as its svg's
-              // <title> and <desc>; the arrow keys then step through the bars.
-              title="Tracks by genre"
-              desc={shown
-                .map((genre) => `${genre.name}: ${formatCount(genre.songCount)} tracks`)
-                .join(", ")}
-              data={shown}
-              layout="vertical"
-              margin={{ left: 0, right: 48 }}
-            >
-              <YAxis
-                dataKey="name"
-                type="category"
-                tickLine={false}
-                axisLine={false}
-                width={112}
-                tickFormatter={(name: string) =>
-                  name.length > 16 ? `${name.slice(0, 15)}…` : name
-                }
+            <YAxis
+              dataKey="name"
+              type="category"
+              tickLine={false}
+              axisLine={false}
+              width={112}
+              tickFormatter={(name: string) => (name.length > 16 ? `${name.slice(0, 15)}…` : name)}
+            />
+            <XAxis dataKey="songCount" type="number" hide />
+            <ChartTooltip cursor={false} content={<ChartTooltipContent />} />
+            <Bar dataKey="songCount" fill="var(--color-songCount)" radius={4}>
+              <LabelList
+                dataKey="songCount"
+                position="right"
+                offset={8}
+                className="fill-foreground"
+                fontSize={12}
+                formatter={(value) => (typeof value === "number" ? formatCount(value) : value)}
               />
-              <XAxis dataKey="songCount" type="number" hide />
-              <ChartTooltip cursor={false} content={<ChartTooltipContent />} />
-              <Bar dataKey="songCount" fill="var(--color-songCount)" radius={4}>
-                <LabelList
-                  dataKey="songCount"
-                  position="right"
-                  offset={8}
-                  className="fill-foreground"
-                  fontSize={12}
-                  formatter={(value) => (typeof value === "number" ? formatCount(value) : value)}
-                />
-              </Bar>
-            </BarChart>
-          </ChartContainer>
-        )}
-      </CardContent>
-    </Card>
+            </Bar>
+          </BarChart>
+        </ChartContainer>
+      )}
+    </Section>
   );
 }
