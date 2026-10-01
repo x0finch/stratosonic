@@ -142,10 +142,13 @@ analytics token: without one there is no panel and no error.
 How often it reads the Worker is `src/lib/overview.ts`, as #82's table
 sets it: the live route (scan and now playing) every 10 s while a pass
 runs and every 30 s otherwise; the library on page load, after **Scan now**
-and when the live route sees a pass end; usage every 5 minutes. A hidden
-tab reads nothing (TanStack Query's `refetchIntervalInBackground: false`),
-and a returning one reads at once. Between polls, a playing position moves
-on in the browser from where the server put it.
+and when the live route sees a pass end (it stops running, or the last
+pass is another one); usage every 5 minutes. A hidden tab reads nothing
+(TanStack Query's `refetchIntervalInBackground: false`), and a returning
+one reads the live route and usage at once, and the library only if a pass
+ended meanwhile. A refused read (a 4xx) is never retried, so a session that
+ended signs the console out at once. Between polls, a playing position
+moves on in the browser from where the server put it.
 
 ## The walkthrough
 

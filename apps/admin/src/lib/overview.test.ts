@@ -39,6 +39,27 @@ function live(running: boolean): LiveRead {
   };
 }
 
+/** The same read, with a last completed pass that finished at `finishedAt`. */
+function finished(read: LiveRead, finishedAt: string): LiveRead {
+  const counts = {
+    examined: 0,
+    indexed: 0,
+    added: 0,
+    updated: 0,
+    unchanged: 0,
+    broken: 0,
+    deferred: 0,
+    removed: 0,
+    albumsRemoved: 0,
+    artistsRemoved: 0,
+    coversWritten: 0,
+  };
+  return {
+    ...read,
+    scan: { ...read.scan, last: { startedAt: finishedAt, finishedAt, steps: 1, counts } },
+  };
+}
+
 const LIBRARY: LibraryOverview = {
   counts: { artists: 1, albums: 1, tracks: 1, genres: 0, durationSec: 1, sizeBytes: 1 },
   genres: [],
@@ -147,9 +168,87 @@ describe("the live route's polling interval", () => {
   });
 });
 
+describe("a tab coming back after a while hidden", () => {
+  /**
+   * The Overview's live and library reads, on a fake clock, against a
+   * server whose last completed pass is `last.finishedAt`. Answers how often
+   * each route was read.
+   */
+  async function hideFor(minutes: number, passMeanwhile: boolean) {
+    environmentManager.setIsServer(() => false);
+    vi.useFakeTimers();
+    let finishedAt = "2026-10-01T11:00:00.000Z";
+    const reads = { live: 0, library: 0 };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string) => {
+        if (path === "/api/overview/library") {
+          reads.library += 1;
+          return new Response(JSON.stringify(LIBRARY), { status: 200 });
+        }
+        reads.live += 1;
+        const { receivedAt: _, ...body } = finished(live(false), finishedAt);
+        return new Response(JSON.stringify(body), { status: 200 });
+      }),
+    );
+    const queryClient = new QueryClient();
+    queryClient.mount();
+    const observers = [
+      new QueryObserver(queryClient, liveQuery),
+      new QueryObserver(queryClient, libraryQuery),
+    ];
+    const unsubscribe = observers.map((observer) => observer.subscribe(() => {}));
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(reads).toEqual({ live: 1, library: 1 });
+
+      focusManager.setFocused(false);
+      if (passMeanwhile) {
+        finishedAt = "2026-10-01T11:15:00.000Z";
+      }
+      await vi.advanceTimersByTimeAsync(minutes * 60_000);
+      focusManager.setFocused(true);
+      await vi.advanceTimersByTimeAsync(0);
+      return reads;
+    } finally {
+      for (const stop of unsubscribe) {
+        stop();
+      }
+      queryClient.unmount();
+      focusManager.setFocused(undefined);
+      environmentManager.setIsServer(() => typeof window === "undefined");
+      vi.useRealTimers();
+    }
+  }
+
+  it("reads the live route again, and not the library when no pass ended", async () => {
+    expect(libraryQuery.refetchOnWindowFocus).toBe(false);
+    expect(await hideFor(20, false)).toEqual({ live: 2, library: 1 });
+  });
+
+  it("reads the library again when a pass ended meanwhile", async () => {
+    expect(await hideFor(20, true)).toEqual({ live: 2, library: 2 });
+  });
+});
+
 describe("the end of a pass", () => {
   it("is running turning from true to false", () => {
     expect(passEnded(live(true), live(false))).toBe(true);
+  });
+
+  it("is a new last pass that no read saw running, as a cron pass in a hidden tab", () => {
+    const before = finished(live(false), "2026-10-01T11:00:00.000Z");
+    expect(passEnded(before, finished(live(false), "2026-10-01T11:15:00.000Z"))).toBe(true);
+    expect(passEnded(live(false), finished(live(false), "2026-10-01T11:15:00.000Z"))).toBe(true);
+    expect(passEnded(before, finished(live(false), "2026-10-01T11:00:00.000Z"))).toBe(false);
+  });
+
+  it("waits for a pass's playlists, which import after its summary is written", () => {
+    const before = finished(live(false), "2026-10-01T11:00:00.000Z");
+    const importing = finished(live(true), "2026-10-01T11:15:00.000Z");
+
+    expect(passEnded(before, importing)).toBe(false);
+    expect(passEnded(importing, finished(live(false), "2026-10-01T11:15:00.000Z"))).toBe(true);
   });
 
   it("is nothing else", () => {

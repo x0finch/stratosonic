@@ -17,7 +17,8 @@ import {
  * whose `refetchIntervalInBackground: false` (the default, spelled out
  * below) skips every tick while the tab is hidden: `focusManager` follows
  * `document.visibilityState`, so a dashboard left in a background tab costs
- * nothing, and `refetchOnWindowFocus` refreshes it on return.
+ * nothing, and `refetchOnWindowFocus` refreshes the live route and usage on
+ * return. The library is read on return only if a pass ended meanwhile.
  */
 
 /** How often the live route is read while a pass is in flight. */
@@ -49,6 +50,10 @@ export const libraryQuery = queryOptions({
   queryKey: ["overview", "library"],
   queryFn: fetchLibraryOverview,
   staleTime: LIBRARY_STALE_MS,
+  // Only a pass changes the library, and the live route's read on return
+  // tells whether one ended meanwhile (`passEnded`): a return with nothing
+  // new reads nothing.
+  refetchOnWindowFocus: false,
 });
 
 export const liveQuery = queryOptions({
@@ -77,15 +82,29 @@ export const usageQuery = queryOptions({
 });
 
 /**
- * Whether a pass ended between two reads of the live route: `scan.running`
- * went from `true` to `false`. A first read, with nothing before it, ends
- * nothing.
+ * Whether a pass ended between two reads of the live route, so the library
+ * it changed is worth reading again. The later read finds no pass running,
+ * and either the one before found one (`scan.running` went from `true` to
+ * `false`) or the last completed pass is another one (`scan.last` finished
+ * at another time): a pass the cron ran from start to end while the tab
+ * was hidden, which no read saw running. A first read, with nothing before
+ * it, ends nothing.
+ *
+ * A pass writes its summary when its scan phase ends, before its playlists
+ * import; waiting for it to stop running reads the library once a pass,
+ * with its playlists, rather than once for each phase.
  */
 export function passEnded(
   previous: LiveOverview | undefined,
   next: LiveOverview | undefined,
 ): boolean {
-  return previous?.scan.running === true && next?.scan.running === false;
+  if (previous === undefined || next === undefined || next.scan.running) {
+    return false;
+  }
+  return (
+    previous.scan.running ||
+    (previous.scan.last?.finishedAt ?? null) !== (next.scan.last?.finishedAt ?? null)
+  );
 }
 
 /**
