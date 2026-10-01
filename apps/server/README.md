@@ -18,6 +18,36 @@ and never written to `wrangler.jsonc`. For `wrangler dev`, copy
   users exist locks everyone out.
 - `SETUP_TOKEN`: a one-time token for creating the console's owner on first
   run, described below. It does nothing else.
+- `CF_ANALYTICS_TOKEN` and `CF_ACCOUNT_ID` (optional): the console's
+  free-tier usage panel, described below. Without both, the panel is hidden.
+
+## Usage panel (optional)
+
+The console's Overview can show today's free-tier usage for the whole
+Cloudflare account (Worker requests, D1 rows, Durable Object requests and
+duration, R2 operations and storage), read from Cloudflare's GraphQL
+Analytics API. It needs two secrets:
+
+1. In the Cloudflare dashboard, open **My Profile › API Tokens › Create
+   Token**, and choose **Create Custom Token**.
+2. Under **Permissions**, choose **Account**, **Account Analytics**,
+   **Read**. Nothing else is needed.
+3. Under **Account Resources**, choose **Include** and the one account the
+   Worker runs in, then create the token.
+4. Set it, and the account's id (the 32 hex characters shown as **Account
+   ID** on the Workers & Pages overview, or in any dashboard URL):
+
+   ```sh
+   wrangler secret put CF_ANALYTICS_TOKEN
+   wrangler secret put CF_ACCOUNT_ID
+   ```
+
+The token stays on the server: the console is sent only numbers. Each
+refresh is one GraphQL request, cached in the isolate for 5 minutes, so the
+panel costs no D1 and at most one Cloudflare API call per 5 minutes per
+isolate. With the token set but not the account id, the Worker logs a warning
+once per isolate and the panel stays hidden. A token Cloudflare refuses makes
+`GET /api/usage` answer `502 {"error":"analytics_unavailable","reason":"unauthorized"}`.
 
 ## Console users and Subsonic users
 
