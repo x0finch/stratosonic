@@ -11,6 +11,13 @@ import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 
 /**
+ * The breadcrumb's current page is the page's title, and so its level-one
+ * heading, as the header's h1 was. BreadcrumbPage renders a disabled link; a
+ * heading takes no aria-disabled, so that one is dropped.
+ */
+const PAGE_HEADING = { role: "heading", "aria-level": 1, "aria-disabled": undefined } as const;
+
+/**
  * The sidebar-08 block's header: the sidebar trigger, a breadcrumb naming the
  * page, and the theme toggle at the other end.
  */
@@ -31,10 +38,7 @@ export function SiteHeader() {
         <Breadcrumb>
           <BreadcrumbList>
             <BreadcrumbItem>
-              {/* The page's title, and so its heading, as the header's h1 was. */}
-              <BreadcrumbPage role="heading" aria-level={1}>
-                {title ?? "Stratosonic"}
-              </BreadcrumbPage>
+              <BreadcrumbPage {...PAGE_HEADING}>{title ?? "Stratosonic"}</BreadcrumbPage>
             </BreadcrumbItem>
           </BreadcrumbList>
         </Breadcrumb>
