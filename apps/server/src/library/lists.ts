@@ -79,6 +79,20 @@ export async function listAlbums(
   query: AlbumListQuery,
   page?: Page,
 ): Promise<AlbumView[]> {
+  return toAlbumViews(await albumsQuery(db, userId, query, page));
+}
+
+/**
+ * `listAlbums`' statement, unrun, for a caller that sends it in a `db.batch`
+ * with others (the console's overview, api/overview.ts); `toAlbumViews` reads
+ * what it returns.
+ *
+ * Its columns are safe to batch: Drizzle reads a batched result by column
+ * position from D1's row objects, which keep one value per column *name*, and
+ * the album's names and the annotation's (`starred`, `rating`, `play_count`,
+ * ...) never meet.
+ */
+export function albumsQuery(db: Database, userId: string, query: AlbumListQuery, page?: Page) {
   const statement = db
     .select({ album, ...annotationColumns })
     .from(album)
@@ -90,9 +104,11 @@ export async function listAlbums(
     .orderBy(...albumOrder(query))
     .$dynamic();
 
-  const rows =
-    page === undefined ? await statement : await statement.limit(page.size).offset(page.offset);
+  return page === undefined ? statement : statement.limit(page.size).offset(page.offset);
+}
 
+/** The rows `albumsQuery` returns, as `listAlbums` answers them. */
+export function toAlbumViews(rows: Awaited<ReturnType<typeof albumsQuery>>): AlbumView[] {
   return rows.map(toAlbumView);
 }
 

@@ -153,7 +153,21 @@ export async function listNowPlaying(
   callerId: string,
   now: Date,
 ): Promise<NowPlayingEntry[]> {
-  const rows = await db
+  return toNowPlayingEntries(await nowPlayingQuery(db, callerId, now));
+}
+
+/**
+ * `listNowPlaying`'s statement, unrun, for a caller that sends it in a
+ * `db.batch` with others (the console's overview, api/overview.ts);
+ * `toNowPlayingEntries` reads what it returns.
+ *
+ * Its columns are safe to batch: Drizzle reads a batched result by column
+ * position from D1's row objects, which keep one value per column *name*, and
+ * no two of the joined columns share one (the track's own, the album's `name`
+ * and `cover_key`, `user_name`, the session's and the annotation's).
+ */
+export function nowPlayingQuery(db: Database, callerId: string, now: Date) {
+  return db
     .select({
       track,
       albumName: album.name,
@@ -178,7 +192,12 @@ export async function listNowPlaying(
     .leftJoin(annotation, annotationJoin(callerId, "track", track.id))
     .where(gte(nowPlaying.expiresAt, now))
     .orderBy(desc(nowPlaying.startedAt));
+}
 
+/** The rows `nowPlayingQuery` returns, as `listNowPlaying` answers them. */
+export function toNowPlayingEntries(
+  rows: Awaited<ReturnType<typeof nowPlayingQuery>>,
+): NowPlayingEntry[] {
   return rows.map((row) => ({
     song: toSongView(row),
     username: row.username,

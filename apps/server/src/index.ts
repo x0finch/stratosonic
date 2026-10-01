@@ -2,7 +2,7 @@ import { createApp } from "./app";
 import { describePrunedRows, pruneExpiredAuthRows } from "./console-auth/prune";
 import { database } from "./db";
 import type { Env } from "./env";
-import { SCAN_DRIVER_INSTANCE } from "./scanner/driver";
+import { pokeScanDriver } from "./scanner/status";
 import { ensureInitialSetup } from "./setup/initial-setup";
 
 const app = createApp();
@@ -70,8 +70,7 @@ export default {
     }
 
     try {
-      const driver = env.SCAN_DRIVER.get(env.SCAN_DRIVER.idFromName(SCAN_DRIVER_INSTANCE));
-      const outcome = await driver.start(controller.scheduledTime);
+      const outcome = await pokeScanDriver(env, controller.scheduledTime);
       const poked =
         outcome === "started"
           ? "scan driver: a pass has started"

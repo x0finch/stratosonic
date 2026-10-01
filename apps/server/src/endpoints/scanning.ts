@@ -43,11 +43,15 @@
  * or skipped as unchanged — rather than the scan's `examined`, which counts
  * every object the bucket listed, cover art and `.m3u` files included, and
  * would tell a client the library holds more songs than it does.
+ *
+ * Both rules, and the poke, live in scanner/status.ts, which the console's
+ * overview (api/overview.ts) reads the scan through too, so a Subsonic client
+ * and the console never disagree about a pass (#82).
  */
 
 import { database } from "../db";
-import { SCAN_DRIVER_INSTANCE } from "../scanner/driver";
 import { readScanReport, type ScanReport } from "../scanner/state";
+import { inFlight, pokeScanDriver, tracksOf } from "../scanner/status";
 import type { SubsonicNode } from "../subsonic/response";
 import type { SubsonicHandler } from "../subsonic/router";
 
@@ -78,10 +82,7 @@ export const getScanStatus: SubsonicHandler = async (request) => {
  * a `scanning="true"` that is not true.
  */
 export const startScan: SubsonicHandler = async (request) => {
-  const driver = request.env.SCAN_DRIVER.get(
-    request.env.SCAN_DRIVER.idFromName(SCAN_DRIVER_INSTANCE),
-  );
-  const outcome = await driver.start(Date.now());
+  const outcome = await pokeScanDriver(request.env);
   console.log(
     outcome === "started"
       ? "startScan: a pass has started"
@@ -90,11 +91,6 @@ export const startScan: SubsonicHandler = async (request) => {
 
   return { scanStatus: scanStatusElement(await readScanReport(database(request.env)), true) };
 };
-
-/** Whether either phase of a pass is running. */
-function inFlight(report: ScanReport): boolean {
-  return report.progress !== null || report.importingPlaylists;
-}
 
 /**
  * The `<scanStatus>` element, attribute for attribute as Navidrome declares
@@ -124,7 +120,7 @@ function scanStatusElement(report: ScanReport, scanning: boolean): SubsonicNode 
 
   return {
     scanning,
-    count: counted === null ? 0 : counted.counts.indexed + counted.counts.unchanged,
+    count: counted === null ? 0 : tracksOf(counted.counts),
     lastScan: lastCompleted === null ? undefined : new Date(lastCompleted.finishedAt).toISOString(),
   };
 }
