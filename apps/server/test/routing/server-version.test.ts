@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestHarness } from "wrangler";
+import { PINNED_ENV } from "../pinned-env";
 
 /**
  * The release a deploy injects reaches every Subsonic response as
@@ -35,7 +36,8 @@ describe("a Worker built with the release defined", () => {
       {
         configPath: "./wrangler.jsonc",
         prebuiltWorkerDir: outdir,
-        secrets: { INITIAL_PASSWORD: "sesame", PASSWORD_ENCRYPTION_KEY: "test-key" },
+        // Every secret and var pinned, so a local `.dev.vars` changes nothing.
+        secrets: PINNED_ENV,
       },
     ],
   });
@@ -65,7 +67,8 @@ describe("a Worker built with nothing defined", () => {
     workers: [
       {
         configPath: "./wrangler.jsonc",
-        secrets: { INITIAL_PASSWORD: "sesame", PASSWORD_ENCRYPTION_KEY: "test-key" },
+        // Every secret and var pinned, so a local `.dev.vars` changes nothing.
+        secrets: PINNED_ENV,
       },
     ],
   });

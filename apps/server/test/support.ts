@@ -35,7 +35,8 @@ import {
 
 /**
  * Helpers shared by the tests. The bindings come from vitest.config.ts, which
- * supplies the two Worker secrets the same way the runtime does.
+ * supplies the Worker's secrets the same way the runtime does, pinned in
+ * pinned-env.ts.
  */
 
 export const BASE = "https://stratosonic.test";

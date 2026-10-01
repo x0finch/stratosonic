@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createTestHarness } from "wrangler";
+import { PINNED_ENV } from "../pinned-env";
 
 /**
  * How a request is routed between the admin console's static assets and the
@@ -41,11 +42,8 @@ describe.each([
       {
         configPath: "./wrangler.jsonc",
         env,
-        secrets: {
-          INITIAL_PASSWORD: "sesame",
-          PASSWORD_ENCRYPTION_KEY: "test-password-encryption-key",
-          SETUP_TOKEN: SETUP_TOKEN,
-        },
+        // Every secret and var pinned (../pinned-env.ts), and a usable token.
+        secrets: { ...PINNED_ENV, SETUP_TOKEN },
       },
     ],
   });
