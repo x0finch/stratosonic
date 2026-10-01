@@ -117,6 +117,18 @@ account the Worker runs in.
    is the only console user, so this one row is enough; once there are
    others, they have to be deleted too (`DELETE FROM user`).
 
+   Wrangler only reports that the command ran, so check what is left:
+
+   ```sh
+   wrangler d1 execute stratosonic_db --remote \
+     --command "SELECT (SELECT count(*) FROM user) AS console_users, (SELECT count(*) FROM session) AS sessions, (SELECT count(*) FROM account) AS accounts, (SELECT count(*) FROM subsonic_user) AS subsonic_users"
+   ```
+
+   `console_users`, `sessions` and `accounts` must all be `0`: no console
+   user is left for setup to wait on, and the cascade took the owner's
+   sessions and credential account with it. `subsonic_users` is untouched,
+   as many as before the delete.
+
    A browser still signed in as the deleted owner may go on reading
    `/api/me` for up to the 5-minute session cookie cache; every write is
    refused at once.
