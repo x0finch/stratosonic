@@ -4,7 +4,7 @@ import { expect } from "vitest";
 import { subsonicToken } from "../src/auth/crypto";
 import { createConsoleUser } from "../src/console-auth/credentials";
 import { verifyConsolePassword } from "../src/console-auth/password-hash";
-import { OWNER_ROLE, type Role } from "../src/console-auth/permissions";
+import { OWNER_ROLE, type Permission, ROLES, type Role } from "../src/console-auth/permissions";
 import { database } from "../src/db";
 import { encryptionKey, type JsonEnvelope, testEnv } from "./support";
 
@@ -148,6 +148,32 @@ export function cost(statements: readonly RecordedStatement[]) {
  * one owner.
  */
 export const GUEST_ROLE = "guest";
+
+/**
+ * A role, `library-reader`, that grants `library:read` and nothing else, for
+ * the routes that answer some roles more than others: no release defines one
+ * yet, since `owner` grants everything.
+ */
+export const LIBRARY_READER_ROLE = "library-reader";
+
+/**
+ * Makes the registry know `LIBRARY_READER_ROLE` until the returned function
+ * is called, for a test file's `beforeAll` and `afterAll`. The registry is
+ * a module-level object the Worker under test shares with the test, so
+ * nothing else changes: `owner`'s grants and every route's checks are the
+ * real ones.
+ */
+export function defineLibraryReaderRole(): () => void {
+  const roles = ROLES as unknown as Record<
+    string,
+    { label: string; permissions: readonly Permission[] }
+  >;
+  roles[LIBRARY_READER_ROLE] = { label: "Library reader", permissions: ["library:read"] };
+
+  return () => {
+    delete roles[LIBRARY_READER_ROLE];
+  };
+}
 
 /**
  * Creates a console user with a known password, the way setup does: through

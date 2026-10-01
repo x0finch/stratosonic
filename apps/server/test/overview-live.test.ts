@@ -1,7 +1,6 @@
 import { nowPlaying } from "@stratosonic/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app";
-import { type Permission, ROLES } from "../src/console-auth/permissions";
 import { database } from "../src/db";
 import type { Env } from "../src/env";
 import { bootstrapAdmin } from "./browsing-support";
@@ -10,7 +9,9 @@ import {
   consoleRequest,
   cost,
   countingD1,
+  defineLibraryReaderRole,
   GUEST_ROLE,
+  LIBRARY_READER_ROLE,
   seedConsoleUser,
   shape,
   signIn,
@@ -34,15 +35,10 @@ const app = createApp();
 const send = (request: Request) => app.request(request, undefined, env);
 
 /**
- * A role that grants `library:read` and not `activity:read`. No release
- * defines one yet (only `owner`, which grants everything), so the test adds
- * it to the registry for this file and takes it out again.
+ * Takes the registry's test role back out after this file: it grants
+ * `library:read` and not `activity:read`, which no release's role does yet.
  */
-const LIBRARY_READER = "library-reader";
-const registry = ROLES as unknown as Record<
-  string,
-  { label: string; permissions: readonly Permission[] }
->;
+let forgetLibraryReader: () => void = () => {};
 
 interface LiveOverview {
   scan: {
@@ -78,19 +74,19 @@ let guest: CookieJar;
 let reader: CookieJar;
 
 beforeAll(async () => {
-  registry[LIBRARY_READER] = { label: "Library reader", permissions: ["library:read"] };
+  forgetLibraryReader = defineLibraryReaderRole();
 
   await bootstrapAdmin();
   await seedConsoleUser("Owner", "overview");
   await seedConsoleUser("Guest", "nothing", GUEST_ROLE);
-  await seedConsoleUser("Reader", "library", LIBRARY_READER);
+  await seedConsoleUser("Reader", "library", LIBRARY_READER_ROLE);
   owner = (await signIn(send, ORIGIN, "owner", "overview")).jar;
   guest = (await signIn(send, ORIGIN, "guest", "nothing")).jar;
   reader = (await signIn(send, ORIGIN, "reader", "library")).jar;
 });
 
 afterAll(() => {
-  delete registry[LIBRARY_READER];
+  forgetLibraryReader();
 });
 
 function live(jar?: CookieJar) {
