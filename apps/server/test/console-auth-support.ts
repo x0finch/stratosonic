@@ -4,7 +4,7 @@ import { expect } from "vitest";
 import { subsonicToken } from "../src/auth/crypto";
 import { createConsoleUser } from "../src/console-auth/credentials";
 import { verifyConsolePassword } from "../src/console-auth/password-hash";
-import { OWNER_ROLE, type Role } from "../src/console-auth/permissions";
+import { OWNER_ROLE, type Permission, ROLES, type Role } from "../src/console-auth/permissions";
 import { database } from "../src/db";
 import { encryptionKey, type JsonEnvelope, testEnv } from "./support";
 
@@ -37,7 +37,14 @@ export interface CountingD1 {
  * Drizzle's D1 driver reads through `raw()`, which carries no meta, so `raw()`
  * is answered from `all()` (whose meta has the row counts) and each row turned
  * back into an array in column order. That is only sound without a join, whose
- * duplicate column names an object would collapse, so a join is refused.
+ * duplicate column names an object would collapse (`track.id` and `album.id`
+ * are both `id`), so a joined select runs twice: `all()` for D1's own
+ * `rows_read`, recorded as the one round trip it stands for, and `raw()` for
+ * the rows, column for column. Reading twice changes nothing, so only a
+ * select is answered that way; any other joined statement is refused.
+ *
+ * A batch needs none of this: D1 answers each of its statements with its
+ * meta, and Drizzle reads a batched result from the row objects itself.
  */
 export function countingD1(inner: D1Database): CountingD1 {
   const statements: RecordedStatement[] = [];
@@ -69,7 +76,13 @@ export function countingD1(inner: D1Database): CountingD1 {
       },
       async raw(options?: { columnNames?: boolean }) {
         if (/\bjoin\b/i.test(sql)) {
-          throw new Error(`countingD1 cannot answer a join through raw(): ${sql}`);
+          if (!/^\s*select\b/i.test(sql)) {
+            throw new Error(`countingD1 cannot answer a joined write through raw(): ${sql}`);
+          }
+          await run();
+          return options?.columnNames
+            ? statement.raw({ columnNames: true })
+            : statement.raw({ columnNames: false });
         }
         const { results } = await run();
         const rows = results.map((row) => Object.values(row));
@@ -135,6 +148,32 @@ export function cost(statements: readonly RecordedStatement[]) {
  * one owner.
  */
 export const GUEST_ROLE = "guest";
+
+/**
+ * A role, `library-reader`, that grants `library:read` and nothing else, for
+ * the routes that answer some roles more than others: no release defines one
+ * yet, since `owner` grants everything.
+ */
+export const LIBRARY_READER_ROLE = "library-reader";
+
+/**
+ * Makes the registry know `LIBRARY_READER_ROLE` until the returned function
+ * is called, for a test file's `beforeAll` and `afterAll`. The registry is
+ * a module-level object the Worker under test shares with the test, so
+ * nothing else changes: `owner`'s grants and every route's checks are the
+ * real ones.
+ */
+export function defineLibraryReaderRole(): () => void {
+  const roles = ROLES as unknown as Record<
+    string,
+    { label: string; permissions: readonly Permission[] }
+  >;
+  roles[LIBRARY_READER_ROLE] = { label: "Library reader", permissions: ["library:read"] };
+
+  return () => {
+    delete roles[LIBRARY_READER_ROLE];
+  };
+}
 
 /**
  * Creates a console user with a known password, the way setup does: through
