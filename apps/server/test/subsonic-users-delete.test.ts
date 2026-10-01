@@ -211,9 +211,7 @@ describe("DELETE /api/subsonic-users/:id", () => {
     expect((await deleteUser(carolId)).status).toBe(200);
 
     expect(harness.r2Deletes.length).toBe(calls);
-    expect((await snapshot()).users.map((row) => row.id).sort()).toEqual(
-      [adminId, bobId].sort(),
-    );
+    expect((await snapshot()).users.map((row) => row.id).sort()).toEqual([adminId, bobId].sort());
   });
 
   it("refuses to delete the only admin, touching no file", async () => {
@@ -279,7 +277,12 @@ describe("DELETE /api/subsonic-users/:id", () => {
   });
 
   it("refuses a request without a session", async () => {
-    await expectRefusal(harness, () => deleteUser(bobId, undefined), 401, "unauthenticated");
+    await expectRefusal(
+      harness,
+      () => call(undefined, "DELETE", `/subsonic-users/${bobId}`, {}),
+      401,
+      "unauthenticated",
+    );
   });
 
   it("refuses a console user whose role lacks subsonic-users:write", async () => {
@@ -289,7 +292,8 @@ describe("DELETE /api/subsonic-users/:id", () => {
   it("refuses a cross-origin request", async () => {
     await expectRefusal(
       harness,
-      () => call(owner, "DELETE", `/subsonic-users/${bobId}`, {}, { origin: "https://evil.example" }),
+      () =>
+        call(owner, "DELETE", `/subsonic-users/${bobId}`, {}, { origin: "https://evil.example" }),
       403,
       "forbidden_origin",
     );
@@ -298,8 +302,7 @@ describe("DELETE /api/subsonic-users/:id", () => {
   it("refuses a request that is not JSON", async () => {
     await expectRefusal(
       harness,
-      () =>
-        call(owner, "DELETE", `/subsonic-users/${bobId}`, {}, { "content-type": "text/plain" }),
+      () => call(owner, "DELETE", `/subsonic-users/${bobId}`, {}, { "content-type": "text/plain" }),
       403,
       "forbidden_origin",
     );

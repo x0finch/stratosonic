@@ -6,7 +6,6 @@ import { database } from "../src/db";
 import { MAX_PASSWORD_LENGTH, MAX_USERNAME_LENGTH } from "../src/users/validation";
 import {
   type CookieJar,
-  cost,
   GUEST_ROLE,
   seedConsoleUser,
   signIn,
@@ -14,7 +13,6 @@ import {
 } from "./console-auth-support";
 import {
   expectRefusal,
-  measured,
   type SubsonicUserView,
   snapshot,
   subsonicUsersHarness,
@@ -86,7 +84,12 @@ async function create(body: unknown, jar: CookieJar | undefined = owner) {
  */
 function itRefusesWhatEveryWriteRefuses(method: string, path: () => string, body: () => unknown) {
   it("refuses a request without a session", async () => {
-    await expectRefusal(harness, () => call(undefined, method, path(), body()), 401, "unauthenticated");
+    await expectRefusal(
+      harness,
+      () => call(undefined, method, path(), body()),
+      401,
+      "unauthenticated",
+    );
   });
 
   it("refuses a console user whose role lacks subsonic-users:write", async () => {
@@ -121,7 +124,12 @@ function itRefusesWhatEveryWriteRefuses(method: string, path: () => string, body
   });
 
   it("refuses a body that is not a JSON object", async () => {
-    await expectRefusal(harness, () => call(owner, method, path(), [body()]), 400, "invalid_request");
+    await expectRefusal(
+      harness,
+      () => call(owner, method, path(), [body()]),
+      400,
+      "invalid_request",
+    );
   });
 }
 
@@ -226,14 +234,24 @@ describe("POST /api/subsonic-users", () => {
     ["only whitespace", " \t "],
     ["over the maximum", "n".repeat(MAX_USERNAME_LENGTH + 1)],
   ])("refuses a name that is %s", async (_, username) => {
-    await expectRefusal(harness, () => create({ username, password: "pw" }), 400, "invalid_username");
+    await expectRefusal(
+      harness,
+      () => create({ username, password: "pw" }),
+      400,
+      "invalid_username",
+    );
   });
 
   it.each([
     ["empty", ""],
     ["1,025 characters", "p".repeat(MAX_PASSWORD_LENGTH + 1)],
   ])("refuses a password that is %s", async (_, password) => {
-    await expectRefusal(harness, () => create({ username: "frank", password }), 400, "invalid_password");
+    await expectRefusal(
+      harness,
+      () => create({ username: "frank", password }),
+      400,
+      "invalid_password",
+    );
   });
 
   it.each([
