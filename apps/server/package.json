@@ -8,7 +8,7 @@
     "fixtures": "node scripts/generate-fixtures.mjs",
     "bench:console-auth": "tsx scripts/bench-console-auth.ts",
     "bench:startup": "node scripts/bench-startup.mjs",
-    "cf-typegen": "wrangler types --include-runtime=false --strict-vars=false",
+    "cf-typegen": "wrangler types --include-runtime=false --strict-vars=false --env-file /dev/null",
     "typecheck": "pnpm run cf-typegen && tsc --noEmit",
     "test": "vitest run && pnpm run test:routing",
     "test:routing": "pnpm --filter @stratosonic/admin build && vitest run --config vitest.routing.config.ts",
