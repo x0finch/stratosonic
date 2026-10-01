@@ -1,4 +1,5 @@
-import type { Env } from "../src/env";
+// With its extension, as vitest.config.ts imports this file (see there).
+import type { Env } from "../src/env.ts";
 
 /**
  * The value every test starts from for each of the Worker's secrets and plain

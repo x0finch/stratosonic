@@ -1,6 +1,8 @@
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-workers";
 import { configDefaults, defineConfig } from "vitest/config";
-import { PINNED_ENV } from "./test/pinned-env";
+// With its extension, which Vite's native config loader requires of every
+// local import in this file's graph.
+import { PINNED_ENV } from "./test/pinned-env.ts";
 
 // Resolved against this project directory, which is Vitest's working directory.
 const migrationsDir = "../../packages/db/migrations";
