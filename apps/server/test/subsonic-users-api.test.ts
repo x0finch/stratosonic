@@ -1,4 +1,4 @@
-import { subsonicUser } from "@stratosonic/db";
+import { playlist, subsonicUser } from "@stratosonic/db";
 import { eq } from "drizzle-orm";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { MAX_JSON_BODY_BYTES } from "../src/api/json-body";
@@ -6,6 +6,7 @@ import { database } from "../src/db";
 import { MAX_PASSWORD_LENGTH, MAX_USERNAME_LENGTH } from "../src/users/validation";
 import {
   type CookieJar,
+  cost,
   GUEST_ROLE,
   seedConsoleUser,
   signIn,
@@ -13,11 +14,12 @@ import {
 } from "./console-auth-support";
 import {
   expectRefusal,
+  measured,
   type SubsonicUserView,
   snapshot,
   subsonicUsersHarness,
 } from "./subsonic-users-support";
-import { SEED_TIME, seedUser, testEnv } from "./support";
+import { SEED_TIME, seedPlaylist, seedUser, testEnv } from "./support";
 
 /**
  * The console's Subsonic-user routes (#82, "API: Subsonic users"; #115):
@@ -157,8 +159,44 @@ describe("GET /api/subsonic-users", () => {
       createdAt: SEED_TIME.toISOString(),
       updatedAt: SEED_TIME.toISOString(),
       lastAccessAt: lastAccess.toISOString(),
+      playlistCount: 0,
     });
     expect(users[1]).toMatchObject({ isAdmin: false, lastAccessAt: null });
+  });
+
+  it("counts each user's own playlists, in the one statement that lists them", async () => {
+    const bobId = await seedUser("bob", "builder");
+    const carolId = await seedUser("carol", "singer");
+    await seedPlaylist({ r2Key: "playlists/bob.m3u", ownerId: bobId });
+    for (const name of ["one", "two", "three"]) {
+      await seedPlaylist({ r2Key: `playlists/carol-${name}.m3u`, ownerId: carolId });
+    }
+    // A playlist whose owner is gone counts for nobody.
+    await seedPlaylist({ r2Key: "playlists/orphan.m3u", ownerId: "gone" });
+
+    const statements = await measured(harness, async () => {
+      const users = await listed();
+      expect(users.map((user) => [user.username, user.playlistCount])).toEqual([
+        ["admin", 0],
+        ["bob", 1],
+        ["carol", 3],
+      ]);
+    });
+
+    // The session comes from the cookie cache: the list is the one round trip.
+    expect(cost(statements)).toMatchObject({ statements: 1, roundTrips: 1 });
+    await database(testEnv).delete(playlist);
+  });
+
+  it("counts through playlist_owner_id_idx, not the playlists", async () => {
+    const statements = await measured(harness, () => listed());
+    const plan = await testEnv.DB.prepare(`explain query plan ${statements[0]?.sql}`).all<{
+      detail: string;
+    }>();
+
+    expect(plan.results.map((step) => step.detail)).toContain(
+      "SEARCH playlist USING COVERING INDEX playlist_owner_id_idx (owner_id=?)",
+    );
   });
 
   it("refuses a request without a session", async () => {
@@ -182,7 +220,12 @@ describe("POST /api/subsonic-users", () => {
     const text = await response.text();
     expect(text).not.toMatch(/password/i);
     const { user } = JSON.parse(text) as { user: SubsonicUserView };
-    expect(user).toMatchObject({ username: "carol", isAdmin: false, lastAccessAt: null });
+    expect(user).toMatchObject({
+      username: "carol",
+      isAdmin: false,
+      lastAccessAt: null,
+      playlistCount: 0,
+    });
     expect(user.createdAt).toBe(user.updatedAt);
     expect(await listed()).toContainEqual(user);
     expect(await ping("carol", "singer")).toBe("ok");
@@ -309,6 +352,21 @@ describe("PATCH /api/subsonic-users/:id", () => {
     expect(await ping("bob", "builder")).toBe(40);
     expect(await ping("robert", "builder")).toBe("ok");
     expect(await userNamed("robert")).toMatchObject({ name: "robert" });
+  });
+
+  it("answers the user with their playlist count", async () => {
+    const bobId = await seedUser("bob", "builder");
+    await seedPlaylist({ r2Key: "playlists/bob-a.m3u", ownerId: bobId });
+    await seedPlaylist({ r2Key: "playlists/bob-b.m3u", ownerId: bobId });
+    await seedPlaylist({ r2Key: "playlists/admin.m3u", ownerId: adminId });
+
+    const response = await edit(bobId, { username: "robert", isAdmin: true });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      user: { username: "robert", isAdmin: true, playlistCount: 2 },
+    });
+    await database(testEnv).delete(playlist);
   });
 
   it("moves updated_at and keeps created_at", async () => {

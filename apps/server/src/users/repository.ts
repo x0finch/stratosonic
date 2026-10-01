@@ -113,7 +113,27 @@ const userViewColumns = {
   lastAccessAt: subsonicUser.lastAccessAt,
 };
 
-/** A user as `userViewColumns` reads it. */
+/**
+ * How many playlists the user owns, counted in the statement that reads the
+ * user: a subquery correlated to the row, which `playlist_owner_id_idx`
+ * answers by reading the owner's index entries (and one past the last), not
+ * the playlists. The console's delete dialog names it, since a delete takes
+ * the user's playlists with it (#82, open question 1).
+ *
+ * Both columns are named with their table, by hand: in a statement on one
+ * table Drizzle writes a column bare, and a bare `"id"` inside the subquery
+ * would be the playlist's own id, counting nothing.
+ */
+const playlistCount = sql<number>`(select count(*) from ${playlist}
+  where ${playlist}.${sql.identifier(playlist.ownerId.name)}
+    = ${subsonicUser}.${sql.identifier(subsonicUser.id.name)})`
+  .mapWith(Number)
+  .as("playlist_count");
+
+/** `userViewColumns` with the user's playlist count. */
+const userViewWithCount = { ...userViewColumns, playlistCount };
+
+/** A user as `userViewWithCount` reads it. */
 export interface UserViewRow {
   readonly id: string;
   readonly userName: string;
@@ -121,15 +141,17 @@ export interface UserViewRow {
   readonly createdAt: Date;
   readonly updatedAt: Date;
   readonly lastAccessAt: Date | null;
+  readonly playlistCount: number;
 }
 
 /**
  * Every user, by name ignoring case and then id: the unique index's key, so
- * the list reads in the same terms a lookup matches in.
+ * the list reads in the same terms a lookup matches in. One statement, the
+ * playlist counts included.
  */
 export function listUsers(db: Database): Promise<UserViewRow[]> {
   return db
-    .select(userViewColumns)
+    .select(userViewWithCount)
     .from(subsonicUser)
     .orderBy(sql`lower(${subsonicUser.userName})`, asc(subsonicUser.id));
 }
@@ -182,7 +204,8 @@ export async function createUser(
     .select(selectUserRow(row, condition))
     .returning(userViewColumns);
 
-  return created ?? "admin_required";
+  // A new id owns no playlist yet: there is nothing to count.
+  return created ? { ...created, playlistCount: 0 } : "admin_required";
 }
 
 /**
@@ -263,7 +286,7 @@ export async function updateUser(
       updatedAt: now,
     })
     .where(and(eq(subsonicUser.id, id), changes.isAdmin === false ? mayLoseAdmin(id) : undefined))
-    .returning(userViewColumns);
+    .returning(userViewWithCount);
 
   return updated ?? null;
 }

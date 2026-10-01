@@ -131,8 +131,13 @@ describe("the Subsonic users' budget on the reference library", () => {
     const { status, route } = await measured("GET", "/subsonic-users");
 
     expect(status).toBe(200);
-    // Each of the five users, and the sorter again for the order.
-    expect(rows(route)).toEqual([["select subsonic_user", 10, 0]]);
+    // One select of the users (`shape` names the playlist subquery's table,
+    // its first `from`). Each of the five users and the sorter again for the
+    // order, 10, and each user's 4 entries in `playlist_owner_id_idx` and the
+    // one past them, but for the user whose id sorts last, 24.
+    expect(route).toHaveLength(1);
+    expect(route[0]?.sql).toMatch(/ from "subsonic_user" order by /);
+    expect(cost(route)).toEqual({ statements: 1, roundTrips: 1, rowsRead: 34, rowsWritten: 0 });
   });
 
   it("POST /api/subsonic-users: one statement past the session", async () => {
@@ -151,12 +156,14 @@ describe("the Subsonic users' budget on the reference library", () => {
   it("PATCH /api/subsonic-users/:id: one guarded statement, and a read on refusal", async () => {
     const id = userIds[2] ?? "";
     const cases = [
-      // The row by primary key; a rename rewrites its index entry too.
-      [{ username: "benedict" }, [["update subsonic_user", 2, 2]]],
-      [{ isAdmin: true }, [["update subsonic_user", 2, 1]]],
+      // The row by primary key, and the answer's playlist count: the user's 4
+      // entries in `playlist_owner_id_idx` and the one past them. A rename
+      // rewrites the row's index entry too.
+      [{ username: "benedict" }, [["update subsonic_user", 7, 2]]],
+      [{ isAdmin: true }, [["update subsonic_user", 7, 1]]],
       // A demotion also looks for another admin, and finds one at once.
-      [{ isAdmin: false }, [["update subsonic_user", 3, 1]]],
-      [{ username: "ben", isAdmin: false }, [["update subsonic_user", 2, 2]]],
+      [{ isAdmin: false }, [["update subsonic_user", 8, 1]]],
+      [{ username: "ben", isAdmin: false }, [["update subsonic_user", 7, 2]]],
     ] as const;
     for (const [body, expected] of cases) {
       const { status, route } = await measured("PATCH", `/subsonic-users/${id}`, body);
