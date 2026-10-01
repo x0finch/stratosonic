@@ -9,7 +9,7 @@ import {
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app";
-import { MAX_PASSWORD_LENGTH, MAX_USERNAME_LENGTH } from "../src/console-auth/credentials";
+import { MAX_PASSWORD_LENGTH, MAX_USERNAME_LENGTH } from "../src/users/validation";
 import { PERMISSIONS } from "../src/console-auth/permissions";
 import { database } from "../src/db";
 import type { Env } from "../src/env";

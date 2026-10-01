@@ -12,11 +12,11 @@ import { betterAuth } from "better-auth/minimal";
 import { username } from "better-auth/plugins/username";
 import { drizzle } from "drizzle-orm/d1";
 import {
-  foldConsoleUsername,
   MAX_PASSWORD_LENGTH,
   MAX_USERNAME_LENGTH,
   MIN_PASSWORD_LENGTH,
-} from "./credentials";
+} from "../users/validation";
+import { foldConsoleUsername } from "./credentials";
 import { hashConsolePassword, verifyConsolePassword } from "./password-hash";
 
 /**
@@ -248,7 +248,7 @@ function build({ db, passphrase, origin }: ConsoleAuthOptions, secret: string) {
         // under a key the column never holds.
         usernameNormalization: foldConsoleUsername,
         // Navidrome requires only that a name is there, and setup takes any
-        // name of 1 to MAX_USERNAME_LENGTH characters (credentials.ts), so
+        // name of 1 to MAX_USERNAME_LENGTH characters (users/validation.ts), so
         // every name it takes must be able to sign in, not only the plugin's
         // default 3-30 characters of `[a-zA-Z0-9_.]`.
         usernameValidator: () => true,
