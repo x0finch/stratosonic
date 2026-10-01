@@ -52,8 +52,10 @@
  * beside its field, sets the user's password (the old one then answers error
  * 40 and the new one ok), renames it (likewise for the old and new names),
  * tries to demote and to delete the last Subsonic admin and sees the refusal
- * toasts, and deletes the user, whose ping then answers error 40. Its users
- * are named `walkthrough-…`, so the database must not have those yet.
+ * toasts, and deletes the user, once it owns a playlist made with
+ * `createPlaylist` that the confirmation counts, whose ping then answers
+ * error 40. Its users are named `walkthrough-…`, so the database must not
+ * have those yet.
  *
  * Any console error or uncaught exception on a page fails the walkthrough,
  * except the browser's own "Failed to load resource" line for a response the
@@ -165,6 +167,22 @@ async function ping(username, password) {
   }
   check(answers[0] === answers[1], `ping by p= answered ${answers[0]}, by token ${answers[1]}`);
   return answers[0];
+}
+
+/** Creates an empty playlist as a Subsonic user, through `/rest/createPlaylist`. */
+async function createPlaylist(username, password, name) {
+  const query = new URLSearchParams({
+    u: username,
+    p: password,
+    v: "1.16.1",
+    c: "walkthrough",
+    f: "json",
+    name,
+  });
+  const body = (await (await fetch(`${BASE_URL}/rest/createPlaylist?${query}`)).json())[
+    "subsonic-response"
+  ];
+  check(body.status === "ok", `createPlaylist as ${username} answered ${JSON.stringify(body)}`);
 }
 
 /** That Subsonic refuses the owner's console credentials, as a wrong password. */
@@ -717,11 +735,18 @@ async function main() {
     );
 
     await step("Subsonic users: delete the user; its ping fails", async () => {
+      // A playlist of theirs, which the dialog counts and the delete takes too.
+      await createPlaylist(subsonic.renamed, subsonic.changedPassword, "Walkthrough mix");
+      await page.reload();
+      await page.getByRole("cell", { name: subsonic.renamed, exact: true }).waitFor();
       await userAction(page, subsonic.renamed, "Delete");
       const confirm = dialog(page);
       await confirm.getByText(`Delete ${subsonic.renamed}?`).waitFor();
       await confirm
         .getByText("Their stars, ratings, play counts, bookmarks and play queue are deleted")
+        .waitFor();
+      await confirm
+        .getByText("their 1 playlist is deleted too, including its playlist file in the bucket")
         .waitFor();
       await shot(page, "users-delete");
       await markToasts(page);
