@@ -30,6 +30,10 @@ export const Route = createFileRoute("/_shell")({
  * was, in one centered column: every page gets the block's padding and the
  * same width, which fills the content area on a laptop and stops at
  * `max-w-7xl` on a wider screen (#107).
+ *
+ * The shell is one viewport tall and never scrolls itself: the sidebar and
+ * the header stay put, and a page taller than the screen scrolls inside the
+ * inset, below the header, whose rounded corners clip it.
  */
 function Shell() {
   const { data: me } = useQuery(meQuery);
@@ -51,12 +55,14 @@ function Shell() {
   }
 
   return (
-    <SidebarProvider>
+    <SidebarProvider className="h-svh overflow-hidden">
       <AppSidebar user={me} />
-      <SidebarInset>
+      <SidebarInset className="min-h-0 overflow-hidden">
         <SiteHeader />
-        <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-4 p-4 pt-0">
-          <Outlet />
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-4 p-4 pt-0">
+            <Outlet />
+          </div>
         </div>
       </SidebarInset>
     </SidebarProvider>
