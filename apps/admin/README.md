@@ -128,19 +128,45 @@ page, such as the error screen of a server that is not configured, the
 sign-in screen's word that the setup state cannot be read, or the notice that
 setup is closed, stays on the page (`src/components/error-alert.tsx`).
 
+## The Overview
+
+The Overview (`/`, `src/routes/_shell/index.tsx`, its panels in
+`src/components/overview/`) shows the library's totals and genres (the
+shadcn/ui chart, Recharts), the scan with **Scan now**, who is listening,
+the albums added last, the playlists, and the free-tier usage of the whole
+Cloudflare account. Each panel needs its permission (`library:read`,
+`activity:read`, `usage:read`, and `library:scan` for the button), and the
+usage panel shows only once `GET /api/usage` says the Worker has an
+analytics token: without one there is no panel and no error.
+
+How often it reads the Worker is `src/lib/overview.ts`, as #82's table
+sets it: the live route (scan and now playing) every 10 s while a pass
+runs and every 30 s otherwise; the library on page load, after **Scan now**
+and when the live route sees a pass end (it stops running, or the last
+pass is another one); usage every 5 minutes. A hidden tab reads nothing
+(TanStack Query's `refetchIntervalInBackground: false`), and a returning
+one reads the live route and usage at once, and the library only if a pass
+ended meanwhile. A refused read (a 4xx) is never retried, so a session that
+ended signs the console out at once. Between polls, a playing position
+moves on in the browser from where the server put it.
+
 ## The walkthrough
 
 `scripts/walkthrough.mjs` creates the owner, signs out and back in,
 refuses a wrong password, checks that a set-up server offers neither setup
-nor a password reset, changes the password, and checks dark mode, a
-phone-sized viewport and the browser console. After both setup and the
+nor a password reset, changes the password, opens the Overview (with no
+usage panel without an analytics token) and follows a **Scan now** pass to
+its end, and checks dark mode, a phone-sized viewport and the browser
+console. After both setup and the
 change it checks that a Subsonic `ping` with the owner's console credentials
 fails with error 40. Given the
 `INITIAL_*` Subsonic user as `SUBSONIC_USER` and `SUBSONIC_PASSWORD`, it also
 checks that this user cannot sign in to the console and that its `ping` stays
 ok throughout. It needs Chromium in Playwright's browser cache
 (`PLAYWRIGHT_BROWSERS_PATH`, or `pnpm exec playwright-core install
-chromium`). Start the Worker on an empty database with a `SETUP_TOKEN`, then:
+chromium`). Start the Worker on an empty database with a `SETUP_TOKEN`, and
+a small library in its bucket, since the scan step waits for a whole pass
+(`SCAN_TIMEOUT`, 120 s by default), then:
 
 ```sh
 BASE_URL=http://localhost:8787 SETUP_TOKEN=… \

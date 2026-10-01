@@ -104,6 +104,27 @@ const MESSAGES: Record<string, ErrorMessage> = {
   },
 };
 
+/**
+ * Why the usage panel has no numbers: `GET /api/usage` answers
+ * `analytics_unavailable` with a `reason` (#82, "API: usage panel"). The
+ * server caches each failure, and the panel asks again in five minutes.
+ */
+const ANALYTICS_REASONS: Record<"unauthorized" | "rate_limited" | "upstream", ErrorMessage> = {
+  unauthorized: {
+    title: "Cloudflare refused the analytics token",
+    description:
+      "Check that CF_ANALYTICS_TOKEN has Account Analytics Read for the account CF_ACCOUNT_ID names, then set it again with wrangler secret put.",
+  },
+  rate_limited: {
+    title: "Cloudflare's analytics are rate limited",
+    description: "Too many queries reached the GraphQL Analytics API. The panel tries again later.",
+  },
+  upstream: {
+    title: "Cloudflare's analytics did not answer",
+    description: "The GraphQL Analytics API failed. The panel tries again later.",
+  },
+};
+
 /** What to tell the user about a failed call. */
 export function describeError(error: unknown): ErrorMessage {
   if (!(error instanceof ApiError)) {
@@ -119,6 +140,14 @@ export function describeError(error: unknown): ErrorMessage {
         ? "a minute"
         : `${error.retryAfter} second${error.retryAfter === 1 ? "" : "s"}`;
     return { title: "Too many attempts", description: `Wait ${wait} and try again.` };
+  }
+
+  if (error.code === "analytics_unavailable") {
+    const reason = error.reason ?? "";
+    // A reason this console does not know yet is still a failure upstream.
+    return Object.hasOwn(ANALYTICS_REASONS, reason)
+      ? ANALYTICS_REASONS[reason as keyof typeof ANALYTICS_REASONS]
+      : ANALYTICS_REASONS.upstream;
   }
 
   const known = MESSAGES[error.code];
