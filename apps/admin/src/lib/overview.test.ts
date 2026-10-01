@@ -1,0 +1,243 @@
+import {
+  environmentManager,
+  focusManager,
+  QueryClient,
+  QueryObserver,
+} from "@tanstack/react-query";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import type { LibraryOverview, LiveOverview, ScanStatus } from "@/lib/api";
+import {
+  afterScanRequest,
+  estimatePositionMs,
+  followLive,
+  LIVE_INTERVAL_IDLE_MS,
+  LIVE_INTERVAL_SCANNING_MS,
+  type LiveRead,
+  libraryQuery,
+  liveQuery,
+  liveRefetchInterval,
+  passEnded,
+  USAGE_INTERVAL_MS,
+  usageQuery,
+} from "@/lib/overview";
+
+const IDLE: ScanStatus = {
+  running: false,
+  phase: null,
+  progress: null,
+  estimatedTotal: 120,
+  last: null,
+};
+
+function live(running: boolean): LiveRead {
+  return {
+    scan: { ...IDLE, running, phase: running ? "scan" : null },
+    nowPlaying: [],
+    serverTime: "2026-10-01T12:00:00.000Z",
+    receivedAt: 1_000,
+  };
+}
+
+const LIBRARY: LibraryOverview = {
+  counts: { artists: 1, albums: 1, tracks: 1, genres: 0, durationSec: 1, sizeBytes: 1 },
+  genres: [],
+  recentAlbums: [],
+  playlists: [],
+};
+
+/** A client holding a fresh library read, as the Overview has after its first load. */
+function clientWithLibrary(): QueryClient {
+  const queryClient = new QueryClient();
+  queryClient.setQueryData(libraryQuery.queryKey, LIBRARY);
+  return queryClient;
+}
+
+function libraryIsStale(queryClient: QueryClient): boolean {
+  return queryClient.getQueryState(libraryQuery.queryKey)?.isInvalidated ?? false;
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("the live route's polling interval", () => {
+  it("is 10 s while a pass is in flight", () => {
+    expect(liveRefetchInterval(live(true))).toBe(10_000);
+    expect(LIVE_INTERVAL_SCANNING_MS).toBe(10_000);
+  });
+
+  it("is 30 s otherwise, and before the first read", () => {
+    expect(liveRefetchInterval(live(false))).toBe(30_000);
+    expect(liveRefetchInterval(undefined)).toBe(LIVE_INTERVAL_IDLE_MS);
+    expect(LIVE_INTERVAL_IDLE_MS).toBe(30_000);
+  });
+
+  it("is what the live query polls at, and nothing is read while the tab is hidden", async () => {
+    // Node has no window, which TanStack Query takes for a server, where it
+    // schedules no interval at all: this test is the browser.
+    environmentManager.setIsServer(() => false);
+    vi.useFakeTimers();
+    let running = false;
+    const fetch = vi.fn(async () => {
+      const { receivedAt: _, ...body } = live(running);
+      return new Response(JSON.stringify(body), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetch);
+    // Mounted, as QueryClientProvider mounts it, so it follows focusManager.
+    const queryClient = new QueryClient();
+    queryClient.mount();
+    const observer = new QueryObserver(queryClient, liveQuery);
+    const unsubscribe = observer.subscribe(() => {});
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetch).toHaveBeenCalledTimes(1);
+
+      // Idle: one read every 30 s.
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      running = true;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(fetch).toHaveBeenCalledTimes(2);
+
+      // That read says a pass is running: one every 10 s.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fetch).toHaveBeenCalledTimes(3);
+
+      // A hidden tab reads nothing, however long it stays hidden.
+      focusManager.setFocused(false);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(fetch).toHaveBeenCalledTimes(3);
+
+      // Back on screen, it reads at once.
+      focusManager.setFocused(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetch).toHaveBeenCalledTimes(4);
+    } finally {
+      unsubscribe();
+      queryClient.unmount();
+      focusManager.setFocused(undefined);
+      environmentManager.setIsServer(() => typeof window === "undefined");
+      vi.useRealTimers();
+    }
+    expect(liveQuery.staleTime).toBe(0);
+    expect(liveQuery.refetchIntervalInBackground).toBe(false);
+  });
+
+  it("leaves the library unpolled, and polls usage every 5 minutes", () => {
+    expect(libraryQuery).not.toHaveProperty("refetchInterval");
+    expect(libraryQuery.staleTime).toBe(5 * 60_000);
+    expect(usageQuery.refetchInterval).toBe(USAGE_INTERVAL_MS);
+    expect(usageQuery.staleTime).toBe(5 * 60_000);
+    expect(usageQuery.refetchIntervalInBackground).toBe(false);
+  });
+
+  it("stamps each read with when it arrived", async () => {
+    const { receivedAt: _, ...body } = live(false);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(body), { status: 200 })),
+    );
+    vi.spyOn(Date, "now").mockReturnValue(42_000);
+
+    const read = await new QueryClient().fetchQuery(liveQuery);
+
+    expect(read).toEqual({ ...body, receivedAt: 42_000 });
+    vi.restoreAllMocks();
+  });
+});
+
+describe("the end of a pass", () => {
+  it("is running turning from true to false", () => {
+    expect(passEnded(live(true), live(false))).toBe(true);
+  });
+
+  it("is nothing else", () => {
+    expect(passEnded(undefined, live(false))).toBe(false);
+    expect(passEnded(undefined, live(true))).toBe(false);
+    expect(passEnded(live(false), live(false))).toBe(false);
+    expect(passEnded(live(false), live(true))).toBe(false);
+    expect(passEnded(live(true), live(true))).toBe(false);
+    expect(passEnded(live(true), undefined)).toBe(false);
+  });
+
+  it("reads the library again", () => {
+    const queryClient = clientWithLibrary();
+
+    expect(followLive(queryClient, live(true), live(false))).toBe(true);
+    expect(libraryIsStale(queryClient)).toBe(true);
+  });
+
+  it("leaves the library alone while nothing ended", () => {
+    const queryClient = clientWithLibrary();
+
+    expect(followLive(queryClient, live(false), live(true))).toBe(false);
+    expect(followLive(queryClient, live(true), live(true))).toBe(false);
+    expect(followLive(queryClient, undefined, live(false))).toBe(false);
+    expect(libraryIsStale(queryClient)).toBe(false);
+  });
+});
+
+describe("a scan request", () => {
+  it("puts the answer's scan in the live read, keeping its anchor, and reads the library again", () => {
+    const queryClient = clientWithLibrary();
+    const before = { ...live(false), receivedAt: 7_000 };
+    queryClient.setQueryData(liveQuery.queryKey, before);
+    const scan: ScanStatus = { ...IDLE, running: true };
+
+    afterScanRequest(queryClient, { outcome: "started", scan });
+
+    const after = queryClient.getQueryData(liveQuery.queryKey);
+    expect(after).toEqual({ ...before, scan });
+    expect(liveRefetchInterval(after)).toBe(LIVE_INTERVAL_SCANNING_MS);
+    expect(libraryIsStale(queryClient)).toBe(true);
+  });
+
+  it("leaves a live route not yet read to its first read", () => {
+    const queryClient = clientWithLibrary();
+
+    afterScanRequest(queryClient, { outcome: "running", scan: { ...IDLE, running: true } });
+
+    expect(queryClient.getQueryData(liveQuery.queryKey)).toBeUndefined();
+  });
+});
+
+describe("the local position estimate", () => {
+  const track = { durationSec: 240 };
+  const playing = { state: "playing" as const, positionMs: 60_000, playbackRate: 1, track };
+
+  it("moves a playing session on by the time since the read arrived", () => {
+    expect(estimatePositionMs(playing, 1_000, 1_000)).toBe(60_000);
+    expect(estimatePositionMs(playing, 1_000, 13_500)).toBe(72_500);
+  });
+
+  it("moves at the session's rate", () => {
+    expect(estimatePositionMs({ ...playing, playbackRate: 1.5 }, 0, 10_000)).toBe(75_000);
+    expect(estimatePositionMs({ ...playing, playbackRate: 0.5 }, 0, 10_001)).toBe(65_000);
+  });
+
+  it("stops at the end of the track", () => {
+    expect(estimatePositionMs(playing, 0, 600_000)).toBe(240_000);
+    expect(estimatePositionMs({ ...playing, track: { durationSec: 241.3456 } }, 0, 600_000)).toBe(
+      241_345,
+    );
+  });
+
+  it("leaves a paused or starting session where it is", () => {
+    expect(estimatePositionMs({ ...playing, state: "paused" }, 0, 30_000)).toBe(60_000);
+    expect(estimatePositionMs({ ...playing, state: "starting" }, 0, 30_000)).toBe(60_000);
+  });
+
+  it("never moves a session back when this clock steps back", () => {
+    expect(estimatePositionMs(playing, 10_000, 4_000)).toBe(60_000);
+  });
+
+  it("does not depend on how far this clock is from the server's", () => {
+    // `serverTime` says noon; this browser's clock is an hour behind. Only
+    // the time since the read arrived counts.
+    const read: LiveOverview = { ...live(false), serverTime: "2026-10-01T12:00:00.000Z" };
+    const receivedAt = Date.parse(read.serverTime) - 3_600_000;
+
+    expect(estimatePositionMs(playing, receivedAt, receivedAt + 5_000)).toBe(65_000);
+  });
+});

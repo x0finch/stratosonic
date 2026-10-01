@@ -33,13 +33,19 @@ export class ApiError extends Error {
   readonly code: string;
   /** The seconds a rate-limited caller has to wait, when the server says. */
   readonly retryAfter: number | undefined;
+  /**
+   * The API's `reason`, when it says more than its code: why the usage
+   * panel's analytics are unavailable (`analytics_unavailable`, #82).
+   */
+  readonly reason: string | undefined;
 
-  constructor(status: number, code: string, message: string, retryAfter?: number) {
+  constructor(status: number, code: string, message: string, retryAfter?: number, reason?: string) {
     super(message || code);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
     this.retryAfter = retryAfter;
+    this.reason = reason;
   }
 }
 
@@ -66,6 +72,13 @@ function errorCode(status: number, body: unknown): string {
     }
   }
   return `http_${status}`;
+}
+
+function errorReason(body: unknown): string | undefined {
+  if (typeof body === "object" && body !== null && "reason" in body) {
+    return typeof body.reason === "string" ? body.reason : undefined;
+  }
+  return undefined;
 }
 
 function errorMessage(body: unknown): string {
@@ -117,6 +130,7 @@ async function call<T>(method: "GET" | "POST", path: string, body?: unknown): Pr
       errorCode(response.status, payload),
       errorMessage(payload),
       retryAfter(response),
+      errorReason(payload),
     );
   }
   return payload as T;
@@ -192,3 +206,170 @@ export const setupStateQuery = queryOptions({
   staleTime: 30 * 1000,
   retry: false,
 });
+
+/** The library's totals, as `GET /api/overview/library` counts them (#82). */
+export interface LibraryCounts {
+  artists: number;
+  albums: number;
+  tracks: number;
+  genres: number;
+  durationSec: number;
+  sizeBytes: number;
+}
+
+/** One genre, as `getGenres` lists it, in Navidrome's order. */
+export interface GenreCount {
+  name: string;
+  songCount: number;
+  albumCount: number;
+}
+
+/** One of the albums added last, newest first. */
+export interface RecentAlbum {
+  id: string;
+  name: string;
+  artist: string;
+  year: number | null;
+  songCount: number;
+  createdAt: string;
+}
+
+/** A playlist, with the Subsonic user it belongs to (`null` for none). */
+export interface PlaylistSummary {
+  id: string;
+  name: string;
+  owner: string | null;
+  public: boolean;
+  songCount: number;
+  durationSec: number;
+  changedAt: string;
+}
+
+/** `GET /api/overview/library`: read on page load and when a pass ends, never polled. */
+export interface LibraryOverview {
+  counts: LibraryCounts;
+  genres: GenreCount[];
+  recentAlbums: RecentAlbum[];
+  playlists: PlaylistSummary[];
+}
+
+/** What a completed pass did, as its `LastScanSummary` holds it. */
+export interface LastScanCounts {
+  examined: number;
+  indexed: number;
+  added: number;
+  updated: number;
+  unchanged: number;
+  broken: number;
+  deferred: number;
+  removed: number;
+  albumsRemoved: number;
+  artistsRemoved: number;
+  coversWritten: number;
+}
+
+/**
+ * The scan, as `getScanStatus` sees it: whether a pass is in flight, how far
+ * its scan phase has got, and the last completed pass.
+ */
+export interface ScanStatus {
+  running: boolean;
+  phase: "scan" | "playlists" | null;
+  /** Only while `phase` is `"scan"`. `tracks` is `indexed + unchanged`. */
+  progress: {
+    startedAt: string;
+    tracks: number;
+    examined: number;
+    added: number;
+    updated: number;
+    removed: number;
+  } | null;
+  /** The last pass's track count, the best denominator there is; `null` before any pass. */
+  estimatedTotal: number | null;
+  last: {
+    startedAt: string;
+    finishedAt: string;
+    steps: number;
+    counts: LastScanCounts;
+  } | null;
+}
+
+/** Someone listening, with the position the server estimated at `serverTime`. */
+export interface NowPlayingEntry {
+  username: string;
+  playerName: string;
+  state: "playing" | "paused" | "starting";
+  positionMs: number;
+  playbackRate: number;
+  startedAt: string;
+  track: {
+    id: string;
+    title: string;
+    artist: string;
+    album: string;
+    albumId: string;
+    durationSec: number;
+  };
+}
+
+/** `GET /api/overview/live`, the one polled overview route. */
+export interface LiveOverview {
+  scan: ScanStatus;
+  /** `null` for a role without `activity:read`. */
+  nowPlaying: NowPlayingEntry[] | null;
+  /** When the server estimated the positions, to move them on from. */
+  serverTime: string;
+}
+
+/** What a press of **Scan now** did: started a pass, or found one in flight. */
+export interface ScanRequestResult {
+  outcome: "started" | "running";
+  scan: ScanStatus;
+}
+
+/** `GET /api/usage` with an analytics token: today's usage, and R2's month to date. */
+export interface ConfiguredUsage {
+  configured: true;
+  fetchedAt: string;
+  day: string;
+  monthStart: string;
+  workers: { requests: number; errors: number; limit: { requests: number } };
+  d1: {
+    rowsRead: number;
+    rowsWritten: number;
+    limit: { rowsRead: number; rowsWritten: number };
+  };
+  durableObjects: {
+    requests: number;
+    cpuTimeMs: number;
+    durationGbSeconds: number;
+    limit: { requests: number; durationGbSeconds: number };
+  };
+  r2: {
+    classA: number;
+    classB: number;
+    storageBytes: number;
+    objectCount: number;
+    limit: { classA: number; classB: number; storageBytes: number };
+  };
+}
+
+/** `GET /api/usage`: the account's free-tier usage, or no token to read it with. */
+export type Usage = { configured: false } | ConfiguredUsage;
+
+export function fetchLibraryOverview(): Promise<LibraryOverview> {
+  return call<LibraryOverview>("GET", "/api/overview/library");
+}
+
+export function fetchLiveOverview(): Promise<LiveOverview> {
+  return call<LiveOverview>("GET", "/api/overview/live");
+}
+
+/** Pokes the scan driver, as Subsonic's `startScan` does. The body is `{}`. */
+export function requestScan(): Promise<ScanRequestResult> {
+  return call<ScanRequestResult>("POST", "/api/library/scan");
+}
+
+export function fetchUsage(): Promise<Usage> {
+  return call<Usage>("GET", "/api/usage");
+}
