@@ -13,6 +13,8 @@ export interface NavItem {
   /** The console route; absent while the page is still to come. */
   to?: LinkProps["to"];
   icon: ReactNode;
+  /** The permission its page needs; without it, the entry is left out. */
+  permission?: string;
 }
 
 /**
