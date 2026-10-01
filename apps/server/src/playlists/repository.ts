@@ -509,6 +509,34 @@ export async function listPlaylists(db: Database, viewer: PlaylistViewer): Promi
     .orderBy(asc(playlist.name), asc(playlist.id));
 }
 
+/**
+ * Every playlist, by name then id as `listPlaylists` orders them, with its
+ * owner's name: the console's overview (#82, "API: overview"), as a statement
+ * for its `db.batch`.
+ *
+ * It is not `playlistColumns`, whose cover subquery joins `playlist_track`,
+ * `track` and `album` for every playlist; the console shows no cover, so this
+ * reads each playlist row and, through the primary key, its owner's, and
+ * nothing else. The subquery is written out with its tables named, as
+ * `artistColumns` explains: Drizzle drops the qualifier from a column of a
+ * one-table query. `owner` is null for a row whose owner is no user.
+ */
+export function playlistSummariesQuery(db: Database) {
+  return db
+    .select({
+      id: playlist.id,
+      name: playlist.name,
+      public: playlist.public,
+      songCount: playlist.songCount,
+      duration: playlist.duration,
+      changedAt: playlist.changedAt,
+      owner: sql<string | null>`(select subsonic_user.user_name from subsonic_user
+        where subsonic_user.id = playlist.owner_id)`,
+    })
+    .from(playlist)
+    .orderBy(asc(playlist.name), asc(playlist.id));
+}
+
 /** One playlist, or null when there is none with this id the viewer may see. */
 export async function findPlaylist(
   db: Database,
