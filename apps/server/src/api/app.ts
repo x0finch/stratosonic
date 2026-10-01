@@ -3,6 +3,7 @@ import { CONSOLE_AUTH_ROUTES } from "../console-auth/auth";
 import { type ConsoleEnv, loadConsoleAuth, requireSession } from "../console-auth/middleware";
 import { permissionsOf } from "../console-auth/permissions";
 import { registerAccountRoutes } from "./account";
+import { registerOverviewRoutes } from "./overview";
 import { registerSetupRoutes } from "./setup";
 import { registerUsageRoutes } from "./usage";
 
@@ -53,6 +54,7 @@ export function createApiApp(): ApiApp {
   // routes above.
   registerSetupRoutes(api);
   registerAccountRoutes(api);
+  registerOverviewRoutes(api);
   registerUsageRoutes(api);
 
   // A sub-app's `notFound` is never called once it is mounted — Hono only

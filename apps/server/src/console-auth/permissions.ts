@@ -29,6 +29,12 @@ export const PERMISSIONS = [
   // See and manage Subsonic users (Phase 1, #82).
   "subsonic-users:read",
   "subsonic-users:write",
+  // See the library overview: counts, genres, recent albums, playlists and
+  // the scan's status (Phase 1, #82).
+  "library:read",
+  // See who is listening to what. Apart from `library:read` because it is
+  // about people, not the library (Phase 1, #82).
+  "activity:read",
   // Start a library scan (Phase 1, #82).
   "library:scan",
   // See the Cloudflare account's free-tier usage (`GET /api/usage`, #82).
