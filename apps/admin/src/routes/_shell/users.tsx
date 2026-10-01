@@ -113,8 +113,8 @@ function SubsonicUsers() {
                 <EmptyTitle>No Subsonic users yet</EmptyTitle>
                 <EmptyDescription>
                   {writable
-                    ? "Add the first one to sign in from a Subsonic client. It is a Subsonic admin, as library scans and the playlist import need one."
-                    : "No Subsonic client can sign in until a console user whose role allows it adds one."}
+                    ? "Add the first one to sign in from a Subsonic client. It will be a Subsonic admin, as library scans and the playlist import need one."
+                    : "No Subsonic client can sign in yet. Adding Subsonic users needs a role that can manage them."}
                 </EmptyDescription>
               </EmptyHeader>
             </Empty>

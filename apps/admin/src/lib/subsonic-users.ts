@@ -68,7 +68,7 @@ export function userChanges(
 export function deleteConsequences(playlists: number): string {
   const annotations = "Their stars, ratings, play counts, bookmarks and play queue are deleted";
   const imported =
-    "This includes playlists the scan imported from the bucket while they were the first Subsonic admin.";
+    "That count includes any playlists the scan imported from the bucket while they were the first Subsonic admin.";
   if (playlists === 0) {
     return `${annotations}. They have no playlists.`;
   }
