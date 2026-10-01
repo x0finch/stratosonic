@@ -7,9 +7,12 @@ import {
   subsonicUser,
   type Track,
 } from "@stratosonic/db";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAX_JSON_BODY_BYTES } from "../src/api/json-body";
 import { database } from "../src/db";
+import type { Env } from "../src/env";
+import { erasePlaylistFiles, R2_DELETE_KEYS_PER_CALL } from "../src/playlists/writes";
 import {
   type CookieJar,
   GUEST_ROLE,
@@ -233,6 +236,53 @@ describe("DELETE /api/subsonic-users/:id", () => {
     await expectRefusal(harness, () => deleteUser("nobody"), 404, "not_found");
   });
 
+  it("removes the erased files' rows when the guard refuses after the files went", async () => {
+    // Bob is one of two admins when the check runs; the other is demoted by a
+    // racing request once Bob's files are gone, so the guarded batch refuses.
+    await database(testEnv)
+      .update(subsonicUser)
+      .set({ isAdmin: true })
+      .where(eq(subsonicUser.id, bobId));
+    const bobKeys = await keysOf(bobId);
+    const before = await rowsOf(bobId);
+    const adminRows = await rowsOf(adminId);
+    harness.afterNextR2Delete(() =>
+      database(testEnv)
+        .update(subsonicUser)
+        .set({ isAdmin: false })
+        .where(eq(subsonicUser.id, adminId)),
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    let response: Response;
+    let warnings: unknown[][];
+    try {
+      response = await deleteUser(bobId);
+    } finally {
+      warnings = [...warn.mock.calls];
+      warn.mockRestore();
+    }
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "last_admin" });
+    // Bob stays, with everything but the playlists whose files went; D1
+    // agrees with the bucket at once rather than at the next sweep.
+    expect(harness.r2Deletes.at(-1)).toEqual(expect.arrayContaining(bobKeys));
+    const files = [...(await playlistObjects()).keys()];
+    expect(files.filter((key) => bobKeys.includes(key))).toEqual([]);
+    expect(await rowsOf(bobId)).toEqual({ ...before, playlists: [], entries: [] });
+    expect(await rowsOf(adminId)).toEqual({
+      ...adminRows,
+      users: adminRows.users.map((row) => ({ ...row, isAdmin: false })),
+    });
+    // Logged by id and count, never by name.
+    expect(warnings).toHaveLength(1);
+    const [message] = warnings[0] ?? [];
+    expect(message).toContain(bobId);
+    expect(message).toContain(`${bobKeys.length} playlist files`);
+    expect(String(message).replace(bobId, "")).not.toContain("bob");
+  });
+
   it("answers 500 when R2 fails, leaving the user and every row in place", async () => {
     const before = await snapshot();
     const files = await playlistObjects();
@@ -327,5 +377,42 @@ describe("DELETE /api/subsonic-users/:id", () => {
       400,
       "invalid_request",
     );
+  });
+});
+
+describe("erasePlaylistFiles", () => {
+  /** A bucket that only records what it is asked to delete. */
+  function recordingBucket() {
+    const calls: string[][] = [];
+    const env = {
+      ...testEnv,
+      MUSIC: {
+        delete: async (keys: string[]) => {
+          calls.push(keys);
+        },
+      },
+    } as unknown as Env;
+    return { env, calls };
+  }
+
+  it(`deletes at most ${R2_DELETE_KEYS_PER_CALL} keys per R2 call`, async () => {
+    const keys = Array.from(
+      { length: R2_DELETE_KEYS_PER_CALL + 1 },
+      (_, index) => `playlists/${index}.m3u`,
+    );
+    const { env, calls } = recordingBucket();
+
+    await erasePlaylistFiles(env, keys);
+
+    expect(calls.map((call) => call.length)).toEqual([R2_DELETE_KEYS_PER_CALL, 1]);
+    expect(calls.flat()).toEqual(keys);
+  });
+
+  it("makes no call for no key", async () => {
+    const { env, calls } = recordingBucket();
+
+    await erasePlaylistFiles(env, []);
+
+    expect(calls).toEqual([]);
   });
 });

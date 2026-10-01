@@ -44,6 +44,11 @@ export interface SubsonicUsersHarness {
   readonly r2Deletes: (string | string[])[];
   /** Makes the next `MUSIC.delete` throw, as an R2 outage would, before it deletes anything. */
   failNextR2Delete(): void;
+  /**
+   * Runs `step` right after the next `MUSIC.delete`, before the request goes
+   * on: another request's write landing in between, as in a race.
+   */
+  afterNextR2Delete(step: () => Promise<unknown>): void;
   /** Makes the next D1 batch holding a delete of a Subsonic user throw, as a D1 outage would. */
   failNextUserDeleteBatch(): void;
   /** Calls a route as the console would, signed in with `jar`. */
@@ -60,6 +65,7 @@ export function subsonicUsersHarness(origin: string): SubsonicUsersHarness {
   const r2Deletes: (string | string[])[] = [];
   let failR2 = false;
   let failBatch = false;
+  let afterR2: (() => Promise<unknown>) | null = null;
 
   const music = new Proxy(testEnv.MUSIC, {
     get(target, property) {
@@ -70,7 +76,10 @@ export function subsonicUsersHarness(origin: string): SubsonicUsersHarness {
             failR2 = false;
             throw new Error("R2 is unavailable");
           }
-          return target.delete(keys);
+          await target.delete(keys);
+          const step = afterR2;
+          afterR2 = null;
+          await step?.();
         };
       }
       const value = Reflect.get(target, property);
@@ -106,6 +115,9 @@ export function subsonicUsersHarness(origin: string): SubsonicUsersHarness {
     r2Deletes,
     failNextR2Delete: () => {
       failR2 = true;
+    },
+    afterNextR2Delete: (step) => {
+      afterR2 = step;
     },
     failNextUserDeleteBatch: () => {
       failBatch = true;

@@ -1,5 +1,6 @@
 import type { Database } from "../db";
 import type { Env } from "../env";
+import { deletePlaylistRowsByKeys } from "../playlists/repository";
 import { erasePlaylistFiles } from "../playlists/writes";
 import { checkUserDeletion, deleteUserRows, type UserRefusal, whyRefused } from "./repository";
 
@@ -34,16 +35,22 @@ import { checkUserDeletion, deleteUserRows, type UserRefusal, whyRefused } from 
  * What the order leaves to a race, and why each outcome is one the next
  * import gets right:
  *
- * - The batch fails (a 500), or finds the user became the last admin after
- *   the check (another admin demoted or deleted in between; a `409
- *   last_admin` then, or `404 not_found` if the user went too): the files
- *   are gone, the user and their playlist rows stay, and the next pass of
- *   the import sweeps those rows.
- * - The user creates a playlist through `/rest` between the check and the
- *   batch: the batch deletes its row (it deletes by owner, not by the keys
- *   read), its file stays, and the next import brings it back owned by the
- *   first admin, which is what Navidrome's cascade does to a playlist
- *   synced from a file.
+ * - The batch finds the user became the last admin after the check (two
+ *   console requests racing: both admins deleted at once, or one deleted
+ *   while the other is demoted; a `409 last_admin` then, or `404 not_found`
+ *   if the user went too): the files are gone and the user stays. The rows
+ *   of the erased files are deleted at once (`deletePlaylistRowsByKeys`),
+ *   so D1 matches the bucket without waiting for the import's sweep, and
+ *   the loss is logged, since that user's playlists are gone.
+ * - The batch fails (a 500): the files are gone, the user and their
+ *   playlist rows stay, and the next pass of the import sweeps those rows.
+ * - A client writes one of the user's playlists through `/rest` between the
+ *   R2 delete and the batch: `createPlaylist` puts a new file, and
+ *   `updatePlaylist`, or any other write of an existing playlist, puts its
+ *   file back under the same key. The batch deletes the row (it deletes by
+ *   owner, not by the keys read), the file stays, and the next import
+ *   brings the playlist back owned by the first admin, which is what
+ *   Navidrome's cascade does to a playlist synced from a file.
  * - An import already reading one of the files when it is deleted may write
  *   its row again after the batch, owned by the deleted user's id; the next
  *   pass sweeps it, the file being gone.
@@ -62,6 +69,14 @@ export async function deleteSubsonicUser(
 
   if (await deleteUserRows(db, id)) {
     return null;
+  }
+
+  // Refused after the files went: a race the check could not see (above).
+  if (check.playlistKeys.length > 0) {
+    console.warn(
+      `subsonic users: deleting ${id} was refused after ${check.playlistKeys.length} playlist files were erased; removing their rows`,
+    );
+    await deletePlaylistRowsByKeys(db, check.playlistKeys);
   }
 
   return whyRefused(db, id);
