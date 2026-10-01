@@ -5,6 +5,7 @@ import { permissionsOf } from "../console-auth/permissions";
 import { registerAccountRoutes } from "./account";
 import { registerOverviewRoutes } from "./overview";
 import { registerSetupRoutes } from "./setup";
+import { registerUsageRoutes } from "./usage";
 
 /**
  * The admin console's JSON API, mounted at `/api` (#87).
@@ -54,6 +55,7 @@ export function createApiApp(): ApiApp {
   registerSetupRoutes(api);
   registerAccountRoutes(api);
   registerOverviewRoutes(api);
+  registerUsageRoutes(api);
 
   // A sub-app's `notFound` is never called once it is mounted — Hono only
   // runs the top-level app's — so the unknown paths are caught by a route.

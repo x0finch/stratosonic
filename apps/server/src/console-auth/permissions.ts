@@ -37,6 +37,8 @@ export const PERMISSIONS = [
   "activity:read",
   // Start a library scan (Phase 1, #82).
   "library:scan",
+  // See the Cloudflare account's free-tier usage (`GET /api/usage`, #82).
+  "usage:read",
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];

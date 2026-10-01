@@ -70,6 +70,11 @@
   //     A lost owner password is recovered by deleting the owner in D1 and
   //     setting up again with a new value (README.md). Console users are the
   //     console's own accounts, separate from Subsonic users.
+  //   - optionally, `CF_ANALYTICS_TOKEN` (an API token with Account › Account
+  //     Analytics › Read, limited to this account) and `CF_ACCOUNT_ID` (the
+  //     account's id), for the console's free-tier usage panel. Without both
+  //     the panel is hidden. The account id is a secret too, so this file
+  //     stays account-agnostic.
   //
   // Deprecated: `INITIAL_USER` below and the `INITIAL_PASSWORD` secret create
   // the first Subsonic user, an admin, on first run. They still work in this

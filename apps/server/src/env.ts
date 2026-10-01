@@ -30,4 +30,16 @@ export interface Env extends Cloudflare.Env {
    * Subsonic logins fail and every `/api` route answers 503.
    */
   readonly PASSWORD_ENCRYPTION_KEY?: string;
+  /**
+   * A Cloudflare API token with Account › Account Analytics › Read, for the
+   * console's free-tier usage panel (usage/analytics.ts, #82). Optional:
+   * without it, or without `CF_ACCOUNT_ID`, the panel is not configured. It
+   * is only ever sent to Cloudflare's GraphQL API, never to a client or a log.
+   */
+  readonly CF_ANALYTICS_TOKEN?: string;
+  /**
+   * The account tag the usage panel reads, which no binding exposes. A secret
+   * rather than a var, so that wrangler.jsonc stays account-agnostic.
+   */
+  readonly CF_ACCOUNT_ID?: string;
 }
