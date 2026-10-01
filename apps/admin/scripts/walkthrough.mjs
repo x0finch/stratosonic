@@ -310,9 +310,12 @@ async function userAction(page, username, item) {
   await page.getByRole("menuitem", { name: item, exact: true }).click();
 }
 
-/** The open dialog (or alert dialog), and that it has closed. */
+/**
+ * The open dialog (or alert dialog), and that it has closed. By its slot: a
+ * toast is a dialog too, to assistive technology.
+ */
 function dialog(page) {
-  return page.locator('[role="dialog"], [role="alertdialog"]');
+  return page.locator('[data-slot="dialog-content"], [data-slot="alert-dialog-content"]');
 }
 
 async function dialogClosed(page) {
@@ -322,9 +325,10 @@ async function dialogClosed(page) {
 /**
  * Adds a Subsonic user through the create dialog. `admin` is whether the
  * **Subsonic admin** switch should end up on; `locked`, whether it must be
- * locked on (no Subsonic admin exists).
+ * locked on (no Subsonic admin exists); `screenshot`, a name for a screenshot
+ * of the filled dialog.
  */
-async function addSubsonicUser(page, { username, password }, { admin, locked }) {
+async function addSubsonicUser(page, { username, password }, { admin, locked, screenshot }) {
   await page.getByRole("button", { name: "Add user" }).click();
   const form = dialog(page);
   await form.getByLabel("Username", { exact: true }).fill(username);
@@ -335,6 +339,9 @@ async function addSubsonicUser(page, { username, password }, { admin, locked }) 
     await toggle.click();
   }
   check((await toggle.isChecked()) === admin, "the Subsonic admin switch did not change");
+  if (screenshot) {
+    await shot(page, screenshot);
+  }
   await markToasts(page);
   await form.getByRole("button", { name: "Add user" }).click();
   await expectToast(page, "Subsonic user created", `${username} can now sign in`);
@@ -601,7 +608,12 @@ async function main() {
       const notes = [];
       if (admins.length === 0) {
         // The first Subsonic user must be a Subsonic admin (admin_required).
-        await addSubsonicUser(page, subsonic.admin, { admin: true, locked: true });
+        await shot(page, "users-empty");
+        await addSubsonicUser(page, subsonic.admin, {
+          admin: true,
+          locked: true,
+          screenshot: "users-add-first-admin",
+        });
         await checkPing(subsonic.admin.username, subsonic.admin.password, "ok");
         lastAdmin = subsonic.admin.username;
         notes.push("no Subsonic admin: added one with the switch locked on");
@@ -675,9 +687,9 @@ async function main() {
         await markToasts(page);
         await form.getByRole("button", { name: "Save" }).click();
         await expectToast(page, "This is the last Subsonic admin", "Make another user");
-        await shot(page, "users-last-admin-demote");
-        await form.getByRole("button", { name: "Cancel" }).click();
+        // A refusal no field owns closes the dialog: its backdrop would blur the toast.
         await dialogClosed(page);
+        await shot(page, "users-last-admin-demote");
 
         await userAction(page, lastAdmin, "Delete");
         await markToasts(page);
