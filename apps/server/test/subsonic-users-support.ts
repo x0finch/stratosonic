@@ -35,6 +35,7 @@ export interface SubsonicUserView {
   createdAt: string;
   updatedAt: string;
   lastAccessAt: string | null;
+  playlistCount: number;
 }
 
 export interface SubsonicUsersHarness {

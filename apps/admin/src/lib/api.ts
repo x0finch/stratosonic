@@ -107,17 +107,24 @@ async function readBody(response: Response): Promise<unknown> {
   }
 }
 
-async function call<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+/**
+ * Every write carries a JSON body, `{}` when it has nothing to say (a
+ * `DELETE`, say): the API's same-origin check asks for a JSON `Content-Type`
+ * on every write (#82).
+ */
+type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+async function call<T>(method: Method, path: string, body?: unknown): Promise<T> {
+  const write = method !== "GET";
   let response: Response;
   try {
     response = await fetch(path, {
       method,
       credentials: "same-origin",
-      headers:
-        method === "POST"
-          ? { Accept: "application/json", "Content-Type": "application/json" }
-          : { Accept: "application/json" },
-      body: method === "POST" ? JSON.stringify(body ?? {}) : undefined,
+      headers: write
+        ? { Accept: "application/json", "Content-Type": "application/json" }
+        : { Accept: "application/json" },
+      body: write ? JSON.stringify(body ?? {}) : undefined,
     });
   } catch (error) {
     throw new ApiError(0, "network", error instanceof Error ? error.message : "");
@@ -194,6 +201,68 @@ export async function changePassword(request: {
 }): Promise<void> {
   await call("POST", "/api/account/password", request);
 }
+
+/**
+ * A Subsonic user as `GET /api/subsonic-users` lists it (#82): never a
+ * password, in plaintext or ciphertext. `isAdmin` is the **Subsonic admin**
+ * role, which has nothing to do with console roles.
+ */
+export interface SubsonicUser {
+  id: string;
+  username: string;
+  isAdmin: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastAccessAt: string | null;
+  /** How many playlists they own, which a delete would take with them. */
+  playlistCount: number;
+}
+
+export async function fetchSubsonicUsers(): Promise<SubsonicUser[]> {
+  const { users } = await call<{ users: SubsonicUser[] }>("GET", "/api/subsonic-users");
+  return users;
+}
+
+export async function createSubsonicUser(request: {
+  username: string;
+  password: string;
+  isAdmin: boolean;
+}): Promise<SubsonicUser> {
+  const { user } = await call<{ user: SubsonicUser }>("POST", "/api/subsonic-users", request);
+  return user;
+}
+
+/** Renames a Subsonic user, turns **Subsonic admin** on or off, or both. */
+export async function updateSubsonicUser(
+  id: string,
+  changes: { username?: string; isAdmin?: boolean },
+): Promise<SubsonicUser> {
+  const { user } = await call<{ user: SubsonicUser }>(
+    "PATCH",
+    `/api/subsonic-users/${encodeURIComponent(id)}`,
+    changes,
+  );
+  return user;
+}
+
+/** Sets a Subsonic user's password; no current password is needed (#82). */
+export async function setSubsonicPassword(id: string, password: string): Promise<void> {
+  await call("PUT", `/api/subsonic-users/${encodeURIComponent(id)}/password`, { password });
+}
+
+export async function deleteSubsonicUser(id: string): Promise<void> {
+  await call("DELETE", `/api/subsonic-users/${encodeURIComponent(id)}`);
+}
+
+/**
+ * The Subsonic users. Never polled: only the console changes them, and each
+ * of its writes invalidates this query (#82's polling table).
+ */
+export const subsonicUsersQuery = queryOptions({
+  queryKey: ["subsonic-users"],
+  queryFn: fetchSubsonicUsers,
+  staleTime: 30 * 1000,
+});
 
 /**
  * The signed-in console user. The server vouches for a session from its 5-minute

@@ -175,3 +175,36 @@ BASE_URL=http://localhost:8787 SETUP_TOKEN=… \
 ```
 
 The script's header lists the rest of its options.
+
+It also walks the Subsonic users page (below): it adds a Subsonic user
+named `walkthrough-user` (and a Subsonic admin, `walkthrough-admin`, first
+when there is none), sets its password, renames it, sees the last Subsonic
+admin's demotion and deletion refused, and deletes it, checking each change
+with a Subsonic `ping`. Run it on a database without those users.
+
+## Subsonic users
+
+The **Subsonic users** page (`/users`, `src/routes/_shell/users.tsx`, its
+dialogs in `src/components/subsonic-users/`) manages the accounts Subsonic
+clients sign in with (#82). They never sign in to the console, and console
+users never sign in to Subsonic. A role with `subsonic-users:read` sees the
+list and the sidebar's Users entry; one with `subsonic-users:write` adds a
+user, renames one or turns **Subsonic admin** on or off, sets a password
+(no current password is asked for) and deletes one. The rules that need no
+screen are in `src/lib/subsonic-users.ts`.
+
+- The server keeps one Subsonic admin at all times: it refuses to demote or
+  delete the last one (`last_admin`), and while there is none, the first
+  user must be one (`admin_required`), so the add dialog locks the switch on.
+  Both refusals are toasts.
+- A name or password the server refuses (`invalid_username`,
+  `username_taken`, `invalid_password`) stays beside its field.
+- A delete also deletes the user's stars, ratings, play counts, bookmarks
+  and play queue, and their playlists with the `.m3u` files in the bucket;
+  the confirmation says so, with how many playlists the users API counts
+  for them. A playlist the scan imported from the bucket belongs to whoever
+  was the first Subsonic admin when it was imported, so the confirmation
+  also says that these are included: "That count includes any playlists the
+  scan imported from the bucket while they were the first Subsonic admin."
+- The list is read on page load and again after every write, and is never
+  polled: only the console changes it.

@@ -66,6 +66,8 @@ export interface SubsonicUserView {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly lastAccessAt: string | null;
+  /** How many playlists they own, which a delete would take with them. */
+  readonly playlistCount: number;
 }
 
 export function registerSubsonicUserRoutes(api: ApiApp): void {
@@ -211,6 +213,7 @@ function viewOf(row: UserViewRow): SubsonicUserView {
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     lastAccessAt: row.lastAccessAt?.toISOString() ?? null,
+    playlistCount: row.playlistCount,
   };
 }
 

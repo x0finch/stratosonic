@@ -23,19 +23,25 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import type { Me } from "@/lib/api";
+import { can } from "@/lib/roles";
 
-// Only the overview has a page so far; the other entries hold the places of
-// the pages the coming admin phases add (#80).
+// The entries without a page hold the places of the pages the coming admin
+// phases add (#80).
 const data: { navMain: NavItem[]; navSecondary: NavItem[] } = {
   navMain: [
     { title: "Overview", to: "/", icon: <LayoutDashboardIcon /> },
     { title: "Library", icon: <LibraryIcon /> },
     { title: "Scans", icon: <ScanSearchIcon /> },
-    { title: "Users", icon: <UsersIcon /> },
+    { title: "Users", to: "/users", icon: <UsersIcon />, permission: "subsonic-users:read" },
     { title: "Files", icon: <FolderIcon /> },
   ],
   navSecondary: [{ title: "Settings", icon: <Settings2Icon /> }],
 };
+
+/** Whether the signed-in console user's role grants what an entry's page needs. */
+function allowed(user: Me, item: NavItem): boolean {
+  return item.permission === undefined || can(user, item.permission);
+}
 
 /**
  * The sidebar-08 block's inset sidebar: the console's name in the header,
@@ -61,7 +67,7 @@ export function AppSidebar({ user, ...props }: ComponentProps<typeof Sidebar> & 
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
-        <NavMain items={data.navMain} />
+        <NavMain items={data.navMain.filter((item) => allowed(user, item))} />
         <NavSecondary items={data.navSecondary} className="mt-auto" />
       </SidebarContent>
       <SidebarFooter>

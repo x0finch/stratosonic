@@ -46,6 +46,17 @@
  * Field-level validation stays beside its field, so it checks no toast
  * repeats it.
  *
+ * The Subsonic users page (`/users`, #82, #118) is walked after the password
+ * change: it adds a Subsonic user and pings with it (adding a Subsonic admin
+ * first when there is none, with the switch locked on), refuses a taken name
+ * beside its field, sets the user's password (the old one then answers error
+ * 40 and the new one ok), renames it (likewise for the old and new names),
+ * tries to demote and to delete the last Subsonic admin and sees the refusal
+ * toasts, and deletes the user, once it owns a playlist made with
+ * `createPlaylist` that the confirmation counts, whose ping then answers
+ * error 40. Its users are named `walkthrough-…`, so the database must not
+ * have those yet.
+ *
  * Any console error or uncaught exception on a page fails the walkthrough,
  * except the browser's own "Failed to load resource" line for a response the
  * console expects to be refused (a 401 from `/api/me` while signed out, the
@@ -78,7 +89,15 @@ const EXPECTED_REFUSALS = {
   "/api/auth/sign-in/username": [401, 429],
   "/api/setup": [403],
   "/api/account/password": [400, 401],
+  // A taken name, and the last Subsonic admin's demotion and deletion.
+  "/api/subsonic-users": [409],
+  "/api/subsonic-users/:id": [409],
 };
+
+/** A path as `EXPECTED_REFUSALS` names it: one Subsonic user's as `:id`. */
+function refusalPath(path) {
+  return path.replace(/^\/api\/subsonic-users\/[^/]+$/, "/api/subsonic-users/:id");
+}
 
 const results = [];
 const consoleErrors = [];
@@ -150,6 +169,22 @@ async function ping(username, password) {
   return answers[0];
 }
 
+/** Creates an empty playlist as a Subsonic user, through `/rest/createPlaylist`. */
+async function createPlaylist(username, password, name) {
+  const query = new URLSearchParams({
+    u: username,
+    p: password,
+    v: "1.16.1",
+    c: "walkthrough",
+    f: "json",
+    name,
+  });
+  const body = (await (await fetch(`${BASE_URL}/rest/createPlaylist?${query}`)).json())[
+    "subsonic-response"
+  ];
+  check(body.status === "ok", `createPlaylist as ${username} answered ${JSON.stringify(body)}`);
+}
+
 /** That Subsonic refuses the owner's console credentials, as a wrong password. */
 async function checkOwnerCannotPing(password) {
   const answer = await ping(USERNAME, password);
@@ -178,7 +213,7 @@ function watch(page, label) {
       text,
     )?.[1];
     const path = new URL(message.location().url || BASE_URL).pathname;
-    if (status && EXPECTED_REFUSALS[path]?.includes(Number(status))) {
+    if (status && EXPECTED_REFUSALS[refusalPath(path)]?.includes(Number(status))) {
       return;
     }
     consoleErrors.push(`${label}: ${text} (${path})`);
@@ -276,6 +311,73 @@ async function clickSignOut(page) {
   await page.waitForURL((url) => url.pathname === "/login");
   const { search } = new URL(page.url());
   check(search === "", `signing out landed on /login${search}`);
+}
+
+/** The Subsonic users the walkthrough adds, and the passwords it gives them. */
+const subsonic = {
+  admin: { username: "walkthrough-admin", password: "walkthrough admin password" },
+  user: { username: "walkthrough-user", password: "walkthrough first password" },
+  changedPassword: "walkthrough second password",
+  renamed: "walkthrough-renamed",
+};
+
+/** The Subsonic users as the console's own API lists them, with the page's session. */
+async function listSubsonicUsers(page) {
+  return page.evaluate(async () => {
+    const response = await fetch("/api/subsonic-users");
+    return (await response.json()).users;
+  });
+}
+
+/** That a Subsonic `ping` with these credentials answers `expected`. */
+async function checkPing(username, password, expected) {
+  const answer = await ping(username, password);
+  check(answer === expected, `Subsonic ping as ${username} answered ${answer}, not ${expected}`);
+}
+
+/** Opens a row's menu on the Subsonic users page and picks one of its items. */
+async function userAction(page, username, item) {
+  await page.getByRole("button", { name: `Actions for ${username}`, exact: true }).click();
+  await page.getByRole("menuitem", { name: item, exact: true }).click();
+}
+
+/**
+ * The open dialog (or alert dialog), and that it has closed. By its slot: a
+ * toast is a dialog too, to assistive technology.
+ */
+function dialog(page) {
+  return page.locator('[data-slot="dialog-content"], [data-slot="alert-dialog-content"]');
+}
+
+async function dialogClosed(page) {
+  await dialog(page).waitFor({ state: "detached" });
+}
+
+/**
+ * Adds a Subsonic user through the create dialog. `admin` is whether the
+ * **Subsonic admin** switch should end up on; `locked`, whether it must be
+ * locked on (no Subsonic admin exists); `screenshot`, a name for a screenshot
+ * of the filled dialog.
+ */
+async function addSubsonicUser(page, { username, password }, { admin, locked, screenshot }) {
+  await page.getByRole("button", { name: "Add user" }).click();
+  const form = dialog(page);
+  await form.getByLabel("Username", { exact: true }).fill(username);
+  await form.getByLabel("Password", { exact: true }).fill(password);
+  const toggle = form.getByRole("switch", { name: "Subsonic admin" });
+  check((await toggle.isDisabled()) === locked, `the Subsonic admin switch is locked: ${!locked}`);
+  if ((await toggle.isChecked()) !== admin) {
+    await toggle.click();
+  }
+  check((await toggle.isChecked()) === admin, "the Subsonic admin switch did not change");
+  if (screenshot) {
+    await shot(page, screenshot);
+  }
+  await markToasts(page);
+  await form.getByRole("button", { name: "Add user" }).click();
+  await expectToast(page, "Subsonic user created", `${username} can now sign in`);
+  await dialogClosed(page);
+  await page.getByRole("cell", { name: username, exact: true }).waitFor();
 }
 
 async function main() {
@@ -518,6 +620,144 @@ async function main() {
       await signOut(page);
       await signIn(page, password, { expectAt: "/" });
       await page.getByRole("button", { name: new RegExp(USERNAME) }).waitFor();
+    });
+
+    // The Subsonic users page (#82 "Testing Decisions", console steps 2–6).
+    /** The one Subsonic admin, whose demotion and deletion are refused. */
+    let lastAdmin;
+
+    await step("Subsonic users: add a user, and ping with it", async () => {
+      await page.getByRole("link", { name: "Users" }).click();
+      await page.waitForURL((url) => url.pathname === "/users");
+      await page.getByRole("heading", { name: "Subsonic users" }).waitFor();
+      const before = await listSubsonicUsers(page);
+      check(
+        !before.some((user) => user.username.startsWith("walkthrough-")),
+        "the database has walkthrough users already",
+      );
+      const admins = before.filter((user) => user.isAdmin);
+      const notes = [];
+      if (admins.length === 0) {
+        // The first Subsonic user must be a Subsonic admin (admin_required).
+        await shot(page, "users-empty");
+        await addSubsonicUser(page, subsonic.admin, {
+          admin: true,
+          locked: true,
+          screenshot: "users-add-first-admin",
+        });
+        await checkPing(subsonic.admin.username, subsonic.admin.password, "ok");
+        lastAdmin = subsonic.admin.username;
+        notes.push("no Subsonic admin: added one with the switch locked on");
+      } else if (admins.length === 1) {
+        lastAdmin = admins[0].username;
+      } else {
+        notes.push(`${admins.length} Subsonic admins: the last-admin step is skipped`);
+      }
+      await shot(page, "users");
+      await addSubsonicUser(page, subsonic.user, { admin: false, locked: false });
+      await shot(page, "users-added");
+      await checkPing(subsonic.user.username, subsonic.user.password, "ok");
+      await checkSubsonicUserPings();
+
+      // A taken name, in another case, stays beside its field.
+      await page.getByRole("button", { name: "Add user" }).click();
+      const form = dialog(page);
+      await form.getByLabel("Username", { exact: true }).fill(subsonic.user.username.toUpperCase());
+      await form.getByLabel("Password", { exact: true }).fill("any");
+      await form.getByRole("button", { name: "Add user" }).click();
+      await form.getByText("The username is taken.").waitFor();
+      await checkNoToast(page, "The username is taken");
+      await form.getByRole("button", { name: "Show password" }).click();
+      check(
+        (await form.getByLabel("Password", { exact: true }).getAttribute("type")) === "text",
+        "Show password does not show it",
+      );
+      await shot(page, "users-name-taken");
+      await form.getByRole("button", { name: "Cancel" }).click();
+      await dialogClosed(page);
+      return notes.join("; ") || undefined;
+    });
+
+    await step("Subsonic users: set a password; the old one fails, the new one works", async () => {
+      await userAction(page, subsonic.user.username, "Set password");
+      const form = dialog(page);
+      await form.getByLabel("New password", { exact: true }).fill(subsonic.changedPassword);
+      await shot(page, "users-set-password");
+      await markToasts(page);
+      await form.getByRole("button", { name: "Set password" }).click();
+      await expectToast(page, "Password set");
+      await dialogClosed(page);
+      await checkPing(subsonic.user.username, subsonic.user.password, 40);
+      await checkPing(subsonic.user.username, subsonic.changedPassword, "ok");
+    });
+
+    await step("Subsonic users: rename; the old name fails, the new one works", async () => {
+      await userAction(page, subsonic.user.username, "Edit");
+      const form = dialog(page);
+      await form.getByLabel("Username", { exact: true }).fill(subsonic.renamed);
+      await form.getByText("signs walkthrough-user out of every Subsonic client").waitFor();
+      await shot(page, "users-rename");
+      await markToasts(page);
+      await form.getByRole("button", { name: "Save" }).click();
+      await expectToast(page, "Subsonic user saved", `is now ${subsonic.renamed}`);
+      await dialogClosed(page);
+      await page.getByRole("cell", { name: subsonic.renamed, exact: true }).waitFor();
+      await checkPing(subsonic.user.username, subsonic.changedPassword, 40);
+      await checkPing(subsonic.renamed, subsonic.changedPassword, "ok");
+    });
+
+    await step(
+      "Subsonic users: the last Subsonic admin is neither demoted nor deleted",
+      async () => {
+        if (!lastAdmin) {
+          return "skipped";
+        }
+        await userAction(page, lastAdmin, "Edit");
+        const form = dialog(page);
+        await form.getByRole("switch", { name: "Subsonic admin" }).click();
+        await markToasts(page);
+        await form.getByRole("button", { name: "Save" }).click();
+        await expectToast(page, "This is the last Subsonic admin", "Make another user");
+        // A refusal no field owns closes the dialog: its backdrop would blur the toast.
+        await dialogClosed(page);
+        await shot(page, "users-last-admin-demote");
+
+        await userAction(page, lastAdmin, "Delete");
+        await markToasts(page);
+        await dialog(page).getByRole("button", { name: "Delete user" }).click();
+        await expectToast(page, "This is the last Subsonic admin");
+        await dialogClosed(page);
+        await shot(page, "users-last-admin-delete");
+        const admin = (await listSubsonicUsers(page)).find((user) => user.username === lastAdmin);
+        check(admin?.isAdmin === true, `${lastAdmin} is no longer a Subsonic admin`);
+        await checkSubsonicUserPings();
+      },
+    );
+
+    await step("Subsonic users: delete the user; its ping fails", async () => {
+      // A playlist of theirs, which the dialog counts and the delete takes too.
+      await createPlaylist(subsonic.renamed, subsonic.changedPassword, "Walkthrough mix");
+      await page.reload();
+      await page.getByRole("cell", { name: subsonic.renamed, exact: true }).waitFor();
+      await userAction(page, subsonic.renamed, "Delete");
+      const confirm = dialog(page);
+      await confirm.getByText(`Delete ${subsonic.renamed}?`).waitFor();
+      await confirm
+        .getByText("Their stars, ratings, play counts, bookmarks and play queue are deleted")
+        .waitFor();
+      await confirm
+        .getByText("their 1 playlist is deleted too, including its playlist file in the bucket")
+        .waitFor();
+      await shot(page, "users-delete");
+      await markToasts(page);
+      await confirm.getByRole("button", { name: "Delete user" }).click();
+      await expectToast(page, "Subsonic user deleted");
+      await dialogClosed(page);
+      await page.getByRole("cell", { name: subsonic.renamed, exact: true }).waitFor({
+        state: "detached",
+      });
+      await checkPing(subsonic.renamed, subsonic.changedPassword, 40);
+      await checkSubsonicUserPings();
     });
 
     await step("a session that ends while on a page returns there after sign-in", async () => {
