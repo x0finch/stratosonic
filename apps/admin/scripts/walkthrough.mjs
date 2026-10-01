@@ -313,7 +313,12 @@ async function main() {
       await checkNoToast(page, "The passwords do not match");
 
       await fill(`${SETUP_TOKEN}-wrong`, password);
-      await expectToast(page, "The setup token is not valid", "each token works once");
+      // A mistype and a spent token are one answer: check it first, then renew.
+      await expectToast(
+        page,
+        "The setup token is not valid",
+        "Check the token and paste it again. Each token works once: if this one has been used already, set a new one",
+      );
       await shot(page, "setup-invalid-token");
 
       // The toast is raised before the navigation, and outlives it.
