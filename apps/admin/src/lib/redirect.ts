@@ -43,3 +43,12 @@ export function safeRedirect(target: unknown, origin: string = window.location.o
 
   return `${path}${url.search}${url.hash}`;
 }
+
+/**
+ * The `/login` search that returns a signed-out visit to `href` once signed
+ * in. The overview is where sign-in lands anyway, so a visit to `/` goes to
+ * plain `/login`; a deep link keeps its `?redirect`.
+ */
+export function loginSearch(href: string): { redirect?: string } {
+  return href === "/" ? {} : { redirect: href };
+}

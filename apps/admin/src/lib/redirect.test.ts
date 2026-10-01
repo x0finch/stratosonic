@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { safeRedirect } from "@/lib/redirect";
+import { loginSearch, safeRedirect } from "@/lib/redirect";
 
 const ORIGIN = "https://music.example";
 
@@ -50,5 +50,17 @@ describe("safeRedirect", () => {
   it("does not mistake a page that merely starts with a Worker path", () => {
     expect(safeRedirect("/apis", ORIGIN)).toBe("/apis");
     expect(safeRedirect("/restore", ORIGIN)).toBe("/restore");
+  });
+});
+
+describe("loginSearch", () => {
+  it("omits the redirect for the overview, where sign-in lands anyway", () => {
+    expect(loginSearch("/")).toEqual({});
+  });
+
+  it("keeps a deep link, with its search and hash", () => {
+    expect(loginSearch("/account")).toEqual({ redirect: "/account" });
+    expect(loginSearch("/users?page=2#top")).toEqual({ redirect: "/users?page=2#top" });
+    expect(loginSearch("/?tab=recent")).toEqual({ redirect: "/?tab=recent" });
   });
 });
