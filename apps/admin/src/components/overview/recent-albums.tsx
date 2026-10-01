@@ -39,15 +39,15 @@ export function RecentAlbums({ albums, now }: { albums: RecentAlbum[] | undefine
             <TableHeader>
               <TableRow>
                 <TableHead>Album</TableHead>
-                <TableHead className="hidden sm:table-cell">Year</TableHead>
-                <TableHead className="text-right">Tracks</TableHead>
+                <TableHead className="hidden md:table-cell">Year</TableHead>
+                <TableHead className="hidden text-right sm:table-cell">Tracks</TableHead>
                 <TableHead className="text-right">Added</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {albums.map((album) => (
                 <TableRow key={album.id}>
-                  <TableCell className="max-w-48 whitespace-normal sm:max-w-64">
+                  <TableCell className="max-w-44 whitespace-normal sm:max-w-64">
                     <div className="truncate font-medium" title={album.name}>
                       {album.name}
                     </div>
@@ -55,10 +55,10 @@ export function RecentAlbums({ albums, now }: { albums: RecentAlbum[] | undefine
                       {album.artist}
                     </div>
                   </TableCell>
-                  <TableCell className="hidden tabular-nums sm:table-cell">
+                  <TableCell className="hidden tabular-nums md:table-cell">
                     {album.year ?? "–"}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">
+                  <TableCell className="hidden text-right tabular-nums sm:table-cell">
                     {formatCount(album.songCount)}
                   </TableCell>
                   <TableCell

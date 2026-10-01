@@ -23,7 +23,7 @@ export function LibraryCards({ counts }: { counts: LibraryCounts | undefined }) 
       className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6"
     >
       {CARDS.map(({ label, value }) => (
-        <Card key={label} size="sm">
+        <Card key={label}>
           <CardHeader>
             <CardDescription>{label}</CardDescription>
             {counts ? (
