@@ -29,6 +29,7 @@ describe("the permissions", () => {
         "subsonic-users:read",
         "subsonic-users:write",
         "library:scan",
+        "usage:read",
       ]),
     );
   });
