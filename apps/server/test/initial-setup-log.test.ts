@@ -24,7 +24,7 @@ const NO_OWNER =
   "no owner exists: set SETUP_TOKEN (wrangler secret put SETUP_TOKEN) to create one in the console";
 
 const NO_SUBSONIC_USER =
-  "no Subsonic user exists: set INITIAL_USER and INITIAL_PASSWORD to create one (the console will manage Subsonic users in a later release)";
+  "no Subsonic user exists: create one in the console (Subsonic users), or set INITIAL_USER and INITIAL_PASSWORD (deprecated)";
 
 /**
  * The recommended configuration: `INITIAL_USER` is still there, as the plain

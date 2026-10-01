@@ -37,9 +37,13 @@ because Subsonic's token auth needs them back (ADR-0003, ADR-0007).
 
 The console's users live in Better Auth's standard tables (`user`,
 `session`, `account`, `verification`); the Subsonic users, in Navidrome's
-shape, live in `subsonic_user`. Subsonic users come from `INITIAL_USER` /
-`INITIAL_PASSWORD` (deprecated, below) for now, and from the console once it
-manages them (#82).
+shape, live in `subsonic_user`. Subsonic users are managed in the console's
+**Subsonic users** page (`/api/subsonic-users`, #82), and the first one can
+also come from `INITIAL_USER` / `INITIAL_PASSWORD` (deprecated, below). The
+first Subsonic user must be a Subsonic admin, and the last Subsonic admin can
+be neither demoted nor deleted. Deleting a Subsonic user deletes their
+stars, ratings, play counts, bookmarks, play queue and playlists, including
+the playlists' `.m3u` files in the bucket.
 
 ## First run
 
@@ -151,15 +155,15 @@ account the Worker runs in.
 The first Subsonic user, a Subsonic admin, comes from the `INITIAL_USER` var in
 `wrangler.jsonc` and an `INITIAL_PASSWORD` secret, created on the first request
 while the Subsonic user table is empty. It is a Subsonic user only: it cannot
-sign in to the console. They keep working in this release, and are how a
-Subsonic user is created until the console manages them (#82), but they keep a
-password in the Worker's secrets: delete `INITIAL_PASSWORD` once the user
-exists (`wrangler secret delete INITIAL_PASSWORD`). With `INITIAL_PASSWORD` set
+sign in to the console. They keep working in this release, beside the
+console, which creates Subsonic users too (#82), but they keep a password in
+the Worker's secrets: delete `INITIAL_PASSWORD` once the user exists
+(`wrangler secret delete INITIAL_PASSWORD`). With `INITIAL_PASSWORD` set
 but `INITIAL_USER` or `PASSWORD_ENCRYPTION_KEY` missing, the Worker warns that
 no initial Subsonic user was created; with no Subsonic user and
-`INITIAL_PASSWORD` unset, it logs `no Subsonic user exists: set INITIAL_USER
-and INITIAL_PASSWORD to create one (the console will manage Subsonic users in
-a later release)` once per isolate.
+`INITIAL_PASSWORD` unset, it logs `no Subsonic user exists: create one in the
+console (Subsonic users), or set INITIAL_USER and INITIAL_PASSWORD
+(deprecated)` once per isolate.
 
 ## Scripts
 
