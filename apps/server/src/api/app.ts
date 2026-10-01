@@ -5,6 +5,7 @@ import { permissionsOf } from "../console-auth/permissions";
 import { registerAccountRoutes } from "./account";
 import { registerOverviewRoutes } from "./overview";
 import { registerSetupRoutes } from "./setup";
+import { registerSubsonicUserRoutes } from "./subsonic-users";
 import { registerUsageRoutes } from "./usage";
 
 /**
@@ -54,6 +55,7 @@ export function createApiApp(): ApiApp {
   // routes above.
   registerSetupRoutes(api);
   registerAccountRoutes(api);
+  registerSubsonicUserRoutes(api);
   registerOverviewRoutes(api);
   registerUsageRoutes(api);
 

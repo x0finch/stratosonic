@@ -78,9 +78,8 @@
   //
   // Deprecated: `INITIAL_USER` below and the `INITIAL_PASSWORD` secret create
   // the first Subsonic user, an admin, on first run. They still work in this
-  // release, and are how a Subsonic user is created until the console manages
-  // them, but they keep a password in the secrets and never make a console
-  // user.
+  // release, beside the console, which creates Subsonic users too, but they
+  // keep a password in the secrets and never make a console user.
   "vars": {
     "INITIAL_USER": "admin"
   },

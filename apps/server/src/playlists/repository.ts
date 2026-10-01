@@ -264,6 +264,21 @@ export async function deletePlaylistRow(db: Database, id: string): Promise<void>
   await db.delete(playlist).where(eq(playlist.id, id));
 }
 
+/**
+ * Deletes the rows of the playlists whose `.m3u` these keys were, with their
+ * entries by cascade, in one batch of statements bound below D1's parameter
+ * limit: what the sweep would remove on its next pass, removed now.
+ */
+export async function deletePlaylistRowsByKeys(
+  db: Database,
+  r2Keys: readonly string[],
+): Promise<void> {
+  await runBatch(
+    db,
+    chunked(r2Keys).map((chunk) => db.delete(playlist).where(inArray(playlist.r2Key, chunk))),
+  );
+}
+
 /** A playlist as one import writes it. */
 export interface ImportedPlaylist {
   readonly id: string;

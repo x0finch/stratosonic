@@ -1,12 +1,9 @@
-import {
-  isAcceptablePassword,
-  setConsolePassword,
-  storedPasswordQuery,
-} from "../console-auth/credentials";
+import { setConsolePassword, storedPasswordQuery } from "../console-auth/credentials";
 import { requireFreshSession, requirePermission } from "../console-auth/middleware";
 import { countPasswordAttempt } from "../console-auth/password-attempts";
 import { verifyConsolePassword } from "../console-auth/password-hash";
 import { database } from "../db";
+import { isAcceptablePassword } from "../users/validation";
 import type { ApiApp } from "./app";
 import { invalidRequest, limitJsonBody, readJsonObject } from "./json-body";
 import { requireSameOrigin } from "./same-origin";

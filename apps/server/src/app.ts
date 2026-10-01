@@ -47,9 +47,9 @@ import {
 } from "./subsonic/router";
 
 /**
- * The account-management endpoints, which Stratosonic does not implement: the
- * one admin user comes from the environment (ADR-0004), and Navidrome answers
- * these with 501 as well.
+ * The account-management endpoints, which Stratosonic does not implement:
+ * Subsonic users are managed from the console (api/subsonic-users.ts, #82),
+ * and Navidrome answers these with 501 as well.
  */
 const USER_WRITE_ENDPOINTS = ["createUser", "updateUser", "deleteUser", "changePassword"];
 

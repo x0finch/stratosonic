@@ -35,7 +35,6 @@ SETUP_TOKEN = "change-me"
 
 # Deprecated: password of the Subsonic admin user created on first run,
 # alongside the INITIAL_USER var in wrangler.jsonc. It is only read while the
-# Subsonic user table is empty. It still works in this release, and is how a
-# Subsonic user is created until the console manages them; it never makes a
-# console user.
+# Subsonic user table is empty. It still works in this release, beside the
+# console, which creates Subsonic users too; it never makes a console user.
 # INITIAL_PASSWORD = "change-me"

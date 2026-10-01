@@ -9,7 +9,7 @@ import { eq } from "drizzle-orm";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAX_JSON_BODY_BYTES } from "../src/api/json-body";
 import { createApp } from "../src/app";
-import { MAX_PASSWORD_LENGTH, setConsolePassword } from "../src/console-auth/credentials";
+import { setConsolePassword } from "../src/console-auth/credentials";
 import {
   MAX_PASSWORD_ATTEMPTS,
   PASSWORD_ATTEMPT_KEY_PREFIX,
@@ -22,6 +22,7 @@ import {
 } from "../src/console-auth/prune";
 import { database } from "../src/db";
 import type { Env } from "../src/env";
+import { MAX_PASSWORD_LENGTH } from "../src/users/validation";
 import {
   type CookieJar,
   consoleRequest,

@@ -18,8 +18,8 @@ import { configuredSetupToken } from "./setup-token";
  * overwritten.
  *
  * Deprecated: `INITIAL_USER` and `INITIAL_PASSWORD` keep a password in the
- * Worker's secrets. They keep working for this release, and are how a
- * Subsonic user is created until the console creates them (#82).
+ * Worker's secrets. They keep working for this release, beside the console's
+ * Subsonic users page, which creates Subsonic users too (#82).
  *
  * The same first run also says, in the log, how to create the console's owner
  * when there is none and nothing can create one (#97, #99). Console users are
@@ -161,14 +161,14 @@ async function createInitialAdmin(env: Env, db: Database): Promise<boolean> {
 
   // Without the password the deprecated bootstrap is not in use:
   // `INITIAL_USER` is a plain var in wrangler.jsonc, so it being set says
-  // nothing. It is still the only way to a Subsonic user until the console
-  // manages them (#82), and this is only reached while there is none, so
-  // that is worth a line, once per isolate.
+  // nothing. This is only reached while there is no Subsonic user, so how
+  // to create one, in the console or with the deprecated pair, is worth a
+  // line, once per isolate.
   if (!password) {
     if (!reportedNoSubsonicUser) {
       reportedNoSubsonicUser = true;
       console.log(
-        "no Subsonic user exists: set INITIAL_USER and INITIAL_PASSWORD to create one (the console will manage Subsonic users in a later release)",
+        "no Subsonic user exists: create one in the console (Subsonic users), or set INITIAL_USER and INITIAL_PASSWORD (deprecated)",
       );
     }
     return false;
