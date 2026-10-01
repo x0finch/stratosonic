@@ -105,7 +105,14 @@ console has no password reset: if the owner's password is lost, the owner is
 deleted and the server set up again. This needs Cloudflare access to the
 account the Worker runs in.
 
-1. Delete the owner's row. The owner's sessions and credential account are
+1. Count what the delete touches, and note the `subsonic_users` number:
+
+   ```sh
+   wrangler d1 execute stratosonic_db --remote \
+     --command "SELECT (SELECT count(*) FROM user) AS console_users, (SELECT count(*) FROM session) AS sessions, (SELECT count(*) FROM account) AS accounts, (SELECT count(*) FROM subsonic_user) AS subsonic_users"
+   ```
+
+2. Delete the owner's row. The owner's sessions and credential account are
    deleted with it (their foreign keys cascade):
 
    ```sh
@@ -117,11 +124,18 @@ account the Worker runs in.
    is the only console user, so this one row is enough; once there are
    others, they have to be deleted too (`DELETE FROM user`).
 
+3. Wrangler only reports that the delete ran, so run the same `SELECT` as in
+   step 1 again and compare. `console_users`, `sessions` and `accounts` must
+   all be `0` now: no console user is left for setup to wait on, and the
+   cascade took the owner's sessions and credential account with it.
+   `subsonic_users` must be the number noted in step 1: the delete leaves
+   Subsonic users alone.
+
    A browser still signed in as the deleted owner may go on reading
    `/api/me` for up to the 5-minute session cookie cache; every write is
    refused at once.
 
-2. Set a **new** `SETUP_TOKEN` (the value used before is spent and stays
+4. Set a **new** `SETUP_TOKEN` (the value used before is spent and stays
    refused) and set the server up again at `/setup`, as on first run:
 
    ```sh
@@ -129,7 +143,7 @@ account the Worker runs in.
    wrangler secret put SETUP_TOKEN
    ```
 
-3. Subsonic users, the library and playlists are unaffected: `user` holds
+5. Subsonic users, the library and playlists are unaffected: `user` holds
    console users only, and Subsonic users live in `subsonic_user`.
 
 ## Deprecated: `INITIAL_USER` / `INITIAL_PASSWORD`

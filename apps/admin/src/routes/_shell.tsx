@@ -7,18 +7,20 @@ import { NotFound } from "@/components/not-found";
 import { SiteHeader } from "@/components/site-header";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { meQuery } from "@/lib/api";
+import { loginSearch } from "@/lib/redirect";
 
 /**
  * The signed-in console: every page under the sidebar shell. A visit without
  * a session (it ran out, or a deep link opened while signed out) goes to
- * `/login`, which returns here once signed in. Signing out on purpose does
+ * `/login`, which returns here once signed in (plain `/login` for the
+ * overview, where sign-in lands anyway). Signing out on purpose does
  * not come through here: it goes to plain `/login` (lib/sign-out.ts).
  */
 export const Route = createFileRoute("/_shell")({
   beforeLoad: async ({ context, location }) => {
     const me = await context.queryClient.ensureQueryData(meQuery);
     if (!me) {
-      throw redirect({ to: "/login", search: { redirect: location.href }, replace: true });
+      throw redirect({ to: "/login", search: loginSearch(location.href), replace: true });
     }
   },
   component: Shell,

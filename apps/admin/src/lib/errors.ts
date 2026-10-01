@@ -15,10 +15,13 @@ const MESSAGES: Record<string, ErrorMessage> = {
     title: "Wrong username or password",
     description: "Check them and try again. Use your console account, not a Subsonic login.",
   },
+  // The server answers `invalid_token` for a mistyped token and for a spent
+  // one alike, and must not say which, so one message covers both: the
+  // likelier mistype first, then the spent token.
   invalid_token: {
     title: "The setup token is not valid",
     description:
-      "It is wrong, or it has been used already: each token works once. Set a new one with wrangler secret put SETUP_TOKEN and try again.",
+      "Check the token and paste it again. Each token works once: if this one has been used already, set a new one with wrangler secret put SETUP_TOKEN.",
   },
   wrong_password: {
     title: "The current password is wrong",

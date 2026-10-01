@@ -19,8 +19,10 @@
  * that the Subsonic user cannot sign in to the console, and that its `ping`
  * stays ok through every change of the owner's password.
  *
- * It walks, in order: the router guard; first-run setup, with a wrong token
- * and a mismatched confirmation on the way, then the first sign-in;
+ * It walks, in order: the router guard, which sends a deep link to
+ * `/login?redirect=…` and the overview to plain `/login`; first-run setup,
+ * with a wrong token and a mismatched confirmation on the way, then the first
+ * sign-in;
  * sign-out and sign-in; a wrong password, and a Subsonic user's; a set-up
  * server, whose screens offer neither setup nor a password reset (the setup
  * token only sets the server up, #105); a deep link opened while signed out,
@@ -290,6 +292,15 @@ async function main() {
       await shot(page, "login");
     });
 
+    await step("a signed-out visit to the overview goes to plain /login", async () => {
+      await page.goto(`${BASE_URL}/`);
+      await page.waitForURL((url) => url.pathname === "/login");
+      const { search } = new URL(page.url());
+      check(search === "", `the overview went to /login${search}`);
+      await page.getByRole("button", { name: "Sign in" }).waitFor();
+      await shot(page, "login-from-overview");
+    });
+
     await step("first-run setup", async () => {
       if (initialState !== "needs-setup") {
         return "skipped";
@@ -313,7 +324,12 @@ async function main() {
       await checkNoToast(page, "The passwords do not match");
 
       await fill(`${SETUP_TOKEN}-wrong`, password);
-      await expectToast(page, "The setup token is not valid", "each token works once");
+      // A mistype and a spent token are one answer: check it first, then renew.
+      await expectToast(
+        page,
+        "The setup token is not valid",
+        "Check the token and paste it again. Each token works once: if this one has been used already, set a new one",
+      );
       await shot(page, "setup-invalid-token");
 
       // The toast is raised before the navigation, and outlives it.
