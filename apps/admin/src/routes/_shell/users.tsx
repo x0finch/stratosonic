@@ -68,9 +68,11 @@ function SubsonicUsers() {
   }
 
   const list = users.data ?? [];
-  const close = (open: boolean) => {
+  // Each dialog closes only itself: a late answer to a write from one dialog
+  // (a delete, say) must not close another the owner has opened since.
+  const closeOf = (which: NonNullable<DialogState["open"]>) => (open: boolean) => {
     if (!open) {
-      setDialog((state) => ({ ...state, open: null }));
+      setDialog((state) => (state.open === which ? { ...state, open: null } : state));
     }
   };
   const openFor = (action: DialogState["open"], user: SubsonicUser | null) =>
@@ -127,19 +129,23 @@ function SubsonicUsers() {
         <>
           <CreateUserDialog
             open={dialog.open === "create"}
-            onOpenChange={close}
+            onOpenChange={closeOf("create")}
             adminRequired={adminRequired(list)}
           />
-          <EditUserDialog user={dialog.user} open={dialog.open === "edit"} onOpenChange={close} />
+          <EditUserDialog
+            user={dialog.user}
+            open={dialog.open === "edit"}
+            onOpenChange={closeOf("edit")}
+          />
           <SetPasswordDialog
             user={dialog.user}
             open={dialog.open === "password"}
-            onOpenChange={close}
+            onOpenChange={closeOf("password")}
           />
           <DeleteUserDialog
             user={dialog.user}
             open={dialog.open === "delete"}
-            onOpenChange={close}
+            onOpenChange={closeOf("delete")}
           />
         </>
       )}
