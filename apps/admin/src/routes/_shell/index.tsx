@@ -90,7 +90,7 @@ function Overview() {
       {showUsage ? <UsagePanel usage={configuredUsage} error={usage.error} now={now} /> : null}
       {canReadLibrary ? (
         <>
-          <div className="grid gap-4 lg:grid-cols-2">
+          <div className="grid gap-4 xl:grid-cols-2">
             <GenreChart genres={library.data?.genres} />
             <RecentAlbums albums={library.data?.recentAlbums} now={now} />
           </div>
