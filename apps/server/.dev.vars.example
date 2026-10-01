@@ -7,6 +7,11 @@
 #   wrangler secret put PASSWORD_ENCRYPTION_KEY
 #   wrangler secret put SETUP_TOKEN
 #
+# and, optionally, for the console's usage panel:
+#
+#   wrangler secret put CF_ANALYTICS_TOKEN
+#   wrangler secret put CF_ACCOUNT_ID
+#
 # Passphrase the AES-GCM key that encrypts stored Subsonic passwords is derived
 # from (ADR-0003), and the admin console's session secret and the pepper of its
 # users' password hashes too (ADR-0007). Changing it after users exist makes
@@ -20,6 +25,13 @@ PASSWORD_ENCRYPTION_KEY = "change-me-too"
 # set after setup has no effect. This placeholder is too short, so setup stays
 # closed until it is replaced.
 SETUP_TOKEN = "change-me"
+
+# Optional: the console's free-tier usage panel, which reads Cloudflare's
+# GraphQL Analytics API. CF_ANALYTICS_TOKEN is an API token with Account ›
+# Account Analytics › Read, limited to the one account; CF_ACCOUNT_ID is that
+# account's id (README.md). Without both, the panel is hidden.
+# CF_ANALYTICS_TOKEN = ""
+# CF_ACCOUNT_ID = ""
 
 # Deprecated: password of the Subsonic admin user created on first run,
 # alongside the INITIAL_USER var in wrangler.jsonc. It is only read while the
