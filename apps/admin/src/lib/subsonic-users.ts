@@ -92,6 +92,26 @@ export function afterUserWrite(queryClient: QueryClient): Promise<void> {
   ]).then(() => undefined);
 }
 
+/** What this page reads of the Overview's library: each playlist's owner, by name. */
+interface LibraryPlaylists {
+  playlists: readonly { owner: string | null }[];
+}
+
+/**
+ * How many playlists `username` owns, from the Overview's library read when
+ * the console already holds it (#82: "N comes from the list already loaded;
+ * there is no extra query"). `undefined` when it holds none, or only one a
+ * user write has made stale, such as a rename since: the delete dialog then
+ * names no number rather than a wrong one.
+ */
+export function playlistCountFrom(queryClient: QueryClient, username: string): number | undefined {
+  const state = queryClient.getQueryState<LibraryPlaylists>(LIBRARY_QUERY_KEY);
+  if (!state?.data || state.isInvalidated || !Array.isArray(state.data.playlists)) {
+    return undefined;
+  }
+  return state.data.playlists.filter((playlist) => playlist.owner === username).length;
+}
+
 /** A day, for the table's Created column, in the browser's locale and zone. */
 export function formatDay(iso: string, locale?: string, timeZone?: string): string {
   return new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeZone }).format(new Date(iso));

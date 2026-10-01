@@ -20,6 +20,7 @@ import {
   deleteConsequences,
   formatDay,
   formatLastAccess,
+  playlistCountFrom,
   USER_FIELDS_BY_CODE,
   userChanges,
 } from "@/lib/subsonic-users";
@@ -237,6 +238,27 @@ describe("the table's dates", () => {
       /^Sep 30, 2026, 11:30\sPM$/,
     );
     expect(formatLastAccess(null)).toBe("Never");
+  });
+});
+
+describe("playlistCountFrom", () => {
+  const playlists = [{ owner: "alice" }, { owner: "bob" }, { owner: "alice" }, { owner: null }];
+
+  it("counts the user's playlists in the Overview's library read", () => {
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(["overview", "library"], { playlists });
+
+    expect(playlistCountFrom(queryClient, "alice")).toBe(2);
+    expect(playlistCountFrom(queryClient, "carol")).toBe(0);
+  });
+
+  it("knows no number without that read, or once a user write made it stale", async () => {
+    const queryClient = new QueryClient();
+    expect(playlistCountFrom(queryClient, "alice")).toBeUndefined();
+
+    queryClient.setQueryData(["overview", "library"], { playlists });
+    await afterUserWrite(queryClient);
+    expect(playlistCountFrom(queryClient, "alice")).toBeUndefined();
   });
 });
 
