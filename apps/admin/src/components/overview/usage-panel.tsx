@@ -3,8 +3,18 @@ import type { ReactNode } from "react";
 import { ErrorAlert } from "@/components/error-alert";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress";
-import type { ConfiguredUsage } from "@/lib/api";
+import type { ConfiguredUsage, UsageFigure } from "@/lib/api";
 import { formatBytes, formatCount, formatPercent, formatRelative } from "@/lib/format";
+
+/** What the panel writes for a figure Cloudflare's answer did not carry. */
+const MISSING = "—";
+
+const wholeCount = (value: number) => formatCount(Math.round(value));
+
+/** A figure in words, or the dash for one Cloudflare's answer left out. */
+function figure(value: UsageFigure, format: (value: number) => string = wholeCount): string {
+  return value === null ? MISSING : format(value);
+}
 
 /**
  * Today's free-tier usage, from Cloudflare's GraphQL Analytics API through
@@ -12,7 +22,9 @@ import { formatBytes, formatCount, formatPercent, formatRelative } from "@/lib/f
  * are the numbers: every Worker, database and bucket of the account, not
  * only this server's. Durable Objects are limited by requests and duration
  * on the free plan, not CPU, which is shown beside them for information. R2
- * is billed by the month, so its operations are month to date.
+ * is billed by the month, so its operations are month to date, and its
+ * storage is each bucket's peak of the last 24 hours. A figure the answer
+ * did not carry is a dash, not a guess.
  *
  * The Overview renders this only once the server has said it is configured,
  * so a server without an analytics token shows no panel and no error.
@@ -31,7 +43,7 @@ export function UsagePanel({
       <CardHeader>
         <CardTitle>Free-tier usage</CardTitle>
         <CardDescription>
-          Today (UTC) for the whole Cloudflare account; R2 month to date.
+          Today (UTC) for the whole Cloudflare account; R2 operations month to date.
           {usage ? ` Read from Cloudflare ${formatRelative(usage.fetchedAt, now)}.` : null}
         </CardDescription>
       </CardHeader>
@@ -45,7 +57,7 @@ export function UsagePanel({
                 value={usage.workers.requests}
                 limit={usage.workers.limit.requests}
               />
-              <Note>{formatCount(usage.workers.errors)} errors</Note>
+              <Note>{figure(usage.workers.errors)} errors</Note>
             </Group>
             <Group title="D1">
               <Meter label="Rows read" value={usage.d1.rowsRead} limit={usage.d1.limit.rowsRead} />
@@ -66,9 +78,7 @@ export function UsagePanel({
                 value={usage.durableObjects.durationGbSeconds}
                 limit={usage.durableObjects.limit.durationGbSeconds}
               />
-              <Note>
-                CPU time {formatCount(Math.round(usage.durableObjects.cpuTimeMs))} ms, not limited
-              </Note>
+              <Note>CPU time {figure(usage.durableObjects.cpuTimeMs)} ms, not limited</Note>
             </Group>
             <Group title="R2">
               <Meter
@@ -82,12 +92,12 @@ export function UsagePanel({
                 limit={usage.r2.limit.classB}
               />
               <Meter
-                label="Storage"
+                label="Storage, 24-hour peak"
                 value={usage.r2.storageBytes}
                 limit={usage.r2.limit.storageBytes}
                 format={formatBytes}
               />
-              <Note>{formatCount(usage.r2.objectCount)} objects</Note>
+              <Note>{figure(usage.r2.objectCount)} objects</Note>
             </Group>
           </div>
         ) : null}
@@ -109,26 +119,29 @@ function Note({ children }: { children: ReactNode }) {
   return <p className="text-xs text-muted-foreground">{children}</p>;
 }
 
-/** One number against its limit, as a bar with the share beside it. */
+/**
+ * One figure against its limit, as a bar with the share beside it. A figure
+ * the answer left out leaves the bar empty and says so with a dash.
+ */
 function Meter({
   label,
   value,
   limit,
-  format = (n: number) => formatCount(Math.round(n)),
+  format = wholeCount,
 }: {
   label: string;
-  value: number;
+  value: UsageFigure;
   limit: number;
   format?: (value: number) => string;
 }) {
-  const text = `${format(value)} of ${format(limit)}`;
-  const share = formatPercent(value, limit);
+  const text = `${figure(value, format)} of ${format(limit)}`;
+  const share = value === null ? MISSING : formatPercent(value, limit);
 
   return (
     <Progress
-      value={Math.min(value, limit)}
+      value={value === null ? null : Math.min(value, limit)}
       max={limit}
-      getAriaValueText={() => `${text}, ${share}`}
+      getAriaValueText={() => (value === null ? `${label}: unknown` : `${text}, ${share}`)}
       className="gap-1.5"
     >
       <ProgressLabel className="text-xs font-normal text-muted-foreground">{label}</ProgressLabel>

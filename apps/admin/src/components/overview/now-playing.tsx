@@ -78,7 +78,9 @@ function Listener({ entry, positionMs }: { entry: NowPlayingEntry; positionMs: n
             {entry.track.title}
           </div>
           <div className="truncate text-sm text-muted-foreground">
-            {entry.track.artist} · {entry.track.album}
+            {entry.track.album
+              ? `${entry.track.artist} · ${entry.track.album}`
+              : entry.track.artist}
           </div>
         </div>
         <Badge variant={entry.state === "playing" ? "default" : "secondary"}>

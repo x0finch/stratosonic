@@ -306,6 +306,7 @@ export interface NowPlayingEntry {
     id: string;
     title: string;
     artist: string;
+    /** `""` while the track's album row is not written yet. */
     album: string;
     albumId: string;
     durationSec: number;
@@ -327,29 +328,39 @@ export interface ScanRequestResult {
   scan: ScanStatus;
 }
 
-/** `GET /api/usage` with an analytics token: today's usage, and R2's month to date. */
+/**
+ * A figure of the usage panel: `null` when Cloudflare's answer did not carry
+ * it, so a field renamed upstream blanks one figure rather than the panel.
+ */
+export type UsageFigure = number | null;
+
+/**
+ * `GET /api/usage` with an analytics token: today's usage of the whole
+ * account (UTC), R2's operations month to date, and R2's storage as each
+ * bucket's peak of the last 24 hours, summed.
+ */
 export interface ConfiguredUsage {
   configured: true;
   fetchedAt: string;
   day: string;
   monthStart: string;
-  workers: { requests: number; errors: number; limit: { requests: number } };
+  workers: { requests: UsageFigure; errors: UsageFigure; limit: { requests: number } };
   d1: {
-    rowsRead: number;
-    rowsWritten: number;
+    rowsRead: UsageFigure;
+    rowsWritten: UsageFigure;
     limit: { rowsRead: number; rowsWritten: number };
   };
   durableObjects: {
-    requests: number;
-    cpuTimeMs: number;
-    durationGbSeconds: number;
+    requests: UsageFigure;
+    cpuTimeMs: UsageFigure;
+    durationGbSeconds: UsageFigure;
     limit: { requests: number; durationGbSeconds: number };
   };
   r2: {
-    classA: number;
-    classB: number;
-    storageBytes: number;
-    objectCount: number;
+    classA: UsageFigure;
+    classB: UsageFigure;
+    storageBytes: UsageFigure;
+    objectCount: UsageFigure;
     limit: { classA: number; classB: number; storageBytes: number };
   };
 }
