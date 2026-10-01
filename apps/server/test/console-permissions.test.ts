@@ -31,6 +31,7 @@ describe("the permissions", () => {
         "library:read",
         "activity:read",
         "library:scan",
+        "usage:read",
       ]),
     );
   });
