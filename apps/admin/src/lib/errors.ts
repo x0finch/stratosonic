@@ -57,6 +57,23 @@ const MESSAGES: Record<string, ErrorMessage> = {
     title: "The password is not valid",
     description: `Use 1 to ${MAX_PASSWORD_LENGTH.toLocaleString("en")} characters.`,
   },
+  // The Subsonic users API's (#82). A username is unique in any mix of case,
+  // as Navidrome's is; the last two keep one Subsonic admin, which library
+  // scans, the playlist import and the admin-only Subsonic endpoints need.
+  username_taken: {
+    title: "The username is taken",
+    description: "Another Subsonic user has it, in some mix of upper and lower case.",
+  },
+  last_admin: {
+    title: "This is the last Subsonic admin",
+    description:
+      "Library scans and the playlist import need one. Make another user a Subsonic admin first.",
+  },
+  admin_required: {
+    title: "The first Subsonic user must be a Subsonic admin",
+    description:
+      "There is no Subsonic admin yet, and library scans and the playlist import need one. Turn on Subsonic admin.",
+  },
   password_too_long: {
     title: "The password is too long",
     description: `Use at most ${MAX_PASSWORD_LENGTH.toLocaleString("en")} characters.`,
