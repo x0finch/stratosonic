@@ -1,6 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 
 import { type SubsonicUser, subsonicUsersQuery } from "@/lib/api";
+import { libraryQuery } from "@/lib/overview";
 
 /**
  * The rules of the Subsonic users page (`/users`, #82) that need no screen:
@@ -78,29 +79,18 @@ export function deleteConsequences(playlists: number | undefined): string {
 }
 
 /**
- * The Overview's library read (`GET /api/overview/library`), whose playlists
- * name their owners: a rename changes those names, and a delete takes the
- * user's playlists with it.
- */
-const LIBRARY_QUERY_KEY = ["overview", "library"] as const;
-
-/**
  * After every write to a Subsonic user, whether it went through or not: the
  * list is read again (#82's polling table), so a refusal over a stale list,
  * such as a user deleted in another tab, shows the list as it is. The
- * Overview's library is marked stale too, and is read again only when it is
- * on screen.
+ * Overview's library, whose playlists name their owners, is marked stale
+ * too (a rename changes those names, and a delete takes the user's
+ * playlists with it), and is read again only when it is on screen.
  */
 export function afterUserWrite(queryClient: QueryClient): Promise<void> {
   return Promise.all([
     queryClient.invalidateQueries({ queryKey: subsonicUsersQuery.queryKey }),
-    queryClient.invalidateQueries({ queryKey: LIBRARY_QUERY_KEY }),
+    queryClient.invalidateQueries({ queryKey: libraryQuery.queryKey }),
   ]).then(() => undefined);
-}
-
-/** What this page reads of the Overview's library: each playlist's owner, by name. */
-interface LibraryPlaylists {
-  playlists: readonly { owner: string | null }[];
 }
 
 /**
@@ -111,8 +101,8 @@ interface LibraryPlaylists {
  * names no number rather than a wrong one.
  */
 export function playlistCountFrom(queryClient: QueryClient, username: string): number | undefined {
-  const state = queryClient.getQueryState<LibraryPlaylists>(LIBRARY_QUERY_KEY);
-  if (!state?.data || state.isInvalidated || !Array.isArray(state.data.playlists)) {
+  const state = queryClient.getQueryState(libraryQuery.queryKey);
+  if (!state?.data || state.isInvalidated) {
     return undefined;
   }
   return state.data.playlists.filter((playlist) => playlist.owner === username).length;
