@@ -1,9 +1,5 @@
 import type { Context } from "hono";
-import {
-  acceptableUserName,
-  createConsoleUser,
-  isAcceptablePassword,
-} from "../console-auth/credentials";
+import { createConsoleUser } from "../console-auth/credentials";
 import type { ConsoleEnv } from "../console-auth/middleware";
 import { OWNER_ROLE, permissionsOf } from "../console-auth/permissions";
 import { database } from "../db";
@@ -16,6 +12,7 @@ import {
   setupState,
   setupTokenDigest,
 } from "../setup/setup-token";
+import { acceptableUserName, isAcceptablePassword } from "../users/validation";
 import type { ApiApp } from "./app";
 import { invalidRequest, limitJsonBody, readJsonObject } from "./json-body";
 import { requireSameOrigin } from "./same-origin";
@@ -35,7 +32,7 @@ import { requireSameOrigin } from "./same-origin";
  * 2. `403 invalid_token`: no usable token configured, or a wrong one.
  *    Nothing past this point is told to a caller without the token;
  * 3. `400 invalid_username`, `400 invalid_password`: see
- *    console-auth/credentials.ts for what is accepted. The name is trimmed;
+ *    users/validation.ts for what is accepted. The name is trimmed;
  * 4. what the database says: a token already spent is `403 invalid_token`
  *    as well, and setup while a console user exists is `409 already_set_up`.
  *

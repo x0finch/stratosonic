@@ -3,9 +3,9 @@ import { consoleAccount, consoleUser } from "@stratosonic/db";
 import { eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import { CONSOLE_AUTH_ROUTES, consoleAuth, DISABLED_AUTH_PATHS } from "../src/console-auth/auth";
-import { MAX_PASSWORD_LENGTH } from "../src/console-auth/credentials";
 import { PERMISSIONS } from "../src/console-auth/permissions";
 import { database } from "../src/db";
+import { MAX_PASSWORD_LENGTH } from "../src/users/validation";
 import {
   CookieJar,
   consoleRequest,
