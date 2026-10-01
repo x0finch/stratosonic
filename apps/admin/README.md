@@ -67,6 +67,8 @@ any other origin. For a Worker on another port, set `WORKER_ORIGIN`, e.g.
 
 ## Generated files
 
+Every page and component follows the design rules in [DESIGN.md](DESIGN.md).
+
 The UI is shadcn/ui's, kept as its CLI generated it (Base UI, the Nova preset,
 the `neutral` base color). `components.json`, `src/index.css`,
 `src/components/ui/`, `src/components/theme-provider.tsx`,
