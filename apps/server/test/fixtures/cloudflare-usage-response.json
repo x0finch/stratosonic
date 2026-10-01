@@ -1,0 +1,34 @@
+{
+  "data": {
+    "viewer": {
+      "accounts": [
+        {
+          "workers": [{ "sum": { "requests": 1234, "errors": 2 } }],
+          "d1": [{ "sum": { "rowsRead": 81234, "rowsWritten": 412 } }],
+          "doInvocations": [{ "sum": { "requests": 840 } }],
+          "doPeriodic": [{ "sum": { "cpuTime": 51234000, "activeTime": 2441406250 } }],
+          "r2Ops": [
+            { "dimensions": { "actionType": "GetObject" }, "sum": { "requests": 30000 } },
+            { "dimensions": { "actionType": "HeadObject" }, "sum": { "requests": 3500 } },
+            { "dimensions": { "actionType": "UsageSummary" }, "sum": { "requests": 500 } },
+            { "dimensions": { "actionType": "ListObjects" }, "sum": { "requests": 1100 } },
+            { "dimensions": { "actionType": "PutObject" }, "sum": { "requests": 100 } },
+            { "dimensions": { "actionType": "DeleteObject" }, "sum": { "requests": 40 } },
+            { "dimensions": { "actionType": "AbortMultipartUpload" }, "sum": { "requests": 2 } }
+          ],
+          "r2Storage": [
+            {
+              "dimensions": { "bucketName": "navidrome" },
+              "max": { "payloadSize": 52345000000, "metadataSize": 678901, "objectCount": 6000 }
+            },
+            {
+              "dimensions": { "bucketName": "scratch" },
+              "max": { "payloadSize": 0, "metadataSize": 0, "objectCount": 100 }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "errors": null
+}
