@@ -1,4 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
+import { encryptPassword } from "../src/auth/crypto";
+import { database } from "../src/db";
+import { insertUser } from "../src/users/repository";
 import {
   type CookieJar,
   cost,
@@ -8,7 +11,7 @@ import {
   signIn,
 } from "./console-auth-support";
 import { subsonicUsersHarness } from "./subsonic-users-support";
-import { seedUser, testEnv } from "./support";
+import { encryptionKey, testEnv } from "./support";
 
 /**
  * What the Subsonic-user routes cost D1 on #82's reference library ("Free-tier
@@ -40,12 +43,25 @@ beforeAll(async () => {
   await seedConsoleUser("owner", "budget");
   owner = (await signIn(harness.send, ORIGIN, "owner", "budget")).jar;
 
-  userIds.push(await seedUser("admin", "sesame", true));
-  for (const name of ["ann", "ben", "cat", "dan"]) {
-    userIds.push(await seedUser(name, "sesame"));
+  // Ids of a fixed order, not `newRandomId`'s: D1 counts the extra index
+  // entry a lookup by owner reads past the last match, which there is not
+  // when the owner's id sorts last, so random ids would move the counts.
+  const at = 1_700_000_000_000;
+  const password = await encryptPassword(encryptionKey(), "sesame");
+  for (const [index, name] of ["admin", "ann", "ben", "cat", "dan"].entries()) {
+    const id = `user-${index}`;
+    await insertUser(database(testEnv), {
+      id,
+      userName: name,
+      name,
+      password,
+      isAdmin: index === 0,
+      createdAt: new Date(at),
+      updatedAt: new Date(at),
+    });
+    userIds.push(id);
   }
 
-  const at = 1_700_000_000_000;
   const statements = userIds.map((userId, user) =>
     testEnv.DB.prepare(
       `${counted(PLAYLISTS_PER_USER)} insert into playlist
