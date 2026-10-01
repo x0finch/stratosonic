@@ -85,7 +85,7 @@ function ScanNowButton() {
         toastSuccess("A scan is already running", "This page follows it as it goes.");
       }
     },
-    onError: (error) => toastError(error),
+    onError: (error) => toastError(error, "The scan could not start"),
   });
 
   return (
