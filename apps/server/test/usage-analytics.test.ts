@@ -158,8 +158,33 @@ describe("the request", () => {
         dayStart: "2026-10-01T00:00:00Z",
         now: "2026-10-01T12:34:56.789Z",
         monthStart: "2026-10-01T00:00:00Z",
+        storageSince: "2026-09-30T12:34:56.789Z",
       },
     });
+  });
+
+  it("reads storage over the last 24 hours, so just after midnight still finds a sample", async () => {
+    const { impl, calls } = fakeFetch(sampleAnswer);
+    const answer = await report(impl, Date.UTC(2026, 9, 1, 0, 5, 0));
+
+    const { variables } = JSON.parse(String(calls[0]?.init?.body));
+    expect(variables).toMatchObject({
+      day: "2026-10-01",
+      dayStart: "2026-10-01T00:00:00Z",
+      monthStart: "2026-10-01T00:00:00Z",
+      storageSince: "2026-09-30T00:05:00.000Z",
+    });
+    expect(USAGE_QUERY).toMatch(
+      /r2StorageAdaptiveGroups\([^)]*datetime_geq: \$storageSince, datetime_leq: \$now/,
+    );
+    // The counters keep their own windows.
+    expect(USAGE_QUERY).toMatch(
+      /workersInvocationsAdaptive\([^)]*datetime_geq: \$dayStart, datetime_leq: \$now/,
+    );
+    expect(USAGE_QUERY).toMatch(
+      /r2OperationsAdaptiveGroups\([^)]*datetime_geq: \$monthStart, datetime_leq: \$now/,
+    );
+    expect(answer.r2.storageBytes).toBe(52_345_678_901);
   });
 
   it("covers the month to date for R2, from the first of the month", async () => {

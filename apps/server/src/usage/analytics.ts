@@ -89,8 +89,13 @@ export const R2_CLASS_B_ACTIONS: ReadonlySet<string> = new Set([
  *
  * Groups without dimensions add up the whole filter, so one row comes back
  * for each of those; R2 groups by action type and by bucket.
+ *
+ * The counters cover today (UTC) and, for R2's operations, the month to date.
+ * Storage is a level, not a counter, so it covers the last 24 hours instead:
+ * a window from midnight would hold no sample just after 00:00 UTC, and read
+ * as an empty account.
  */
-export const USAGE_QUERY = `query Usage($account: string!, $day: Date!, $dayStart: Time!, $now: Time!, $monthStart: Time!) {
+export const USAGE_QUERY = `query Usage($account: string!, $day: Date!, $dayStart: Time!, $now: Time!, $monthStart: Time!, $storageSince: Time!) {
   viewer { accounts(filter: { accountTag: $account }) {
     workers: workersInvocationsAdaptive(limit: 1, filter: { datetime_geq: $dayStart, datetime_leq: $now }) {
       sum { requests errors }
@@ -107,7 +112,7 @@ export const USAGE_QUERY = `query Usage($account: string!, $day: Date!, $dayStar
     r2Ops: r2OperationsAdaptiveGroups(limit: 100, filter: { datetime_geq: $monthStart, datetime_leq: $now }) {
       sum { requests } dimensions { actionType }
     }
-    r2Storage: r2StorageAdaptiveGroups(limit: 100, filter: { datetime_geq: $dayStart, datetime_leq: $now }) {
+    r2Storage: r2StorageAdaptiveGroups(limit: 100, filter: { datetime_geq: $storageSince, datetime_leq: $now }) {
       max { payloadSize metadataSize objectCount } dimensions { bucketName }
     }
   } }
@@ -142,7 +147,10 @@ export interface UsageReport {
     readonly durationGbSeconds: number | null;
     readonly limit: typeof FREE_TIER_LIMITS.durableObjects;
   };
-  /** Month to date, since R2's free tier is monthly; storage is today's peak. */
+  /**
+   * Operations month to date, since R2's free tier is monthly; storage is
+   * each bucket's peak over the last 24 hours, added up.
+   */
   readonly r2: {
     readonly classA: number | null;
     readonly classB: number | null;
@@ -250,7 +258,13 @@ function usageConfig(
   return { token, accountId };
 }
 
-/** The UTC day, its start, and its month's first day, for the query. */
+/** How far back the storage window reaches: a day, whatever the hour. */
+export const STORAGE_WINDOW_MS = 24 * 60 * 60_000;
+
+/**
+ * The query's windows: the UTC day, its start and its month's first day for
+ * the counters, and the last 24 hours for storage.
+ */
 export function usageWindow(now: number) {
   const iso = new Date(now).toISOString();
   const day = iso.slice(0, 10);
@@ -263,6 +277,7 @@ export function usageWindow(now: number) {
       dayStart: `${day}T00:00:00Z`,
       now: iso,
       monthStart: `${monthStart}T00:00:00Z`,
+      storageSince: new Date(now - STORAGE_WINDOW_MS).toISOString(),
     },
   };
 }
@@ -401,7 +416,7 @@ function r2Operations(rows: unknown): { classA: number | null; classB: number | 
   return { classA, classB };
 }
 
-/** Each bucket's peak payload and metadata today, added up. */
+/** Each bucket's peak payload and metadata over the last 24 hours, added up. */
 function r2StorageBytes(rows: unknown): number | null {
   const payload = sumOf(rows, "max", "payloadSize");
   const metadata = sumOf(rows, "max", "metadataSize");
