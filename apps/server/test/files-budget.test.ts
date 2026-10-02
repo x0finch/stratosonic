@@ -11,7 +11,7 @@ import {
   signIn,
 } from "./console-auth-support";
 import { driveUntilIdle } from "./driver-support";
-import { filesHarness, seedObjects } from "./files-support";
+import { type FilesHarness, filesHarness, seedObjects, UPLOADS_ENV } from "./files-support";
 import { resetLibrary } from "./scan-support";
 import { BASE, seedPlaylist, testEnv } from "./support";
 
@@ -28,7 +28,11 @@ import { BASE, seedPlaylist, testEnv } from "./support";
  */
 
 const ORIGIN = "https://files-budget.stratosonic.test";
-const harness = filesHarness(ORIGIN);
+/**
+ * With uploads configured. It is the first to sign in, so the isolate's
+ * Better Auth instance, and with it the session check, reads its D1 binding.
+ */
+const harness = filesHarness(ORIGIN, { uploads: UPLOADS_ENV });
 
 /** Entries in the one playlist each delete takes with it. */
 const ENTRIES = 25;
@@ -74,12 +78,17 @@ interface Measured {
 }
 
 /** What one request cost past the console session's own check. */
-async function measured(method: string, path: string, body?: unknown): Promise<Measured> {
-  harness.d1.reset();
-  harness.r2Calls.length = 0;
-  harness.driverCalls.length = 0;
-  const response = await harness.call(owner, method, path, body);
-  const statements = [...harness.d1.statements];
+async function measured(
+  method: string,
+  path: string,
+  body?: unknown,
+  on: FilesHarness = harness,
+): Promise<Measured> {
+  on.d1.reset();
+  on.r2Calls.length = 0;
+  on.driverCalls.length = 0;
+  const response = await on.call(owner, method, path, body);
+  const statements = [...on.d1.statements];
   const session = statements.filter((statement) =>
     ["select session", "select user"].includes(shape(statement)),
   );
@@ -89,8 +98,8 @@ async function measured(method: string, path: string, body?: unknown): Promise<M
     body: await response.json(),
     session: session.map(shape),
     route: statements.filter((statement) => !session.includes(statement)),
-    r2: harness.r2Calls.map((call) => call.method),
-    driver: [...harness.driverCalls],
+    r2: on.r2Calls.map((call) => call.method),
+    driver: [...on.driverCalls],
   };
 }
 
@@ -219,5 +228,62 @@ describe("the Files routes' budget", () => {
     expect(result.r2).toEqual(["list", "delete", "list", "delete"]);
     expect(result.driver).toHaveLength(1);
     expect(subrequests(result)).toBe(7);
+  });
+
+  it.each([1, 3, 20])(
+    "POST /api/files/uploads, %i files: one head() each, no D1 statement, no driver call",
+    async (n) => {
+      // One of them exists, which costs the same head() and no signature.
+      await seedObjects(["Album/00.flac"]);
+      const files = Array.from({ length: n }, (_, index) => ({
+        key: `Album/${String(index).padStart(2, "0")}.flac`,
+        size: 40_000_000,
+      }));
+
+      const result = await measured("POST", "/files/uploads", { files });
+
+      expect(result.status).toBe(200);
+      expect((result.body as { uploads: unknown[] }).uploads).toHaveLength(n);
+      expect(result.session).toEqual(["select session", "select user"]);
+      expect(result.route).toEqual([]);
+      expect(result.r2).toEqual(Array.from({ length: n }, () => "head"));
+      expect(result.driver).toEqual([]);
+      expect(subrequests(result)).toBe(n);
+    },
+  );
+
+  it("POST /api/files/uploads, not configured: nothing past the session", async () => {
+    // Its session check reads the first harness's D1, so only the route's
+    // own statements are counted here.
+    const result = await measured(
+      "POST",
+      "/files/uploads",
+      { files: [{ key: "Album/01.flac", size: 1 }] },
+      filesHarness(ORIGIN),
+    );
+
+    expect(result.status).toBe(503);
+    expect(result.route).toEqual([]);
+    expect(result.r2).toEqual([]);
+    expect(subrequests(result)).toBe(0);
+  });
+
+  it("POST /api/files/uploads/complete, 20 keys: 1 statement, 1 driver call, no R2 call", async () => {
+    const keys = Array.from({ length: 20 }, (_, index) => `Album/${index}.flac`);
+
+    const result = await measured("POST", "/files/uploads/complete", { keys });
+
+    expect(result.status).toBe(200);
+    expect(result.session).toEqual(["select session", "select user"]);
+    expect(rows(result.route)).toEqual([["insert property", 0, 2]]);
+    expect(cost(result.route)).toEqual({
+      statements: 1,
+      roundTrips: 1,
+      rowsRead: 0,
+      rowsWritten: 2,
+    });
+    expect(result.r2).toEqual([]);
+    expect(result.driver).toHaveLength(1);
+    expect(subrequests(result)).toBe(2);
   });
 });
