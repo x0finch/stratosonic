@@ -47,9 +47,9 @@ export interface FilesHarnessOptions {
 
 /**
  * A scan driver binding that answers every call at once and does nothing:
- * no pass starts, so nothing runs in the background of a test that only
- * needs the call to succeed. `start` answers "started" and any other method
- * (`touch`, after #130) a schedule.
+ * no pass starts and no debounce alarm is armed, so nothing runs in the
+ * background of a test that only needs the call to succeed. `touch`, the one
+ * call the routes make, answers a schedule; `start` answers "started".
  */
 export function inertDriver(): Env["SCAN_DRIVER"] {
   return {
