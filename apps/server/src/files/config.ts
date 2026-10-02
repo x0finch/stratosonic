@@ -13,6 +13,16 @@ import type { Env } from "../env";
  * changes the bucket goes behind `requireFileWrites`, and
  * `GET /api/files/config` reports `writes.enabled: false`, so the console
  * hides the write controls. Production leaves the var unset.
+ *
+ * ## Uploads
+ *
+ * The browser uploads straight to the bucket's S3 endpoint, with URLs the
+ * Worker presigns (files/sign.ts) with an R2 API token. Uploads are
+ * configured only when the token's two secrets, `CF_ACCOUNT_ID` and
+ * `R2_BUCKET_NAME` are all set (`uploadsStatus`); otherwise
+ * `GET /api/files/config` reports `uploads.configured: false` with the
+ * missing names, and `POST /api/files/uploads` answers
+ * `503 {"error":"uploads_not_configured"}`.
  */
 
 /**
@@ -38,3 +48,101 @@ export const requireFileWrites = createMiddleware<{ Bindings: Env }>(async (c, n
 
   await next();
 });
+
+/* ---------------------------------------------------------- uploads -- */
+
+/**
+ * The values uploads need (#83, "Configuration"), in the order
+ * `GET /api/files/config` names the missing ones: the R2 API token's two
+ * secrets, the account id the S3 endpoint is built from (the usage panel's
+ * own secret, reused), and the bucket's name, a var in wrangler.jsonc that
+ * must equal the `MUSIC` binding's `bucket_name`.
+ */
+export const UPLOAD_SETTINGS = [
+  "R2_ACCESS_KEY_ID",
+  "R2_SECRET_ACCESS_KEY",
+  "CF_ACCOUNT_ID",
+  "R2_BUCKET_NAME",
+] as const;
+
+export type UploadSetting = (typeof UPLOAD_SETTINGS)[number];
+
+/** What presigning an upload needs, every value trimmed and present. */
+export interface UploadsConfig {
+  readonly accessKeyId: string;
+  readonly secretAccessKey: string;
+  readonly accountId: string;
+  readonly bucket: string;
+}
+
+/**
+ * Whether uploads are configured: all four values present, or which are
+ * missing. `missing` names the values, never their contents.
+ */
+export type UploadsStatus =
+  | { readonly configured: true; readonly config: UploadsConfig }
+  | { readonly configured: false; readonly missing: readonly UploadSetting[] };
+
+/** Whether this isolate has reported a token set without the rest. */
+let warnedAboutPartialUploads = false;
+
+/**
+ * The upload settings from the environment, each trimmed, with an empty
+ * value counted as unset (as a `.dev.vars` line `R2_ACCESS_KEY_ID = ""`
+ * leaves it).
+ *
+ * It warns once per isolate, as the usage panel does, when the token's own
+ * values are present, one or both, but not all four are: the bucket's name
+ * is always set by wrangler.jsonc, and the account id by the usage panel, so
+ * either alone is no attempt to configure uploads. The warning names the
+ * missing values, never a value.
+ */
+export function uploadsStatus(env: Env): UploadsStatus {
+  const values: Record<UploadSetting, string | null> = {
+    R2_ACCESS_KEY_ID: setting(env.R2_ACCESS_KEY_ID),
+    R2_SECRET_ACCESS_KEY: setting(env.R2_SECRET_ACCESS_KEY),
+    CF_ACCOUNT_ID: setting(env.CF_ACCOUNT_ID),
+    R2_BUCKET_NAME: setting(env.R2_BUCKET_NAME),
+  };
+  const { R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, CF_ACCOUNT_ID, R2_BUCKET_NAME } = values;
+  if (
+    R2_ACCESS_KEY_ID === null ||
+    R2_SECRET_ACCESS_KEY === null ||
+    CF_ACCOUNT_ID === null ||
+    R2_BUCKET_NAME === null
+  ) {
+    const missing = UPLOAD_SETTINGS.filter((name) => values[name] === null);
+    const tokenGiven = R2_ACCESS_KEY_ID !== null || R2_SECRET_ACCESS_KEY !== null;
+    if (tokenGiven && !warnedAboutPartialUploads) {
+      warnedAboutPartialUploads = true;
+      console.warn(`files: uploads stay off until ${missing.join(", ")} is set as well`);
+    }
+    return { configured: false, missing };
+  }
+
+  return {
+    configured: true,
+    config: {
+      accessKeyId: R2_ACCESS_KEY_ID,
+      secretAccessKey: R2_SECRET_ACCESS_KEY,
+      accountId: CF_ACCOUNT_ID,
+      bucket: R2_BUCKET_NAME,
+    },
+  };
+}
+
+/** The bucket's name, as `GET /api/files/config` reports it, or null when unset. */
+export function bucketName(env: Env): string | null {
+  return setting(env.R2_BUCKET_NAME);
+}
+
+/** Forgets what this isolate has warned about. For tests. */
+export function forgetUploadsWarning(): void {
+  warnedAboutPartialUploads = false;
+}
+
+/** A value trimmed, or null when unset or empty. */
+function setting(value: string | undefined): string | null {
+  const trimmed = value?.trim() ?? "";
+  return trimmed === "" ? null : trimmed;
+}

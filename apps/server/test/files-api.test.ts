@@ -120,18 +120,25 @@ async function libraryChangedAt(): Promise<number | null> {
 /* ===================================================== GET /files/config == */
 
 describe("GET /api/files/config", () => {
-  it("answers the allow-list, the limits, the quiet window and that writes are on", async () => {
+  it("answers the bucket, the uploads, the allow-list, the limits, the quiet window and that writes are on", async () => {
     const response = await harness.call(owner, "GET", "/files/config");
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
+      bucket: "navidrome",
+      // The pinned environment leaves the upload token unset
+      // (test/files-uploads.test.ts covers a configured one).
+      uploads: {
+        configured: false,
+        missing: ["R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "CF_ACCOUNT_ID"],
+      },
       allowed: {
         audio: { suffixes: ["mp3", "m4a", "flac"], maxBytes: 5_363_466_240 },
         lyrics: { suffixes: ["lrc", "txt"], maxBytes: 1_048_576 },
         playlist: { suffixes: ["m3u", "m3u8"], maxBytes: 4_194_304 },
         image: { suffixes: ["jpg", "png", "gif", "webp", "jpeg"], maxBytes: 20_971_520 },
       },
-      limits: { maxKeyBytes: 1024, maxSegmentBytes: 255, deleteBatch: 250 },
+      limits: { maxKeyBytes: 1024, maxSegmentBytes: 255, signBatch: 10, deleteBatch: 250 },
       rescanQuietSeconds: 120,
       writes: { enabled: true },
     });

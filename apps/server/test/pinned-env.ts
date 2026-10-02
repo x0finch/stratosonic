@@ -30,6 +30,12 @@ export const PINNED_ENV = {
   CF_ACCOUNT_ID: "",
   // Unset, as in production: file writes are on.
   FILE_WRITES: "",
+  // As wrangler.jsonc sets it. With the token's two values and CF_ACCOUNT_ID
+  // empty, uploads are not configured, and nothing is ever signed with a
+  // real key.
+  R2_BUCKET_NAME: "navidrome",
+  R2_ACCESS_KEY_ID: "",
+  R2_SECRET_ACCESS_KEY: "",
 } as const satisfies Record<StringEnvKey, string>;
 
 /**

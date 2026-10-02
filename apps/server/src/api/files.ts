@@ -2,18 +2,33 @@ import type { Context } from "hono";
 import { requireFreshSession, requirePermission, requireSession } from "../console-auth/middleware";
 import { database } from "../db";
 import type { Env } from "../env";
-import { fileWritesEnabled, requireFileWrites } from "../files/config";
+import {
+  bucketName,
+  fileWritesEnabled,
+  requireFileWrites,
+  type UploadsConfig,
+  uploadsStatus,
+} from "../files/config";
 import {
   ALLOWED,
   checkBrowsePrefix,
   checkFolderPrefix,
+  checkUploadKey,
+  checkUploadPrefix,
+  checkUploadSize,
+  hasOneSpelling,
+  isAscii,
   isReservedKey,
   MAX_KEY_BYTES,
   MAX_SEGMENT_BYTES,
+  newKeySpelling,
+  oneSpellingPrefix,
+  type PathRefusal,
   utf8Length,
 } from "../files/keys";
 import { RESCAN_QUIET_MS, recordLibraryChange, type ScanSchedule } from "../files/library-change";
 import { folderListing, playlistKeysOf } from "../files/listing";
+import { type PresignedUpload, presignUpload } from "../files/sign";
 import { deletePlaylistRowsByKeys } from "../playlists/repository";
 import { eraseObjects } from "../playlists/writes";
 import type { ApiApp } from "./app";
@@ -22,8 +37,9 @@ import { requireSameOrigin } from "./same-origin";
 
 /**
  * The console's Files page (#83): the bound bucket, `MUSIC`, browsed one
- * folder at a time, and files and folders deleted from it. Uploads are signed
- * by routes of their own (#83, "API: uploads").
+ * folder at a time, files and folders deleted from it, and files uploaded to
+ * it. An upload's bytes go from the browser straight to R2, with a URL this
+ * API presigns (files/sign.ts), and never through the Worker.
  *
  * R2 has no folders: a folder is a common key prefix ending in `/`, as a
  * delimited listing reports it. Keys are used exactly as R2 lists them, never
@@ -36,8 +52,9 @@ import { requireSameOrigin } from "./same-origin";
  * `requireFileWrites` (files/config.ts), in that order; each sends a JSON
  * object. The answers:
  *
- * - `GET /api/files/config`: `200 FilesConfig`, the allow-list, the limits,
- *   the quiet window and whether writes are enabled.
+ * - `GET /api/files/config`: `200 FilesConfig`, the bucket's name, whether
+ *   uploads are configured, the allow-list, the limits, the quiet window and
+ *   whether writes are enabled.
  * - `GET /api/files?prefix=&cursor=`: `200 {prefix, folders, files, cursor}`;
  *   `400 invalid_path`, `403 reserved_path`, `400 invalid_cursor` (a cursor
  *   R2 refuses: forged, stale or from another prefix).
@@ -47,7 +64,19 @@ import { requireSameOrigin } from "./same-origin";
  *   `200 {deleted, done, scan}`, called again until `done`, or
  *   `200 {deleted: 0, done: true}`, with no `scan`, when there was nothing
  *   left to delete; `400 invalid_path`, `403 reserved_path`.
- * - Either write, where `FILE_WRITES` is `"off"`: `403 file_writes_disabled`.
+ * - `POST /api/files/uploads`, `{prefix?, files: [{key, size, overwrite?}]}`,
+ *   1–10 files: `200 {uploads}`, one result per file, in order, each a presigned
+ *   `PUT` or a per-file `error` (`invalid_path`, `path_too_long`,
+ *   `reserved_path`, `type_not_allowed`, `too_large`, `empty_file`,
+ *   `exists`, or `replace_unavailable`: replace that file with rclone);
+ *   `400 invalid_request`, `503 uploads_not_configured`. `prefix` is the
+ *   folder uploaded into, exactly as browse listed it: it is kept as it is,
+ *   and only the part of each key after it is normalised to NFC; a key
+ *   outside it answers `invalid_path` for that file, and a bad prefix
+ *   `400 invalid_path` or `403 reserved_path` for the request.
+ * - `POST /api/files/uploads/complete`, `{keys}`, 1–10 keys whose `PUT`
+ *   succeeded: `200 {scan}`; `400 invalid_request`, `403 reserved_path`.
+ * - Any write, where `FILE_WRITES` is `"off"`: `403 file_writes_disabled`.
  *
  * ## Deletes are permanent
  *
@@ -66,8 +95,9 @@ import { requireSameOrigin } from "./same-origin";
  *
  * ## `scan`
  *
- * Every answer that deleted something carries `scan`, what the driver will
- * do about the change (`ScanSchedule`, files/library-change.ts):
+ * Every answer that deleted something, and every upload completion, carries
+ * `scan`, what the driver will do about the change (`ScanSchedule`,
+ * files/library-change.ts):
  *
  * - `{"scheduledAt": "<ISO 8601>", "afterCurrentPass": false}`: a pass
  *   starts at about that time, once the library has stayed quiet;
@@ -88,7 +118,62 @@ import { requireSameOrigin } from "./same-origin";
  * gone (their playlists' rows, then the change record), and then answers
  * 500. The console retries the round, which lists the folder again from its
  * start.
+ *
+ * ## Uploads
+ *
+ * An upload is signed just before the browser sends it, and reported once R2
+ * has taken it:
+ *
+ * 1. `POST /api/files/uploads` checks each file against the upload rules
+ *    (files/keys.ts), asks R2 whether its key exists, and presigns a `PUT`
+ *    bound to the key, the exact size and the content type. A new key is
+ *    signed with `If-None-Match: *`, so R2 refuses it if it appears in the
+ *    meantime. An existing key answers `exists`, with its size and time,
+ *    unless the request says `overwrite: true` (Replace): then the URL is
+ *    signed for the key exactly as R2 lists it, which may be another
+ *    Unicode spelling of the one asked for (`storedSpelling`), and without
+ *    `If-None-Match`, so the track's id and annotations are kept
+ *    (ADR-0002). If that spelling cannot be found for certain, the file
+ *    answers `replace_unavailable` rather than risk another spelling: the
+ *    owner replaces it with rclone. Nothing has changed yet, so the library
+ *    is not marked changed.
+ *
+ *    Its cost: one `HeadObject` (Class B) per file that passes the rules,
+ *    and, for a Replace of an existing key with more than one possible
+ *    spelling, one `ListObjects` (Class A) per page listed to find it, at
+ *    most `SPELLING_LISTINGS` (3) a file. So a request of 10 files makes at
+ *    most 10 + 30 = 40 binding calls, and with the session check's D1
+ *    statements (at most 2) at most 42 subrequests, inside the 50.
+ * 2. `POST /api/files/uploads/complete` reports the keys whose `PUT`
+ *    succeeded, and records the change as a delete does. It makes no R2 call:
+ *    the keys are bounded by the upload rules, and a key that was not really
+ *    uploaded only causes a pass that finds nothing new.
  */
+
+/**
+ * The most files one `POST /api/files/uploads` signs, and the most keys one
+ * `POST /api/files/uploads/complete` reports. Each presign is about 0.3 ms of
+ * CPU (bench-file-uploads.ts, in Node), so 10 keep a request near 5 ms,
+ * well inside its 10 ms; 20 measured about 8.4 ms, too close. The console
+ * signs at most 3 at a time anyway.
+ */
+export const SIGN_BATCH = 10;
+
+/** The most `head()` calls in flight at once: a Worker waits on six connections at a time. */
+export const HEADS_IN_FLIGHT = 6;
+
+/** The keys one listing that looks for a Replace's stored spelling reaches: R2's own most. */
+const SPELLING_PAGE = 1000;
+
+/** The pages listed for one segment of a Replace's key: 2,000 entries of one folder. */
+const SPELLING_PAGES_PER_SEGMENT = 2;
+
+/**
+ * The listings one Replace may make to find its stored spelling, across
+ * every segment. With `SIGN_BATCH` and one `head()` a file, it bounds a
+ * request's binding calls at 40.
+ */
+export const SPELLING_LISTINGS = 3;
 
 /** The most keys one `POST /api/files/delete` takes; the body cap is sized for it. */
 export const DELETE_BATCH = 250;
@@ -115,9 +200,15 @@ export function registerFileRoutes(api: ApiApp): void {
   api.get("/files/config", requireSession, requirePermission("files:read"), (c) =>
     c.json({
       allowed: ALLOWED,
+      // R2_BUCKET_NAME, or null when unset.
+      bucket: bucketName(c.env),
+      // Whether uploads can be signed here; `missing` names the values that
+      // are not set, never their contents.
+      uploads: uploadsView(c.env),
       limits: {
         maxKeyBytes: MAX_KEY_BYTES,
         maxSegmentBytes: MAX_SEGMENT_BYTES,
+        signBatch: SIGN_BATCH,
         deleteBatch: DELETE_BATCH,
       },
       rescanQuietSeconds: RESCAN_QUIET_MS / 1000,
@@ -234,6 +325,299 @@ export function registerFileRoutes(api: ApiApp): void {
     const scan = await afterDelete(c.env, deleted);
     return c.json({ deleted: deleted.length, done, scan });
   });
+
+  /**
+   * `POST /api/files/uploads` with `{prefix?, files}`: 1–10 files to sign,
+   * each `{key, size, overwrite?}`, in the folder `prefix` (as listed, never
+   * normalised) when given. A refused file does not fail the others: the
+   * request answers 200 with one result per file, in order.
+   */
+  api.post("/files/uploads", requireSameOrigin, limitJsonBody, ...write, async (c) => {
+    const status = uploadsStatus(c.env);
+    if (!status.configured) {
+      return c.json({ error: "uploads_not_configured" }, 503);
+    }
+
+    const { prefix = "", files } = (await readJsonObject(c)) ?? {};
+    const requested = readUploadRequests(files);
+    if (requested === null || typeof prefix !== "string") {
+      return invalidRequest(c);
+    }
+    const prefixRefusal = checkUploadPrefix(prefix);
+    if (prefixRefusal !== null) {
+      return refused(c, prefixRefusal);
+    }
+
+    // One instant for the whole batch: every URL expires together.
+    const now = Date.now();
+    const uploads = await mapInFlight(requested, HEADS_IN_FLIGHT, (file) =>
+      signUpload(c.env, status.config, prefix, file, now),
+    );
+
+    return c.json({ uploads });
+  });
+
+  /**
+   * `POST /api/files/uploads/complete` with `{keys}`: 1–10 keys whose `PUT`
+   * R2 accepted. It records the change, in one D1 statement and one call to
+   * the scan driver, and answers what the driver will do about it.
+   */
+  api.post("/files/uploads/complete", requireSameOrigin, limitJsonBody, ...write, async (c) => {
+    const { keys } = (await readJsonObject(c)) ?? {};
+    if (!isCompletedKeyList(keys)) {
+      return invalidRequest(c);
+    }
+    const refusals = keys
+      .map((key) => checkUploadKey(key))
+      .flatMap((key) => ("error" in key ? [key.error] : []));
+    if (refusals.includes("reserved_path")) {
+      return refused(c, "reserved_path");
+    }
+    if (refusals.length > 0) {
+      // Not a key an upload could have written.
+      return invalidRequest(c);
+    }
+
+    const scan = await recordLibraryChange(c.env, Date.now());
+
+    return c.json({ scan });
+  });
+}
+
+/** One file `POST /api/files/uploads` is asked to sign. */
+interface UploadRequest {
+  readonly key: string;
+  readonly size: number;
+  readonly overwrite: boolean;
+}
+
+/**
+ * Why one file is not signed. `replace_unavailable`: a Replace whose stored
+ * spelling could not be found for certain (see `storedSpelling`); the owner
+ * replaces that file with rclone.
+ */
+export type UploadRefusal = PathRefusal | "empty_file" | "too_large" | "replace_unavailable";
+
+/** One result of `POST /api/files/uploads`, in the order the files were asked for. */
+export type UploadResult =
+  | ({ readonly key: string } & PresignedUpload)
+  | { readonly key: string; readonly error: UploadRefusal }
+  | {
+      readonly key: string;
+      readonly error: "exists";
+      readonly existing: { readonly size: number; readonly uploadedAt: string };
+    };
+
+/** `uploads` of `GET /api/files/config`. */
+function uploadsView(env: Env) {
+  const status = uploadsStatus(env);
+  return status.configured
+    ? { configured: true as const }
+    : { configured: false as const, missing: status.missing };
+}
+
+/**
+ * The files of a sign request, or null unless it is 1–10 objects, each with a
+ * string `key`, a `size` that is a whole number of bytes, and an `overwrite`
+ * that is a boolean when given.
+ */
+function readUploadRequests(files: unknown): UploadRequest[] | null {
+  if (!Array.isArray(files) || files.length < 1 || files.length > SIGN_BATCH) {
+    return null;
+  }
+
+  const requested: UploadRequest[] = [];
+  for (const file of files) {
+    if (typeof file !== "object" || file === null || Array.isArray(file)) {
+      return null;
+    }
+    const { key, size, overwrite } = file as Record<string, unknown>;
+    if (
+      typeof key !== "string" ||
+      typeof size !== "number" ||
+      !Number.isSafeInteger(size) ||
+      size < 0 ||
+      (overwrite !== undefined && typeof overwrite !== "boolean")
+    ) {
+      return null;
+    }
+    requested.push({ key, size, overwrite: overwrite === true });
+  }
+
+  return requested;
+}
+
+/**
+ * One file's result: why it is refused, that its key exists, or its
+ * presigned `PUT`. Its key is the one asked for in NFC, or on Replace the
+ * key exactly as R2 stores it.
+ */
+async function signUpload(
+  env: Env,
+  config: UploadsConfig,
+  prefix: string,
+  file: UploadRequest,
+  now: number,
+): Promise<UploadResult> {
+  const checked = checkUploadKey(file.key, prefix);
+  if ("error" in checked) {
+    return { key: newKeySpelling(file.key, prefix), error: checked.error };
+  }
+  const sizeRefusal = checkUploadSize(checked.kind, file.size);
+  if (sizeRefusal !== null) {
+    return { key: checked.key, error: sizeRefusal };
+  }
+
+  // One Class B operation. R2 treats NFC-equivalent keys as one object, so
+  // this finds an object stored under another spelling too.
+  const stored = await env.MUSIC.head(checked.key);
+  if (stored !== null && !file.overwrite) {
+    return {
+      key: checked.key,
+      error: "exists",
+      existing: { size: stored.size, uploadedAt: stored.uploaded.toISOString() },
+    };
+  }
+
+  // The lookup compares in NFC, whatever spelling the prefix kept.
+  const key =
+    stored === null ? checked.key : await storedSpelling(env, checked.key.normalize("NFC"));
+  if (key === null) {
+    return { key: checked.key, error: "replace_unavailable" };
+  }
+  const presigned = await presignUpload(
+    config,
+    { key, size: file.size, contentType: checked.contentType, replace: stored !== null },
+    now,
+  );
+
+  return { key, ...presigned };
+}
+
+/**
+ * The exact key, as R2 lists it, of the object `head(key)` found, for a
+ * Replace to write under, or null when it cannot be found for certain. R2
+ * treats Unicode-equivalent keys as one object but lists the spelling last
+ * uploaded, so a Replace under another spelling would change the key the
+ * scanner sees, and with it the track's id and its annotations (ADR-0002).
+ * Whether `head()` answers the stored spelling or the one asked for is not
+ * documented, so this never takes `head()`'s key.
+ *
+ * It walks the key's segments from the root:
+ *
+ * - a folder segment with one spelling (`hasOneSpelling`: ASCII, but for
+ *   `K`, `;` and `` ` ``) is taken as it is;
+ * - any other folder segment is looked up in the folder resolved so far: a
+ *   delimited listing under the folder and the segment's one-spelling
+ *   prefix, up to `SPELLING_PAGES_PER_SEGMENT` pages, must hold exactly one
+ *   subfolder whose name is NFC-equal to it;
+ * - the file name is looked up the same way among the folder's objects. It
+ *   is taken as it is only when it, and every folder before it, has one
+ *   spelling; once a folder was looked up, the object is too, so a folder
+ *   chosen wrongly fails here rather than renaming the object.
+ *
+ * Null when a lookup finds no match (not in the pages listed), more than
+ * one, or would make more than `SPELLING_LISTINGS` listings in all.
+ */
+async function storedSpelling(env: Env, key: string): Promise<string | null> {
+  const segments = key.split("/");
+  const name = segments.pop() ?? "";
+  let budget = SPELLING_LISTINGS;
+  let resolved = "";
+  let lookedUp = false;
+
+  for (const segment of segments) {
+    if (hasOneSpelling(segment)) {
+      resolved += `${segment}/`;
+      continue;
+    }
+    const lookup = await lookUpSpelling(env, resolved, segment, "folder", budget);
+    if (lookup.found === null) {
+      return null;
+    }
+    budget -= lookup.listings;
+    resolved = lookup.found;
+    lookedUp = true;
+  }
+
+  if (hasOneSpelling(name) && !lookedUp) {
+    return resolved + name;
+  }
+  const lookup = await lookUpSpelling(env, resolved, name, "object", budget);
+
+  return lookup.found;
+}
+
+/**
+ * Finds, in the folder `parent` (as stored, `""` for the root), the one
+ * subfolder (`"folder"`: its prefix, ending in `/`) or object (`"object"`:
+ * its key) whose name is NFC-equal to `segment`, in at most `budget`
+ * listings. `found` is null when there is none in the pages listed, or more
+ * than one.
+ */
+async function lookUpSpelling(
+  env: Env,
+  parent: string,
+  segment: string,
+  kind: "folder" | "object",
+  budget: number,
+): Promise<{ readonly found: string | null; readonly listings: number }> {
+  const prefix = parent + oneSpellingPrefix(segment);
+  let listings = 0;
+  let cursor: string | undefined;
+
+  while (listings < Math.min(budget, SPELLING_PAGES_PER_SEGMENT)) {
+    const listing = await env.MUSIC.list({ prefix, delimiter: "/", limit: SPELLING_PAGE, cursor });
+    listings++;
+    const entries =
+      kind === "folder" ? listing.delimitedPrefixes : listing.objects.map((object) => object.key);
+    const matches = entries.filter((entry) => {
+      if (!entry.startsWith(parent)) {
+        return false;
+      }
+      const entryName = entry.slice(parent.length, kind === "folder" ? -1 : undefined);
+      // An ASCII name is its own NFC: no need to normalise it.
+      return isAscii(entryName) ? entryName === segment : entryName.normalize("NFC") === segment;
+    });
+    if (matches.length > 0 || !listing.truncated) {
+      return { found: matches.length === 1 ? (matches[0] ?? null) : null, listings };
+    }
+    cursor = listing.cursor;
+  }
+
+  return { found: null, listings };
+}
+
+/**
+ * `work` applied to every item, at most `limit` at a time, with the results
+ * in the items' order.
+ */
+async function mapInFlight<T, R>(
+  items: readonly T[],
+  limit: number,
+  work: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await work(items[index] as T);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+
+  return results;
+}
+
+/** Whether `keys` is 1–10 strings, as a complete request reports them. */
+function isCompletedKeyList(keys: unknown): keys is string[] {
+  return (
+    Array.isArray(keys) &&
+    keys.length >= 1 &&
+    keys.length <= SIGN_BATCH &&
+    keys.every((key) => typeof key === "string")
+  );
 }
 
 /**

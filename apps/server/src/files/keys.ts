@@ -152,18 +152,31 @@ function isAcceptableSegment(segment: string): boolean {
 
 /**
  * Checks a key a new upload would take, after normalising it to NFC, and
- * answers it with its kind and content type, or why it is refused:
+ * answers it with its kind and content type, or why it is refused. With a
+ * folder `prefix` (as a listing gave it, `checkUploadPrefix`), the key must
+ * start with it, and only the part after it is normalised: the folder keeps
+ * the spelling it is stored under, so an upload into a folder stored in NFD
+ * (named on macOS) lands in that folder, not in an NFC twin of it.
  *
- * - `invalid_path`: empty, absolute (a leading `/`), a folder (a trailing
- *   `/`), an empty segment (`a//b`), a `.` or `..` segment, a segment that
- *   starts with a dot, a control character or a backslash;
+ * - `invalid_path`: outside `prefix`;
+ * - `invalid_path`: not well-formed UTF-16 (a lone surrogate, which no
+ *   UTF-8 key can hold and which no URL can encode), empty, absolute (a
+ *   leading `/`), a folder (a trailing `/`), an empty segment (`a//b`), a
+ *   `.` or `..` segment, a segment that starts with a dot, a control
+ *   character or a backslash;
  * - `path_too_long`: over `MAX_KEY_BYTES`, or a segment over
  *   `MAX_SEGMENT_BYTES`, in bytes of UTF-8;
  * - `reserved_path`: under `_covers/`;
  * - `type_not_allowed`: a suffix outside the allow-list.
  */
-export function checkUploadKey(raw: string): UploadKey | { readonly error: PathRefusal } {
-  const key = raw.normalize("NFC");
+export function checkUploadKey(
+  raw: string,
+  prefix = "",
+): UploadKey | { readonly error: PathRefusal } {
+  if (!isWellFormed(raw) || !raw.startsWith(prefix)) {
+    return { error: "invalid_path" };
+  }
+  const key = newKeySpelling(raw, prefix);
   const segments = key.split("/");
   if (!segments.every(isAcceptableSegment)) {
     return { error: "invalid_path" };
@@ -185,6 +198,89 @@ export function checkUploadKey(raw: string): UploadKey | { readonly error: PathR
   }
 
   return { key, kind, suffix, contentType: contentTypeOf(kind, suffix) };
+}
+
+/**
+ * The spelling a new key takes: in NFC after `prefix`, which it keeps as it
+ * is. A key outside `prefix` is normalised whole.
+ */
+export function newKeySpelling(raw: string, prefix = ""): string {
+  return raw.startsWith(prefix)
+    ? prefix + raw.slice(prefix.length).normalize("NFC")
+    : raw.normalize("NFC");
+}
+
+/**
+ * Checks the folder prefix an upload request names, as a listing gave it:
+ * as browse takes a prefix (`""` for the root, or ending in `/`, at most
+ * `MAX_KEY_BYTES`, not under `_covers/`), and well-formed. It is never
+ * normalised.
+ */
+export function checkUploadPrefix(prefix: string): "invalid_path" | "reserved_path" | null {
+  return isWellFormed(prefix) ? checkBrowsePrefix(prefix) : "invalid_path";
+}
+
+/**
+ * Whether a string is well-formed UTF-16: no lone surrogate.
+ * `String.prototype.isWellFormed` (ES2024) is in workerd and Node 22, but
+ * not in this project's ES2022 lib, hence the cast.
+ */
+function isWellFormed(value: string): boolean {
+  return (value as string & { isWellFormed(): boolean }).isWellFormed();
+}
+
+/*
+ * Spellings. R2 treats Unicode-equivalent keys as one object, but lists the
+ * spelling last uploaded, and a track's id is the hash of that exact string
+ * (ADR-0002). So a Replace must write under the stored spelling, segment by
+ * segment, which the route finds by listing (api/files.ts). These say which
+ * part of a segment, asked for in NFC, every stored spelling of it shares.
+ *
+ * A character outside ASCII can be stored composed, decomposed, or (for a
+ * CJK compatibility ideograph, say) as another code point altogether. So can
+ * three ASCII characters, each the canonical decomposition of a code point
+ * of its own: `K` (KELVIN SIGN), `;` (GREEK QUESTION MARK) and `` ` ``
+ * (GREEK VARIA); test/files-keys.test.ts checks that there are no others.
+ * Every other ASCII character has one spelling: it is in NFC and NFD alike,
+ * and no other code point normalises to it. An ASCII character in an NFC
+ * segment is also never the base of a following combining mark, which NFC
+ * would have composed with it, unless no composed form exists, in which case
+ * every spelling keeps the base too.
+ */
+
+/** The ASCII characters some other code point canonically decomposes to. */
+const ASCII_WITH_SINGLETONS = /[K;`]/;
+
+/** A string of ASCII only, which NFC leaves as it is. */
+export function isAscii(value: string): boolean {
+  for (let index = 0; index < value.length; index++) {
+    if (value.charCodeAt(index) > 0x7f) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Whether a segment, in NFC, has one spelling only: ASCII, and none of the
+ * three ASCII characters another code point decomposes to.
+ */
+export function hasOneSpelling(segment: string): boolean {
+  return isAscii(segment) && !ASCII_WITH_SINGLETONS.test(segment);
+}
+
+/**
+ * The leading part of a segment, in NFC, that every stored spelling of it
+ * starts with: the characters before its first one that can be spelled
+ * another way (`hasOneSpelling`). It may be empty (`Édith Piaf`).
+ */
+export function oneSpellingPrefix(segment: string): string {
+  let length = 0;
+  while (length < segment.length && hasOneSpelling(segment.charAt(length))) {
+    length++;
+  }
+
+  return segment.slice(0, length);
 }
 
 /** Why an upload's size is refused, or null when its kind takes it. */

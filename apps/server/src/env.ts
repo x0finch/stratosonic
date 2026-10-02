@@ -39,9 +39,25 @@ export interface Env extends Cloudflare.Env {
   readonly CF_ANALYTICS_TOKEN?: string;
   /**
    * The account tag the usage panel reads, which no binding exposes. A secret
-   * rather than a var, so that wrangler.jsonc stays account-agnostic.
+   * rather than a var, so that wrangler.jsonc stays account-agnostic. The
+   * console's uploads reuse it for the bucket's S3 endpoint,
+   * `https://<CF_ACCOUNT_ID>.r2.cloudflarestorage.com` (files/config.ts).
    */
   readonly CF_ACCOUNT_ID?: string;
+  /**
+   * The Access Key ID of an R2 API token with Object Read & Write on the one
+   * bucket `MUSIC` binds, which the console's uploads are presigned with
+   * (#83, "Configuration"; files/sign.ts). Optional: without it, its secret,
+   * `CF_ACCOUNT_ID` and `R2_BUCKET_NAME`, uploads are not configured and
+   * `POST /api/files/uploads` answers 503. It appears in each presigned URL
+   * (`X-Amz-Credential`), as SigV4 requires; it names the key, and is not it.
+   */
+  readonly R2_ACCESS_KEY_ID?: string;
+  /**
+   * That token's Secret Access Key. It never leaves the Worker: no response,
+   * URL or log line carries it.
+   */
+  readonly R2_SECRET_ACCESS_KEY?: string;
   /**
    * `"off"` makes the console's Files page read-only (#83, owner decision 2):
    * its write routes answer `403 {"error":"file_writes_disabled"}` and
