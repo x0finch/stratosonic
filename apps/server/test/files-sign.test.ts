@@ -101,9 +101,7 @@ describe("the SigV4 oracle", () => {
   });
 
   it("encodes every byte but the unreserved characters", () => {
-    expect(uriEncode("a b+c&d#e?f%g'h/é~-._")).toBe(
-      "a%20b%2Bc%26d%23e%3Ff%25g%27h%2F%C3%A9~-._",
-    );
+    expect(uriEncode("a b+c&d#e?f%g'h/é~-._")).toBe("a%20b%2Bc%26d%23e%3Ff%25g%27h%2F%C3%A9~-._");
   });
 });
 
