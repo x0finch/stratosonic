@@ -75,6 +75,11 @@
   //     account's id), for the console's free-tier usage panel. Without both
   //     the panel is hidden. The account id is a secret too, so this file
   //     stays account-agnostic.
+  //   - optionally, `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`, an R2 API
+  //     token with Object Read & Write on this one bucket only, which the
+  //     console's uploads are presigned with (README.md, "File uploads").
+  //     They also need `CF_ACCOUNT_ID`, for the bucket's S3 endpoint, and
+  //     `R2_BUCKET_NAME` below. Without all four, uploads are not configured.
   //
   // Deprecated: `INITIAL_USER` below and the `INITIAL_PASSWORD` secret create
   // the first Subsonic user, an admin, on first run. They still work in this
@@ -83,8 +88,13 @@
   //
   // `FILE_WRITES` is a var production leaves unset: `"off"` makes the
   // console's Files page read-only, as `env.preview` sets it (below).
+  //
+  // `R2_BUCKET_NAME` is the bucket's name, which the `MUSIC` binding does not
+  // expose and the presigned upload URLs need. It must equal
+  // `r2_buckets[].bucket_name` below.
   "vars": {
-    "INITIAL_USER": "admin"
+    "INITIAL_USER": "admin",
+    "R2_BUCKET_NAME": "navidrome"
   },
   "d1_databases": [
     {
@@ -135,9 +145,12 @@
       // (#83, owner decision 2): preview binds the production bucket below,
       // so its console may browse the bucket but never delete or upload, and
       // the write routes under `/api/files` answer 403 file_writes_disabled.
+      // `R2_BUCKET_NAME` must equal `r2_buckets[].bucket_name` below, as at
+      // the top level.
       "vars": {
         "INITIAL_USER": "admin",
-        "FILE_WRITES": "off"
+        "FILE_WRITES": "off",
+        "R2_BUCKET_NAME": "navidrome"
       },
       "d1_databases": [
         {

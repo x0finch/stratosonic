@@ -12,6 +12,12 @@
 #   wrangler secret put CF_ANALYTICS_TOKEN
 #   wrangler secret put CF_ACCOUNT_ID
 #
+# and, optionally, for the console's file uploads (which need CF_ACCOUNT_ID
+# too):
+#
+#   wrangler secret put R2_ACCESS_KEY_ID
+#   wrangler secret put R2_SECRET_ACCESS_KEY
+#
 # Passphrase the AES-GCM key that encrypts stored Subsonic passwords is derived
 # from (ADR-0003), and the admin console's session secret and the pepper of its
 # users' password hashes too (ADR-0007). Changing it after users exist makes
@@ -32,6 +38,18 @@ SETUP_TOKEN = "change-me"
 # account's id (README.md). Without both, the panel is hidden.
 # CF_ANALYTICS_TOKEN = ""
 # CF_ACCOUNT_ID = ""
+
+# Optional: the console's file uploads (README.md, "File uploads"). An R2 API
+# token with Object Read & Write, applied to this one bucket only; the browser
+# uploads straight to the bucket with URLs the Worker presigns with it. Uploads
+# also need CF_ACCOUNT_ID above and the R2_BUCKET_NAME var in wrangler.jsonc;
+# without all four they are not configured. The secret key never leaves the
+# Worker. Under `wrangler dev`, MUSIC is a local simulation but the URLs point
+# at the real bucket R2_BUCKET_NAME names, production's unless overridden: set
+# it here to a scratch bucket, with that bucket's own token.
+# R2_BUCKET_NAME = "stratosonic-scratch"
+# R2_ACCESS_KEY_ID = ""
+# R2_SECRET_ACCESS_KEY = ""
 
 # Deprecated: password of the Subsonic admin user created on first run,
 # alongside the INITIAL_USER var in wrangler.jsonc. It is only read while the
