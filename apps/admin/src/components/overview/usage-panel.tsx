@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useId } from "react";
 
 import { ErrorAlert } from "@/components/error-alert";
 import { Section } from "@/components/section";
@@ -115,9 +115,13 @@ export function UsagePanel({
 }
 
 function Group({ title, children }: { title: string; children: ReactNode }) {
+  const id = useId();
+
   return (
-    <section className="flex flex-col gap-3" aria-label={title}>
-      <h3 className="text-sm font-medium">{title}</h3>
+    <section className="flex flex-col gap-4" aria-labelledby={id}>
+      <h3 id={id} className="text-sm font-medium">
+        {title}
+      </h3>
       {children}
     </section>
   );

@@ -50,12 +50,12 @@ export function LibraryScan({
 
 function describeScan(scan: ScanStatus, now: number): string {
   if (scan.running) {
-    return scan.phase === "playlists" ? "Importing playlists" : "A scan is running";
+    return scan.phase === "playlists" ? "Importing playlists" : "A scan is running.";
   }
   if (scan.last) {
-    return `Last scan finished ${formatRelative(scan.last.finishedAt, now)}`;
+    return `Last scan finished ${formatRelative(scan.last.finishedAt, now)}.`;
   }
-  return "No scan has finished yet";
+  return "No scan has finished yet.";
 }
 
 function ScanNowButton() {
