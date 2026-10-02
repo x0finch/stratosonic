@@ -200,10 +200,22 @@ The token is a long-lived write credential for the whole bucket. Rotate it
 if it may have leaked, or on whatever schedule you keep:
 
 1. Create a new token, as in step 1.
-2. Set both values: `wrangler secret put R2_ACCESS_KEY_ID`, then
-   `wrangler secret put R2_SECRET_ACCESS_KEY`. Each `secret put` makes a new
-   version live, so no code deploy is needed. The Worker signs with the new
-   token from its next request.
+2. Set both values in one version. Write them to a JSON file outside the
+   repository, apply it, and delete it:
+
+   ```sh
+   # r2-token.json: {"R2_ACCESS_KEY_ID": "…", "R2_SECRET_ACCESS_KEY": "…"}
+   wrangler secret bulk r2-token.json
+   rm r2-token.json
+   ```
+
+   `secret bulk` makes one new version live, with both values, so no code
+   deploy is needed and the Worker signs with the new token from its next
+   request. Two `wrangler secret put`s would work too, but each makes a
+   version live, and between them the Worker signs with the new key id and
+   the old secret: every upload signed then fails with
+   `403 SignatureDoesNotMatch`. The console signs again for each file, so
+   only uploads started in that window fail.
 3. Delete the old token in the dashboard. URLs signed with it stop working,
    and none lives longer than five minutes anyway.
 
@@ -368,6 +380,7 @@ Run from the repository root with `pnpm --filter @stratosonic/server <script>`:
 - `dev` builds the console and starts `wrangler dev`.
 - `test` runs the Workers-pool tests, then the routing tests.
 - `typecheck` regenerates the binding types and type-checks.
-- `bench:console-auth`, `bench:file-uploads` and `bench:startup` measure the
-  CPU of the console's auth and upload routes and the Worker's startup cost;
+- `bench:console-auth`, `bench:files`, `bench:file-uploads` and
+  `bench:startup` measure the CPU of the console's auth routes, of browsing
+  and folder deletes, of the upload routes, and the Worker's startup cost;
   see the scripts for how to read them.
