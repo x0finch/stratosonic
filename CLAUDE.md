@@ -30,8 +30,8 @@ uploaded to R2 with rclone; the first admin user is created on first run from
 
 ## Console UI
 
-- **Before changing any page or component in `apps/admin`, read
-  `apps/admin/DESIGN.md`**. It holds the console's design rules, including
+- **Before changing any page, component, or user-visible copy or formatting
+  in `apps/admin`, read `apps/admin/DESIGN.md`**. It holds the console's design rules, including
   its theme-only colors, its sections in place of nested cards, and the
   screenshot check that ends every UI change.
 

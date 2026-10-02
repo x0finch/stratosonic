@@ -5,6 +5,8 @@ TanStack Query, shadcn/ui on Base UI, Tailwind CSS v4) that the Worker in
 `apps/server` serves as its static assets. There is no separate deployment:
 `wrangler deploy` uploads `dist/` with the Worker.
 
+Every page and component follows the design rules in [DESIGN.md](DESIGN.md).
+
 ## How it is served
 
 `apps/server/wrangler.jsonc` points `assets.directory` at `../admin/dist`.
@@ -66,8 +68,6 @@ any other origin. For a Worker on another port, set `WORKER_ORIGIN`, e.g.
 --filter @stratosonic/admin build` to pick up changes; there is no hot reload.
 
 ## Generated files
-
-Every page and component follows the design rules in [DESIGN.md](DESIGN.md).
 
 The UI is shadcn/ui's, kept as its CLI generated it (Base UI, the Nova preset,
 the `neutral` base color). `components.json`, `src/index.css`,

@@ -15,16 +15,20 @@ spacing and alignment, and color and surfaces are kept for meaning.
   base color. `src/components/ui/*` and `src/index.css` stay as the CLI wrote
   them. A page composes these components and lays them out with Tailwind
   layout utilities (flex, grid, gap, padding, width, overflow, borders).
-- **Use only the theme's named colors:** `background`, `foreground`, `muted`,
-  `muted-foreground`, `border`, `input`, `ring`, `primary`,
-  `primary-foreground`, `secondary`, `accent`, `destructive`, `chart-1` to
-  `chart-5`, and `sidebar-*`. Each is used through its Tailwind class, for
-  example `text-muted-foreground`, `border` or `bg-muted`. Every color comes
-  from one of these names, so the light and dark themes stay the theme's own.
+- **Use only the theme's named colors,** the color tokens defined in
+  `src/index.css`: `background`, `foreground`, `muted`, `muted-foreground`,
+  `border`, `input`, `ring`, `primary`, `secondary`, `accent`, `card`,
+  `popover`, `destructive` (each with its `-foreground` pair where the theme
+  has one), `chart-1` to `chart-5`, and `sidebar-*`. Each is used through its
+  Tailwind class, for example `text-muted-foreground`, `border` or `bg-muted`,
+  so the light and dark themes stay the theme's own.
 - **Prefer a component's own props** (`variant`, `size`) to restyling it. When
   no variant fits, compose a different official component.
 - **Use Tailwind's scales only.** Sizes, weights, spacing and radii come from
   Tailwind's named steps (`text-sm`, `font-medium`, `gap-4`, `rounded-lg`).
+- **Code taken from a shadcn block or guide keeps its classes** (the
+  sidebar-08 shell, the `login-01` forms, `mode-toggle.tsx`), so it stays
+  comparable with its source.
 
 ## Color
 
@@ -47,7 +51,7 @@ it.
   line. A `Separator` or a hairline `border` marks a real boundary between
   groups that spacing alone cannot show.
 - **Inside the shell, a block is a `Section`** (`src/components/section.tsx`):
-  an h2, one muted line of description, an optional action at the heading's
+  an h2, a short muted description, an optional action at the heading's
   end, and the content. Follow the shadcn Tasks and Settings examples.
 - **`Card` belongs to full-screen pages outside the shell:** sign-in, setup
   and the error screen, as in the `login-01` block.
@@ -61,8 +65,8 @@ it.
 ## Typography
 
 - **Geist** (`font-sans`, `font-heading`) is for all text, including numbers,
-  dates and table cells. **Geist Mono** (`font-mono`) is for short
-  identifiers only: a path, an R2 key, an id, a command. Only the identifier
+  dates and table cells. `font-mono` (the theme's monospace stack) is for
+  short identifiers only: a path, an R2 key, an id, a command. Only the identifier
   itself is set in mono, not its sentence or column.
 - **Fixed roles:**
 
@@ -73,6 +77,7 @@ it.
   | Sub-heading | h3 inside a section | `text-sm font-medium` |
   | Body and table text | p, td | `text-sm` |
   | Description and labels | p, dt, helper text | `text-sm text-muted-foreground` |
+  | Metadata | a secondary line under a figure, meter or item | `text-xs text-muted-foreground` |
   | Key figure | dd of a stat | `text-2xl font-semibold tabular-nums` |
 
 - **Peers share one role.** Equivalent items use the same size, weight and
@@ -81,22 +86,26 @@ it.
   page's structure.
 - **Headings are sentence case and name what the block shows,** in the
   product's own vocabulary ("Library scan", "Subsonic users").
-- **Copy is plain and specific.** Use sentence case, a period or comma, and
-  concrete nouns and verbs. In sentences, use commas, colons or parentheses
+- **Copy is plain and specific.** Use sentence case and concrete nouns and
+  verbs. A description that is a full sentence ends with a period; a short
+  phrase ("Tracks by genre") does not. In sentences, use commas, colons or parentheses
   in place of em dashes, and write labels in sentence case rather than all caps.
-- **Readable prose:** keep body text at `text-sm` or larger, and keep
+- **Readable prose:** keep body text at `text-sm` (the metadata role is for
+  short secondary lines, never for paragraphs), and keep
   explanatory paragraphs to a comfortable measure (about `max-w-prose`).
 
 ## Spacing and layout
 
 - **Spacing expresses relationships:**
   - inside a group (label to value, heading to description): `gap-1` to
-    `gap-2`;
+    `gap-3`;
   - between items of a group, or a heading to its content: `gap-4`;
   - between sections: `gap-6` to `gap-10`, with a `Separator` where the
     page changes subject.
 - **Each gap has one owner.** The parent sets it with `gap-*` on a flex or
-  grid. Children carry no outer margins. The one exception is a divided
+  grid. Children carry no outer spacing margins; auto margins that center a
+  column or push an item to the end (`mx-auto`, `m-auto`, `ml-auto`) are
+  layout, not spacing. The other exception is a divided
   grid that clips its outer borders, as in `LibraryTotals`: the grid is
   shifted by one border and one gutter (`-mt-px -ml-4`) inside an
   `overflow-hidden` box, so dividers fall only between items.
@@ -104,7 +113,9 @@ it.
   holds every page. A focused form, such as Account, uses a narrow centered
   column (`m-auto max-w-md`).
 - **Align to shared edges.** Peer columns line up, and the first column of a
-  row lines up with the sections around it.
+  row lines up with the sections around it. A table keeps the `Table`
+  component's own cell padding, so its first column sits that padding inside
+  the section's edge.
 - **Balance the grid.** Peers in a row share the row's width, and a split
   with one empty half collapses to one column. On desktop, sections pair in
   two columns where both are real peers. On mobile everything stacks.
@@ -131,8 +142,9 @@ it.
 - Label values directly on the marks. A legend is for several series only.
 - Every chart sets Recharts' `accessibilityLayer` and labels its values, so
   its data is readable without the picture.
-- Stats of equal rank are one row (`dl`) with thin dividers, as in
-  `LibraryTotals`, rather than a grid of boxes.
+- A page's key figures are one row (`dl`) with thin dividers, as in
+  `LibraryTotals`, rather than a grid of boxes. Small label and value pairs
+  inside a section are a plain `dl` grid.
 
 ## Badges and icons
 
@@ -158,9 +170,11 @@ The details are in README.md, "Signing in".
 ## Motion
 
 - Stillness is the default. Motion comes only from the components' own
-  transitions (dialog, menu, toast, sidebar) and from progress that reports
-  a real state, such as a running scan.
-- Respect `prefers-reduced-motion`; the components already do.
+  transitions (dialog, menu, toast, sidebar, `Skeleton`, `Spinner`), which
+  stay as generated, and from progress that reports a real state, such as a
+  running scan.
+- Our own markup adds no animation. Where it must, the animation is wrapped
+  in `motion-safe:` so `prefers-reduced-motion` turns it off.
 
 ## Themes
 
@@ -174,7 +188,8 @@ The details are in README.md, "Signing in".
 ## Accessibility
 
 - Use landmarks, one h1, ordered headings, and a `section` named by its h2
-  (`aria-labelledby`).
+  (`aria-labelledby`). A block with no visible heading, such as the key
+  figures row, is a `section` named by `aria-label`.
 - Every control has a visible label or an `aria-label`. Focus stays visible
   through the components' own `ring`.
 - Contrast meets WCAG AA in both themes. Color is never the only cue.
