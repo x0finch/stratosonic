@@ -76,7 +76,9 @@ through `/api/files`. It needs no configuration to browse and delete:
   undo. Tracks leave the library at the scan that follows the change;
   playlists leave at once. Each answer that deleted something carries
   `scan`: `{"scheduledAt": "<ISO 8601>", "afterCurrentPass": false}`,
-  `{"scheduledAt": null, "afterCurrentPass": true}`, or `null` when the scan
+  `{"scheduledAt": null, "afterCurrentPass": true}` (a pass follows the one
+  running), `{"scheduledAt": null, "afterCurrentPass": false}` (the pass in
+  flight already covers the change), or `null` when the scan
   driver could not be told (the next cron pass indexes the change). A
   delete-folder call that found nothing left to delete answers
   `{"deleted": 0, "done": true}`, with no `scan`.

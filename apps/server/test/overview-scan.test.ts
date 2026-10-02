@@ -63,6 +63,7 @@ interface ConsoleScan {
     steps: number;
     counts: Record<string, number>;
   } | null;
+  scheduled: unknown;
 }
 
 interface ScanStatusElement {
@@ -143,6 +144,7 @@ describe("the scan before any pass", () => {
       progress: null,
       estimatedTotal: null,
       last: null,
+      scheduled: null,
     });
     expect(await scanStatus()).toEqual({ scanning: false, count: 0 });
   });
@@ -202,6 +204,7 @@ describe("the scan in flight, then completed", () => {
       progress: null,
       estimatedTotal: status.count,
       last: lastOf(summary),
+      scheduled: null,
     });
     expect(status.count).toBe(fixtures.tracks.length);
     expect(status.lastScan).toBe(new Date(summary.finishedAt).toISOString());

@@ -96,6 +96,10 @@ async function seedReferenceLibrary(): Promise<void> {
          values (?1, ?2, 'Substreamer', ?3, 'playing', 1000, 1, ?3, ?4)`,
       ).bind(userId, `tr${index * 7}`, now, now + 600_000),
     ),
+    // A console that has changed a file (#83), so the schedule's row is read.
+    testEnv.DB.prepare(
+      `insert into property (id, value) values ('LibraryChangedAt', json_object('at', ?1))`,
+    ).bind(at),
   ]);
 }
 
@@ -105,21 +109,29 @@ beforeAll(async () => {
   owner = (await signIn(send, ORIGIN, "owner", "overview")).jar;
 });
 
+/** How many Durable Object stubs the routes asked for since the last `measured`. */
+let driverRequests = 0;
+
 /**
  * A driver that answers the poke and runs nothing: what a pass costs is the
  * cron's row of the budget, not the button's, and a real one would sweep the
- * reference library away, a step at a time, for no reading here.
+ * reference library away, a step at a time, for no reading here. It counts
+ * the requests made of it, which the polled route must not make.
  */
 const pokeOnly = {
   ...env,
   SCAN_DRIVER: {
     idFromName: (name: string) => testEnv.SCAN_DRIVER.idFromName(name),
-    get: () => ({ start: async () => "started" }),
+    get: () => {
+      driverRequests++;
+      return { start: async () => "started" };
+    },
   },
 } as unknown as Env;
 
 async function measured(path: string, method = "GET"): Promise<RecordedStatement[]> {
   d1.reset();
+  driverRequests = 0;
   const response = await app.request(
     consoleRequest(ORIGIN, path, {
       jar: owner,
@@ -174,16 +186,22 @@ describe("the overview's budget on the reference library", () => {
     expect(cost(statements)).toEqual({
       statements: 2,
       roundTrips: 1,
-      rowsRead: 13,
+      rowsRead: 15,
       rowsWritten: 0,
     });
     expect(rows(statements)).toEqual([
-      // The three `property` keys, looked up by primary key.
-      ["select property", 3, 0],
+      // The four `property` keys, looked up by primary key: #82's three and
+      // `LibraryChangedAt`, which carries the scan's schedule (#83). D1
+      // counts one row read per key looked up and one more for each row
+      // found, so the schedule costs one row read before the console has
+      // changed a file, two after, and no round trip.
+      ["select property", 5, 0],
       // Both sessions, each with its track, album and user by key, and the
       // sort by start.
       ["select now_playing", 10, 0],
     ]);
+    // And no Durable Object request: the schedule is read from D1.
+    expect(driverRequests).toBe(0);
   });
 
   it("POST /api/library/scan: one round trip after the session, no writes", async () => {
@@ -191,8 +209,9 @@ describe("the overview's budget on the reference library", () => {
     const last = statements.at(-1)?.roundTrip;
 
     expect(rows(statements.filter((statement) => statement.roundTrip === last))).toEqual([
-      ["select property", 3, 0],
+      ["select property", 5, 0],
     ]);
+    expect(driverRequests).toBe(1);
     // The rest is `requireFreshSession`'s read of the session past the
     // cookie cache, which every write pays.
     expect(statements.slice(0, -1).map(shape)).toEqual(["select session", "select user"]);

@@ -1,7 +1,10 @@
 import { SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
+import { database } from "../src/db";
+import { RESCAN_QUIET_MS } from "../src/scanner/driver";
+import { readScanReport } from "../src/scanner/state";
 import { type CookieJar, seedConsoleUser, signIn } from "./console-auth-support";
-import { driverIsIdle, driveUntilIdle, poke } from "./driver-support";
+import { driveUntilIdle, nextAlarmAt, poke, storedKeys } from "./driver-support";
 import { filesHarness } from "./files-support";
 import {
   bucketKeys,
@@ -10,7 +13,7 @@ import {
   storedAlbums,
   storedTracks,
 } from "./scan-support";
-import { BASE } from "./support";
+import { BASE, testEnv } from "./support";
 
 /**
  * A delete and the library (#83, "Delete and the library"): the route
@@ -23,7 +26,8 @@ import { BASE } from "./support";
  */
 
 const ORIGIN = "https://files-library.stratosonic.test";
-const harness = filesHarness(ORIGIN);
+// The real driver: this test is about the pass the change leads to.
+const harness = filesHarness(ORIGIN, { scanDriver: "real" });
 const QUIET_ALBUM = [
   "Silent Artist/Quiet Album/01 Silent Track.mp3",
   "Silent Artist/Quiet Album/02 Hushed Interlude.flac",
@@ -65,8 +69,16 @@ describe("deleting an album's tracks", () => {
       expect.arrayContaining(QUIET_ALBUM),
     );
     expect((await storedAlbums()).map((album) => album.name)).toContain("Quiet Album");
-    expect(await driverIsIdle()).toBe(false);
+    // The driver holds the change, waiting out its quiet window.
+    const changedAt = (await readScanReport(database(testEnv))).lastChangedAt;
+    expect(changedAt).not.toBeNull();
+    expect(await storedKeys()).toEqual(["pending"]);
+    expect(await nextAlarmAt()).toBe((changedAt ?? 0) + RESCAN_QUIET_MS);
 
+    // The pass, run now rather than after the quiet window: a poke stamped
+    // after the change starts it, and it covers the pending change, so no
+    // follow-up pass waits behind it.
+    await poke(new Date(Date.now() + 1_000));
     await driveUntilIdle();
 
     const tracks = (await storedTracks()).map((track) => track.r2Key);
