@@ -493,8 +493,9 @@ async function pick(page, item, paths) {
 /**
  * Counts the requests an upload run makes from now on: sign and complete
  * requests to the Worker, and `PUT`s to R2. A CORS preflight is not a
- * request Playwright reports; the bucket's rule lets the browser keep one
- * for an hour.
+ * request Playwright reports; there is one before each `PUT`, since a
+ * browser caches a preflight by its full URL and every presigned URL
+ * differs.
  */
 function countUploadRequests(page) {
   const counted = { sign: 0, complete: 0, put: 0, files: 0 };

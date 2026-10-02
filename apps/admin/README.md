@@ -355,5 +355,7 @@ scheduled or running, with `library:read`, at the Overview's pace (every
 the tab reads nothing, and a hidden tab reads nothing. An upload costs its
 share of one sign request (1–3 files), one `PUT` straight to R2 (no Worker
 request), and its share of one complete request (the files of its sign
-request that landed); the bucket's CORS rule lets the browser keep one
-preflight for an hour.
+request that landed). Each `PUT` also has its own CORS preflight, to R2
+and not the Worker: a browser caches a preflight by its full URL, and no
+two presigned URLs are alike, so the CORS rule's `maxAgeSeconds` saves
+none.

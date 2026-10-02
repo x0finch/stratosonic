@@ -59,8 +59,10 @@ import { formatBytes } from "@/lib/format";
  *
  * Per file: its share of one sign request (1–3 files), one `PUT` straight
  * to R2 (no Worker request), and its share of one complete request (the
- * files of its sign request that were uploaded). The CORS preflight is
- * cached by the browser for an hour (`maxAgeSeconds: 3600`). The folder on
+ * files of its sign request that were uploaded). Each `PUT` also has its
+ * own CORS preflight (`OPTIONS`, to R2, no Worker request): a browser
+ * caches a preflight by its full URL, and no two presigned URLs are alike,
+ * so the bucket's `maxAgeSeconds` saves none (measured in Chromium). The folder on
  * screen is read again after uploads land, at most once every
  * `REFRESH_EVERY_MS` (5 s) while the queue runs, and once after the last.
  */
