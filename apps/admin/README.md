@@ -213,6 +213,19 @@ Worker with `FILE_WRITES = "off"` (`wrangler dev --var FILE_WRITES:off`)
 it checks the read-only page instead and deletes nothing. Without the
 scratch folder the Files steps are skipped.
 
+Uploads need a real bucket: a presigned `PUT` goes to R2's S3 endpoint,
+which `wrangler dev`'s local bucket does not have. So the upload steps run
+only against a Worker with R2 API credentials (a deployment, or `wrangler
+dev --remote`) whose bucket is a scratch bucket, named in `UPLOADS_BUCKET`,
+with the CORS rule for `BASE_URL`'s origin (apps/server README, "File
+uploads"); otherwise they are skipped. They upload a folder into
+`FILES_PREFIX` (two FLACs, their `.lrc` and a cover), see each file's
+progress row, the toast and the scan line, upload one of its files again
+and replace it, and delete the folder again. Each step's note counts the
+sign, complete and `PUT` requests its run made. A `.pdf`, refused before
+any request, needs no bucket: that step runs on any Worker whose uploads
+are configured, which fake R2 credentials in `.dev.vars` are enough for.
+
 ## Subsonic users
 
 The **Subsonic users** page (`/users`, `src/routes/_shell/users.tsx`, its
@@ -243,18 +256,22 @@ screen are in `src/lib/subsonic-users.ts`.
 ## Files
 
 The **Files** page (`/files`, `src/routes/_shell/files.tsx`, its parts in
-`src/components/files/`) browses the bound bucket one folder at a time and
-deletes files and folders from it (#83, ticket D). The rules that need no
-screen are in `src/lib/files.ts`. A role with `files:read` sees the page and
-the sidebar's Files entry; one with `files:write` also gets the checkboxes,
-each row's menu, **Delete** and **New folder**.
+`src/components/files/`) browses the bound bucket one folder at a time,
+deletes files and folders from it (#83, ticket D) and uploads to it (ticket
+E). The rules that need no screen are in `src/lib/files.ts` and
+`src/lib/uploads.ts`. A role with `files:read` sees the page and the
+sidebar's Files entry; one with `files:write` also gets the checkboxes,
+each row's menu, **Delete**, **New folder** and, where the server has R2 API
+credentials, **Upload**.
 
 - A folder is `?prefix=Artist/Album/`, so it is a deep link and the
   browser's back button walks up (`?prefix=2024` opens `2024/`). The path
   above the folder links each folder from the bucket down, and its current
-  page names the folder: the folder is the page's one block, so it has no
-  h2 (DESIGN.md). In a narrow column the folders in between collapse into
-  the breadcrumb's ellipsis.
+  page names the folder, which has no h2. While the folder is the page's
+  one block it is no region either (DESIGN.md); once the Uploads section
+  joins it, it is a region named after the folder (`aria-label`). In a
+  narrow column the folders in between collapse into the breadcrumb's
+  ellipsis.
 - A folder lists 1,000 entries a page, folders first, in R2's order;
   **Load more** reads the next page while there is one. R2 gives no total,
   so the description counts what is loaded ("12 files so far"). A cursor R2
@@ -275,19 +292,64 @@ each row's menu, **Delete** and **New folder**.
 - **Preview is read-only** (owner decision 2): where `GET /api/files/config`
   says `writes.enabled: false`, no write control shows, and "Read-only on
   this deployment" stands where the actions would be.
+- **Upload** is a menu: "Files…" picks files, "Folder…" a folder with
+  everything in it. Each file's key is the folder on screen and its path
+  under the folder picked (`webkitRelativePath`), the new part in NFC as
+  the server writes it. The request's `prefix` is the deepest folder of
+  that path the loaded listings show, exactly as listed, so a folder stored
+  in another Unicode spelling (macOS, rclone) gets no twin. A folder's
+  hidden files (`.DS_Store`, `._*`) are left out. It shows only where
+  `GET /api/files/config` says uploads are configured; otherwise the
+  folder's description says "Uploads need R2 API credentials on the server
+  (see the server README).", and in the preview nothing shows.
+- **Each file is checked here first** against the allow-list and the size
+  limits of `GET /api/files/config`, so a `.pdf`, an empty file or an
+  oversized one is refused before any request, and its row says why. The
+  server checks again.
+- **The queue** (`src/lib/uploads.ts`) sends 3 files at once. It signs them
+  just in time, as places free up, at most 3 to a request and never more
+  than `limits.signBatch`, and sends each with `XMLHttpRequest` (for its
+  progress) to R2 with exactly the headers signed. A URL within 30 s of its
+  expiry (on the server's clock) is signed again, and a `PUT` that fails
+  with a network error or a `403` (an expired URL reads as a network error)
+  is signed again and tried once more before it fails. Once every file of
+  a sign request is done, the uploaded ones are reported in one
+  `POST /api/files/uploads/complete` with `keepalive`, and on `pagehide`
+  any that are waiting for the rest of their request are reported at once.
+  Two uploads to one key never run together. The queue lasts for the
+  session, so uploads go on in other folders and on other pages, and
+  closing the tab while a file waits or is sent asks first
+  (`beforeunload`).
+- **Already exists** (the server's `exists`, or R2's `412`) offers
+  **Replace** and **Skip**; several get **Replace all**, which asks first
+  ("Replace 3 files?"), and **Skip all**. Replace is never automatic: it
+  signs again with `overwrite: true`, which keeps a track's id. A Replace
+  the server cannot spell for certain (`replace_unavailable`) fails with
+  "replace it with rclone".
+- **The Uploads section**, while the queue holds a file: "4 of 12
+  uploaded", **Cancel all**, **Clear finished**, and one row a file, its
+  key over a progress bar with its state (Waiting, Uploading with its
+  percent, Uploaded, Already exists, Failed and why, Skipped, Canceled)
+  and **Cancel upload** while it is still to go. Each run ends in a toast:
+  "Uploaded 12 files" ("The next scheduled scan will index them." when the
+  server could not schedule the scan), and "2 files were not uploaded".
 - **The scan line**, under the path, shows only while a pass is scheduled or
   running: "Library scan in about 2 minutes.", "Library scan starting.", "A
   scan is running. Another follows it for your recent changes." or "A scan is
   running." It counts down on the server's clock from the schedule the last
-  delete returned (the answer's `Date` header standing for `serverTime`), or
+  delete or upload completion returned (the answer's `Date` header standing for `serverTime`), or
   from the live route's, whichever answered last. The rescan itself is the
   server's (ADR-0008); the page only shows it.
 
 What it reads, for the free-tier budget: `GET /api/files/config` once a
 session; `GET /api/files` on opening a folder (fresh for 30 s), on **Load
-more**, and once after a delete (only the first page, whatever was
-loaded); a folder the page leaves is cut back to its first page, so a
+more**, once after a delete, and as uploads land, at most once every 5 s
+while the queue runs and once after the last (only the first page,
+whatever was loaded); a folder the page leaves is cut back to its first page, so a
 return to it once stale reads one page too; `GET /api/overview/live` only while a pass is scheduled or running,
 with `library:read`, at the Overview's pace (every 30 s, every 10 s while a
 pass runs). Nothing else is polled, a return to the tab reads nothing, and
-a hidden tab reads nothing.
+a hidden tab reads nothing. An upload costs its share of one sign request
+(1–3 files), one `PUT` straight to R2 (no Worker request), and its share of
+one complete request (the files of its sign request that landed); the
+bucket's CORS rule lets the browser keep one preflight for an hour.
