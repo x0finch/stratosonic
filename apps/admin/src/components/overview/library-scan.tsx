@@ -52,10 +52,10 @@ export function LibraryScan({
 }
 
 /**
- * What the scan is doing, in a sentence or two. A pass the server will run
- * for recent file changes (`describeSchedule`) comes first: while a pass
- * runs it says another follows; while idle it says when one starts, before
- * the last pass's finish.
+ * What the scan is doing next, in one sentence. A pass the server will run
+ * for recent file changes (`describeSchedule`) takes the place of the last
+ * pass's finish, as a running pass does: while a pass runs it says another
+ * follows, and while idle when one starts. The last pass's counts stay below.
  */
 function describeScan(scan: ScanStatus, now: number): ReactNode {
   const scheduled = describeSchedule(scan, now);
@@ -65,16 +65,18 @@ function describeScan(scan: ScanStatus, now: number): ReactNode {
     }
     return scan.phase === "playlists" ? "Importing playlists" : "A scan is running.";
   }
+  if (scheduled !== null) {
+    return scheduled;
+  }
   if (scan.last) {
     return (
       <>
-        {scheduled === null ? null : `${scheduled} `}
         Last scan finished <RelativeTime iso={scan.last.finishedAt} now={now} /> and took{" "}
         {formatDuration(passSeconds(scan.last))}.
       </>
     );
   }
-  return scheduled ?? "No scan has finished yet.";
+  return "No scan has finished yet.";
 }
 
 /** How long a pass took, in seconds. */
