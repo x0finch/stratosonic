@@ -128,7 +128,9 @@ function subrequests({ route, r2, driver }: Measured): number {
   return cost(route).roundTrips + r2.length + driver.length;
 }
 
-describe("the Files routes' budget", () => {
+// Seeding up to 2,000 objects in miniflare takes most of Vitest's default
+// 5 s on a busy machine.
+describe("the Files routes' budget", { timeout: 30_000 }, () => {
   it("GET /api/files/config: no D1 statement, no binding call", async () => {
     const result = await measured("GET", "/files/config");
 
