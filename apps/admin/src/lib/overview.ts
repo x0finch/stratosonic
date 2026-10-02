@@ -164,6 +164,10 @@ export function describeSchedule(
   if (scheduled.afterCurrentPass) {
     return "A scan is running. Another follows it for recent file changes.";
   }
+  if (scheduled.scheduledAt === null) {
+    // The pass in flight covers the change.
+    return "A scan is running.";
+  }
   const serverNow = Date.parse(clock.serverTime) + Math.max(now - clock.receivedAt, 0);
   const remaining = Date.parse(scheduled.scheduledAt) - serverNow;
   if (!(remaining > 0)) {

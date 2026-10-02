@@ -68,11 +68,13 @@ export function pokeScanDriver(env: Env, pokedAt: number = Date.now()): Promise<
  *    been quiet for `RESCAN_QUIET_MS`, or one more after the pass in
  *    flight.
  *
- * It answers null in two cases, and in both the change is indexed without
- * the caller doing more: the pass in flight began after the change and
- * covers it, or the touch failed, which is logged, and the next cron pass,
- * at most a quarter of an hour away, indexes it. An `at` in the future is
- * taken as now, so a wrong clock cannot hold the pass off.
+ * It answers the driver's schedule: a time a pass starts, one more pass
+ * after the one in flight, or `{ scheduledAt: null, afterCurrentPass:
+ * false }` when the pass in flight began after the change and covers it.
+ * It answers null only when the touch failed, which is logged: the change
+ * stands, and the next cron pass, at most a quarter of an hour away,
+ * indexes it. An `at` in the future is taken as now, so a wrong clock
+ * cannot hold the pass off.
  *
  * One D1 statement and one Durable Object request.
  */
@@ -99,7 +101,10 @@ export async function markLibraryChanged(env: Env, at: number): Promise<ScanSche
  * flight or else the last completed one, or when no pass has ever run. A
  * pending change waits for the pass in flight, or starts one
  * `RESCAN_QUIET_MS` after it; a `scheduledAt` already past means the alarm
- * is due, or the pass it started has not written its first step yet.
+ * is due, or the pass it started has not written its first step yet. A
+ * change the pass in flight covers reads as null here, as no change does:
+ * the view says nothing is pending, so it never gives `touch`'s third
+ * answer.
  *
  * `running` and `passStartedAt` default to what the report says. A caller
  * that has just started a pass passes them, because the pass's first step

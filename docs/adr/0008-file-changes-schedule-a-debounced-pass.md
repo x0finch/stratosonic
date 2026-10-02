@@ -31,8 +31,12 @@ covered it, never when a pass starts:
   one is taken as now). With no pass alive it moves the alarm to
   `changedAt + 2 minutes`, which replaces any earlier debounce alarm: that
   is the reset. With a pass alive it leaves the step chain's alarm alone,
-  and answers `afterCurrentPass` for a change since the pass began, or null
-  for an older one, which the pass covers.
+  and answers `{ scheduledAt: null, afterCurrentPass: true }` for a change
+  since the pass began, or `{ scheduledAt: null, afterCurrentPass: false }`
+  for an older one, which the pass covers. `markLibraryChanged` passes the
+  answer through and keeps null for one meaning only: the driver could not
+  be reached. The live view never gives the third answer: a change the pass
+  in flight covers reads there as nothing pending (null).
 - The alarm with no pass in flight is the debounce alarm: with nothing
   pending it is stale; more than a second before the deadline it re-arms
   for it; otherwise it starts a pass stamped with that instant.

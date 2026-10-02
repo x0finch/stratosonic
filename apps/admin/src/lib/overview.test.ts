@@ -371,6 +371,16 @@ describe("the scan's schedule, in words", () => {
     }
   });
 
+  it("says only that a scan is running when the pass in flight covers the change", () => {
+    const scan: ScanStatus = {
+      ...IDLE,
+      running: true,
+      phase: "scan",
+      scheduled: { scheduledAt: null, afterCurrentPass: false },
+    };
+    expect(describeSchedule(scan, inSync, server)).toBe("A scan is running.");
+  });
+
   it("says another pass follows the one running", () => {
     const scan: ScanStatus = {
       ...IDLE,

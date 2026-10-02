@@ -220,7 +220,9 @@ export type ScanSchedule =
   /** A pass starts at about this time, once the library has stayed quiet. */
   | { readonly scheduledAt: string; readonly afterCurrentPass: false }
   /** A pass is running, and one more follows it for the change. */
-  | { readonly scheduledAt: null; readonly afterCurrentPass: true };
+  | { readonly scheduledAt: null; readonly afterCurrentPass: true }
+  /** A pass is running that began after the change, and covers it. */
+  | { readonly scheduledAt: null; readonly afterCurrentPass: false };
 
 /** What a poke did. */
 export type PokeOutcome =
@@ -295,13 +297,14 @@ export class ScanDriver extends DurableObject<Env> {
    * earlier debounce alarm: that is the reset, so a burst of changes makes
    * one pass after the last of them. With a pass alive the step chain owns
    * the alarm: a change made since the pass began is answered with the one
-   * follow-up the pass's end queues (`finish`), and an older one with null,
-   * because the pass in flight covers it.
+   * follow-up the pass's end queues (`finish`), and an older one with
+   * `{ scheduledAt: null, afterCurrentPass: false }`, because the pass in
+   * flight covers it.
    */
   async touch(
     changedAt: number = Date.now(),
     tuning: ScanDriverTuning = {},
-  ): Promise<ScanSchedule | null> {
+  ): Promise<ScanSchedule> {
     const at = Math.min(changedAt, Date.now());
     const stored = await this.ctx.storage.get([STATE_KEY, PENDING_KEY]);
     const previous = restoredPending(stored.get(PENDING_KEY));
@@ -313,9 +316,7 @@ export class ScanDriver extends DurableObject<Env> {
 
     const running = restored(stored.get(STATE_KEY));
     if (running !== null && (await this.alive(running))) {
-      return pending.changedAt >= running.coveredFrom
-        ? { scheduledAt: null, afterCurrentPass: true }
-        : null;
+      return { scheduledAt: null, afterCurrentPass: pending.changedAt >= running.coveredFrom };
     }
 
     const due = pending.changedAt + pending.tuning.quietMs;

@@ -361,7 +361,10 @@ describe("the boundary of the rule: a change at the pass's own stamp", () => {
 
     const poked = Date.now() - 60_000;
     await poke(new Date(poked));
-    expect(await touch(poked - 1, { quietMs: QUIET })).toBeNull();
+    expect(await touch(poked - 1, { quietMs: QUIET })).toEqual({
+      scheduledAt: null,
+      afterCurrentPass: false,
+    });
 
     await settle();
     expect(completed).toEqual([poked]);

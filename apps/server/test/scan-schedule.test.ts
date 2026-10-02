@@ -228,6 +228,19 @@ describe("markLibraryChanged", () => {
     expect(touchedWith).toBe(stored);
   });
 
+  it("passes on the driver's answer that the pass in flight covers the change", async () => {
+    const covered = { scheduledAt: null, afterCurrentPass: false };
+    const covering = {
+      ...testEnv,
+      SCAN_DRIVER: {
+        idFromName: (name: string) => testEnv.SCAN_DRIVER.idFromName(name),
+        get: () => ({ touch: async () => covered }),
+      },
+    } as unknown as Env;
+
+    expect(await markLibraryChanged(covering, Date.now())).toEqual(covered);
+  });
+
   it("answers null when the driver cannot be reached, and the change stands", async () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const at = Date.now();
