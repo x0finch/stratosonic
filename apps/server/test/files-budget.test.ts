@@ -1,6 +1,7 @@
 import { SELF } from "cloudflare:test";
 import { playlistTrack } from "@stratosonic/db";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { SIGN_BATCH, SPELLING_LISTINGS } from "../src/api/files";
 import { database } from "../src/db";
 import {
   type CookieJar,
@@ -265,10 +266,11 @@ describe("the Files routes' budget", () => {
     },
   );
 
-  it("POST /api/files/uploads, 10 Replace: one head() each, and one listing each for a key with two spellings", async () => {
-    // Five keys with one spelling, five stored in NFD and asked for in NFC.
+  it("POST /api/files/uploads, 10 Replace: one head() each, and a listing per segment that can vary", async () => {
+    // Five keys with one spelling; five stored in NFD and asked for in NFC,
+    // each a looked-up folder (`Björk/`) and the file under it.
     const ascii = Array.from({ length: 5 }, (_, index) => `Album/${index}.flac`);
-    const accented = Array.from({ length: 5 }, (_, index) => `Bj\u00f6rk/${index}.flac`);
+    const accented = Array.from({ length: 5 }, (_, index) => `Björk/${index}.flac`);
     await seedObjects([...ascii, ...accented.map((key) => key.normalize("NFD"))]);
     const files = [...ascii, ...accented].map((key) => ({ key, size: 1, overwrite: true }));
 
@@ -277,9 +279,27 @@ describe("the Files routes' budget", () => {
     expect(result.status).toBe(200);
     expect(result.route).toEqual([]);
     expect(result.r2.filter((method) => method === "head")).toHaveLength(10);
-    expect(result.r2.filter((method) => method === "list")).toHaveLength(5);
+    expect(result.r2.filter((method) => method === "list")).toHaveLength(10);
     expect(result.driver).toEqual([]);
-    expect(subrequests(result)).toBe(15);
+    expect(subrequests(result)).toBe(20);
+  });
+
+  it("POST /api/files/uploads, 10 Replace at the bound: 40 binding calls, 42 subrequests with the session", async () => {
+    // Three segments that can vary in each key: the most listings a Replace makes.
+    const keys = Array.from({ length: SIGN_BATCH }, (_, index) => `À/Á/${index} Â.flac`);
+    await seedObjects(keys.map((key) => key.normalize("NFD")));
+    const files = keys.map((key) => ({ key, size: 1, overwrite: true }));
+
+    const result = await measured("POST", "/files/uploads", { files });
+
+    expect(result.status).toBe(200);
+    expect(
+      (result.body as { uploads: { key: string }[] }).uploads.map((upload) => upload.key),
+    ).toEqual(keys.map((key) => key.normalize("NFD")));
+    expect(result.r2).toHaveLength(SIGN_BATCH * (1 + SPELLING_LISTINGS));
+    expect(result.session).toEqual(["select session", "select user"]);
+    expect(subrequests(result) + result.session.length).toBe(42);
+    expect(subrequests(result) + result.session.length).toBeLessThanOrEqual(50);
   });
 
   it("POST /api/files/uploads, not configured: nothing past the session", async () => {

@@ -15,11 +15,13 @@ import {
   checkFolderPrefix,
   checkUploadKey,
   checkUploadSize,
+  hasOneSpelling,
+  isAscii,
   isReservedKey,
   MAX_KEY_BYTES,
   MAX_SEGMENT_BYTES,
+  oneSpellingPrefix,
   type PathRefusal,
-  spellingInvariantPrefix,
   utf8Length,
 } from "../files/keys";
 import { RESCAN_QUIET_MS, recordLibraryChange, type ScanSchedule } from "../files/library-change";
@@ -62,8 +64,10 @@ import { requireSameOrigin } from "./same-origin";
  *   left to delete; `400 invalid_path`, `403 reserved_path`.
  * - `POST /api/files/uploads`, `{files: [{key, size, overwrite?}]}`, 1–10
  *   files: `200 {uploads}`, one result per file, in order, each a presigned
- *   `PUT` or a per-file `error`; `400 invalid_request`,
- *   `503 uploads_not_configured`.
+ *   `PUT` or a per-file `error` (`invalid_path`, `path_too_long`,
+ *   `reserved_path`, `type_not_allowed`, `too_large`, `empty_file`,
+ *   `exists`, or `replace_unavailable`: replace that file with rclone);
+ *   `400 invalid_request`, `503 uploads_not_configured`.
  * - `POST /api/files/uploads/complete`, `{keys}`, 1–10 keys whose `PUT`
  *   succeeded: `200 {scan}`; `400 invalid_request`, `403 reserved_path`.
  * - Any write, where `FILE_WRITES` is `"off"`: `403 file_writes_disabled`.
@@ -123,13 +127,17 @@ import { requireSameOrigin } from "./same-origin";
  *    signed for the key exactly as R2 lists it, which may be another
  *    Unicode spelling of the one asked for (`storedSpelling`), and without
  *    `If-None-Match`, so the track's id and annotations are kept
- *    (ADR-0002). Nothing has changed yet, so the library is not marked
- *    changed.
+ *    (ADR-0002). If that spelling cannot be found for certain, the file
+ *    answers `replace_unavailable` rather than risk another spelling: the
+ *    owner replaces it with rclone. Nothing has changed yet, so the library
+ *    is not marked changed.
  *
  *    Its cost: one `HeadObject` (Class B) per file that passes the rules,
- *    and one `ListObjects` (Class A) more per Replace of an existing key
- *    with more than one Unicode spelling. At most 10 of each, so at most 20
- *    binding calls a request.
+ *    and, for a Replace of an existing key with more than one possible
+ *    spelling, one `ListObjects` (Class A) per page listed to find it, at
+ *    most `SPELLING_LISTINGS` (3) a file. So a request of 10 files makes at
+ *    most 10 + 30 = 40 binding calls, and with the session check's D1
+ *    statements (at most 2) at most 42 subrequests, inside the 50.
  * 2. `POST /api/files/uploads/complete` reports the keys whose `PUT`
  *    succeeded, and records the change as a delete does. It makes no R2 call:
  *    the keys are bounded by the upload rules, and a key that was not really
@@ -148,8 +156,18 @@ export const SIGN_BATCH = 10;
 /** The most `head()` calls in flight at once: a Worker waits on six connections at a time. */
 export const HEADS_IN_FLIGHT = 6;
 
-/** The keys the one listing that finds a Replace's stored spelling reaches: R2's own most. */
-const STORED_SPELLING_PAGE = 1000;
+/** The keys one listing that looks for a Replace's stored spelling reaches: R2's own most. */
+const SPELLING_PAGE = 1000;
+
+/** The pages listed for one segment of a Replace's key: 2,000 entries of one folder. */
+const SPELLING_PAGES_PER_SEGMENT = 2;
+
+/**
+ * The listings one Replace may make to find its stored spelling, across
+ * every segment. With `SIGN_BATCH` and one `head()` a file, it bounds a
+ * request's binding calls at 40.
+ */
+export const SPELLING_LISTINGS = 3;
 
 /** The most keys one `POST /api/files/delete` takes; the body cap is sized for it. */
 export const DELETE_BATCH = 250;
@@ -360,8 +378,12 @@ interface UploadRequest {
   readonly overwrite: boolean;
 }
 
-/** Why one file is not signed. */
-export type UploadRefusal = PathRefusal | "empty_file" | "too_large";
+/**
+ * Why one file is not signed. `replace_unavailable`: a Replace whose stored
+ * spelling could not be found for certain (see `storedSpelling`); the owner
+ * replaces that file with rclone.
+ */
+export type UploadRefusal = PathRefusal | "empty_file" | "too_large" | "replace_unavailable";
 
 /** One result of `POST /api/files/uploads`, in the order the files were asked for. */
 export type UploadResult =
@@ -443,7 +465,10 @@ async function signUpload(
     };
   }
 
-  const key = stored === null ? checked.key : await storedSpelling(env, checked.key, stored.key);
+  const key = stored === null ? checked.key : await storedSpelling(env, checked.key);
+  if (key === null) {
+    return { key: checked.key, error: "replace_unavailable" };
+  }
   const presigned = await presignUpload(
     config,
     { key, size: file.size, contentType: checked.contentType, replace: stored !== null },
@@ -455,30 +480,96 @@ async function signUpload(
 
 /**
  * The exact key, as R2 lists it, of the object `head(key)` found, for a
- * Replace to write under. R2 treats Unicode-equivalent keys as one object,
- * but a listing answers the spelling last uploaded, so a Replace under
- * another spelling would change the key the scanner sees, and with it the
- * track's id and its annotations (ADR-0002).
- *
+ * Replace to write under, or null when it cannot be found for certain. R2
+ * treats Unicode-equivalent keys as one object but lists the spelling last
+ * uploaded, so a Replace under another spelling would change the key the
+ * scanner sees, and with it the track's id and its annotations (ADR-0002).
  * Whether `head()` answers the stored spelling or the one asked for is not
- * documented, so this does not rest on it. A key with one spelling (NFC and
- * NFD alike: ASCII, CJK) costs nothing more. Any other costs one listing
- * (one Class A operation) of up to 1,000 keys under the part all its
- * spellings share (`spellingInvariantPrefix`), and takes the listed key that
- * is NFC-equal to it. If none is in that page (a prefix as short as `Bj`
- * over more than 1,000 keys, or a singleton decomposition such as KELVIN
- * SIGN), `head()`'s key stands.
+ * documented, so this never takes `head()`'s key.
+ *
+ * It walks the key's segments from the root:
+ *
+ * - a folder segment with one spelling (`hasOneSpelling`: ASCII, but for
+ *   `K`, `;` and `` ` ``) is taken as it is;
+ * - any other folder segment is looked up in the folder resolved so far: a
+ *   delimited listing under the folder and the segment's one-spelling
+ *   prefix, up to `SPELLING_PAGES_PER_SEGMENT` pages, must hold exactly one
+ *   subfolder whose name is NFC-equal to it;
+ * - the file name is looked up the same way among the folder's objects. It
+ *   is taken as it is only when it, and every folder before it, has one
+ *   spelling; once a folder was looked up, the object is too, so a folder
+ *   chosen wrongly fails here rather than renaming the object.
+ *
+ * Null when a lookup finds no match (not in the pages listed), more than
+ * one, or would make more than `SPELLING_LISTINGS` listings in all.
  */
-async function storedSpelling(env: Env, key: string, headKey: string): Promise<string> {
-  const prefix = spellingInvariantPrefix(key);
-  if (prefix === key) {
-    return headKey;
+async function storedSpelling(env: Env, key: string): Promise<string | null> {
+  const segments = key.split("/");
+  const name = segments.pop() ?? "";
+  let budget = SPELLING_LISTINGS;
+  let resolved = "";
+  let lookedUp = false;
+
+  for (const segment of segments) {
+    if (hasOneSpelling(segment)) {
+      resolved += `${segment}/`;
+      continue;
+    }
+    const lookup = await lookUpSpelling(env, resolved, segment, "folder", budget);
+    if (lookup.found === null) {
+      return null;
+    }
+    budget -= lookup.listings;
+    resolved = lookup.found;
+    lookedUp = true;
   }
 
-  const listing = await env.MUSIC.list({ prefix, limit: STORED_SPELLING_PAGE });
-  const listed = listing.objects.find((object) => object.key.normalize("NFC") === key);
+  if (hasOneSpelling(name) && !lookedUp) {
+    return resolved + name;
+  }
+  const lookup = await lookUpSpelling(env, resolved, name, "object", budget);
 
-  return listed?.key ?? headKey;
+  return lookup.found;
+}
+
+/**
+ * Finds, in the folder `parent` (as stored, `""` for the root), the one
+ * subfolder (`"folder"`: its prefix, ending in `/`) or object (`"object"`:
+ * its key) whose name is NFC-equal to `segment`, in at most `budget`
+ * listings. `found` is null when there is none in the pages listed, or more
+ * than one.
+ */
+async function lookUpSpelling(
+  env: Env,
+  parent: string,
+  segment: string,
+  kind: "folder" | "object",
+  budget: number,
+): Promise<{ readonly found: string | null; readonly listings: number }> {
+  const prefix = parent + oneSpellingPrefix(segment);
+  let listings = 0;
+  let cursor: string | undefined;
+
+  while (listings < Math.min(budget, SPELLING_PAGES_PER_SEGMENT)) {
+    const listing = await env.MUSIC.list({ prefix, delimiter: "/", limit: SPELLING_PAGE, cursor });
+    listings++;
+    const entries =
+      kind === "folder" ? listing.delimitedPrefixes : listing.objects.map((object) => object.key);
+    const matches = entries.filter((entry) => {
+      if (!entry.startsWith(parent)) {
+        return false;
+      }
+      const entryName = entry.slice(parent.length, kind === "folder" ? -1 : undefined);
+      // An ASCII name is its own NFC: no need to normalise it.
+      return isAscii(entryName) ? entryName === segment : entryName.normalize("NFC") === segment;
+    });
+    if (matches.length > 0 || !listing.truncated) {
+      return { found: matches.length === 1 ? (matches[0] ?? null) : null, listings };
+    }
+    cursor = listing.cursor;
+  }
+
+  return { found: null, listings };
 }
 
 /**

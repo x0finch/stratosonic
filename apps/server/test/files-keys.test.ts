@@ -6,10 +6,12 @@ import {
   checkUploadKey,
   checkUploadSize,
   contentTypeOf,
+  hasOneSpelling,
+  isAscii,
   kindOf,
   MAX_KEY_BYTES,
   MAX_SEGMENT_BYTES,
-  spellingInvariantPrefix,
+  oneSpellingPrefix,
 } from "../src/files/keys";
 import { AUDIO_CONTENT_TYPES, AUDIO_SUFFIXES } from "../src/library/audio-formats";
 import { MAX_SIDECAR_BYTES, SIDECAR_SUFFIXES } from "../src/lyrics/sidecar";
@@ -197,36 +199,59 @@ describe("a folder's prefix", () => {
   });
 });
 
-describe("the part every spelling of a key shares", () => {
+describe("a segment's spellings", () => {
+  it("are three ASCII characters' own besides: K, ; and ` are another code point's NFC", () => {
+    // Every code point whose NFC is a single ASCII character other than
+    // itself: the ASCII a stored key may spell another way.
+    const targets = new Set<string>();
+    for (let code = 0x80; code <= 0x10ffff; code++) {
+      if (code >= 0xd800 && code <= 0xdfff) {
+        continue;
+      }
+      const nfc = String.fromCodePoint(code).normalize("NFC");
+      if (nfc.length === 1 && nfc.charCodeAt(0) < 0x80) {
+        targets.add(nfc);
+      }
+    }
+
+    expect([...targets].sort()).toEqual([";", "K", "`"]);
+  }, 60_000);
+
   it.each([
-    [
-      "an ASCII key, which has one spelling",
-      "Artist/Album/01 Title.flac",
-      "Artist/Album/01 Title.flac",
-    ],
-    [
-      "a key with CJK only, which NFC and NFD leave alike",
-      "坂本龍一/音楽図鑑/01.flac",
-      "坂本龍一/音楽図鑑/01.flac",
-    ],
-    ["a composed folder name", "Bj\u00f6rk/Homogenic/01.flac", "Bj"],
-    ["a decomposed folder name", "Bjo\u0308rk/Homogenic/01.flac", "Bj"],
-    ["a composed file name", "Sigur Ros/()/01 Vaka \u00e9.flac", "Sigur Ros/()/01 Vaka "],
-    ["an emoji, a pair of surrogates kept whole", "🎵/Bj\u00f6rk.flac", "🎵/Bj"],
-  ])("is the whole of it, or up to the first difference: %s", (_, key, prefix) => {
-    expect(spellingInvariantPrefix(key)).toBe(prefix);
+    ["ASCII", "01 Title.flac", true],
+    ["ASCII with a K", "Kraftwerk", false],
+    ["ASCII with a semicolon", "a;b.flac", false],
+    ["ASCII with a backtick", "a`b.flac", false],
+    ["a composed letter", "Bj\u00f6rk", false],
+    ["CJK", "坂本龍一", false],
+  ])("has one spelling, or not: %s", (_, segment, one) => {
+    expect(hasOneSpelling(segment)).toBe(one);
   });
 
-  it("starts every spelling, composed, decomposed or mixed", () => {
-    const nfc = "Bj\u00f6rk/J\u00f3ga/01.flac";
-    const nfd = nfc.normalize("NFD");
-    const mixed = "Bjo\u0308rk/J\u00f3ga/01.flac";
-    const prefix = spellingInvariantPrefix(nfc);
+  it.each([
+    ["an ASCII name, whole", "01 Title.flac", "01 Title.flac"],
+    ["up to a composed letter", "Bj\u00f6rk", "Bj"],
+    ["nothing before a leading accent", "\u00c9dith Piaf", ""],
+    ["up to a K", "Das Kabinett", "Das "],
+    ["nothing before CJK", "坂本龍一", ""],
+  ])("starts every spelling with its one-spelling prefix: %s", (_, segment, prefix) => {
+    expect(oneSpellingPrefix(segment)).toBe(prefix);
+  });
 
-    for (const spelling of [nfc, nfd, mixed]) {
-      expect(spelling.normalize("NFC")).toBe(nfc);
-      expect(spelling.startsWith(prefix)).toBe(true);
-      expect(spellingInvariantPrefix(spelling)).toBe(prefix);
+  it("puts that prefix at the start of every spelling, composed, decomposed or mixed", () => {
+    for (const nfc of ["Bj\u00f6rk", "\u00c9dith Piaf", "01 J\u00f3ga \u00e9t\u00e9.flac"]) {
+      const prefix = oneSpellingPrefix(nfc);
+      const mixed = nfc.replace("\u00e9", "e\u0301");
+      for (const spelling of [nfc, nfc.normalize("NFD"), mixed]) {
+        expect(spelling.normalize("NFC")).toBe(nfc);
+        expect(spelling.startsWith(prefix)).toBe(true);
+      }
     }
+  });
+
+  it("tells ASCII apart without normalising", () => {
+    expect(isAscii("Artist/01.flac")).toBe(true);
+    expect(isAscii("Bj\u00f6rk")).toBe(false);
+    expect(isAscii("")).toBe(true);
   });
 });

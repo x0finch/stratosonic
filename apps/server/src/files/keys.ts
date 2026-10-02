@@ -201,26 +201,58 @@ function isWellFormed(value: string): boolean {
   return (value as string & { isWellFormed(): boolean }).isWellFormed();
 }
 
-/**
- * The leading part of a key that its Unicode spellings share: the code
- * points its NFC and NFD forms have in common, from the start. A spelling
- * that mixes composed and decomposed characters (a folder named on macOS, in
- * NFD, and a file named elsewhere, in NFC) starts with it too, since a code
- * point both forms leave alike there neither composes with what follows nor
- * decomposes. So a listing under it finds the object whichever of those
- * spellings it is stored under. The exception is a character with a
- * singleton decomposition (KELVIN SIGN for `K`, OHM SIGN for `Ω`), which
- * NFC and NFD both replace; a caller falls back for it.
+/*
+ * Spellings. R2 treats Unicode-equivalent keys as one object, but lists the
+ * spelling last uploaded, and a track's id is the hash of that exact string
+ * (ADR-0002). So a Replace must write under the stored spelling, segment by
+ * segment, which the route finds by listing (api/files.ts). These say which
+ * part of a segment, asked for in NFC, every stored spelling of it shares.
+ *
+ * A character outside ASCII can be stored composed, decomposed, or (for a
+ * CJK compatibility ideograph, say) as another code point altogether. So can
+ * three ASCII characters, each the canonical decomposition of a code point
+ * of its own: `K` (KELVIN SIGN), `;` (GREEK QUESTION MARK) and `` ` ``
+ * (GREEK VARIA); test/files-keys.test.ts checks that there are no others.
+ * Every other ASCII character has one spelling: it is in NFC and NFD alike,
+ * and no other code point normalises to it. An ASCII character in an NFC
+ * segment is also never the base of a following combining mark, which NFC
+ * would have composed with it, unless no composed form exists, in which case
+ * every spelling keeps the base too.
  */
-export function spellingInvariantPrefix(key: string): string {
-  const nfc = Array.from(key.normalize("NFC"));
-  const nfd = Array.from(key.normalize("NFD"));
+
+/** The ASCII characters some other code point canonically decomposes to. */
+const ASCII_WITH_SINGLETONS = /[K;`]/;
+
+/** A string of ASCII only, which NFC leaves as it is. */
+export function isAscii(value: string): boolean {
+  for (let index = 0; index < value.length; index++) {
+    if (value.charCodeAt(index) > 0x7f) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Whether a segment, in NFC, has one spelling only: ASCII, and none of the
+ * three ASCII characters another code point decomposes to.
+ */
+export function hasOneSpelling(segment: string): boolean {
+  return isAscii(segment) && !ASCII_WITH_SINGLETONS.test(segment);
+}
+
+/**
+ * The leading part of a segment, in NFC, that every stored spelling of it
+ * starts with: the characters before its first one that can be spelled
+ * another way (`hasOneSpelling`). It may be empty (`Édith Piaf`).
+ */
+export function oneSpellingPrefix(segment: string): string {
   let length = 0;
-  while (length < nfc.length && length < nfd.length && nfc[length] === nfd[length]) {
+  while (length < segment.length && hasOneSpelling(segment.charAt(length))) {
     length++;
   }
 
-  return nfc.slice(0, length).join("");
+  return segment.slice(0, length);
 }
 
 /** Why an upload's size is refused, or null when its kind takes it. */

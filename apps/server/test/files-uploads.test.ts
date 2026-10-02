@@ -2,7 +2,7 @@ import { SELF } from "cloudflare:test";
 import { property } from "@stratosonic/db";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { HEADS_IN_FLIGHT, SIGN_BATCH } from "../src/api/files";
+import { HEADS_IN_FLIGHT, SIGN_BATCH, SPELLING_LISTINGS } from "../src/api/files";
 import { MAX_JSON_BODY_BYTES } from "../src/api/json-body";
 import { database } from "../src/db";
 import { forgetUploadsWarning } from "../src/files/config";
@@ -300,19 +300,32 @@ describe("POST /api/files/uploads", () => {
   });
 
   describe("Replace keeps the stored spelling, whichever key head() answers", () => {
-    const NFC = "Bj\u00f6rk/J\u00f3ga/01 J\u00f3ga.flac";
+    const NFC = "Björk/Jóga/01 Jóga.flac";
     const NFD = NFC.normalize("NFD");
-    // A folder named on macOS (NFD), a file named elsewhere (NFC).
-    const MIXED = "Bjo\u0308rk/J\u00f3ga/01 J\u00f3ga.flac";
+    // A folder named on macOS (NFD), the rest elsewhere (NFC).
+    const MIXED = "Björk/Jóga/01 Jóga.flac";
+
+    /** A delimited listing, as a lookup makes it. */
+    const lookup = (prefix: string) => ({
+      method: "list",
+      argument: { prefix, delimiter: "/", limit: 1000 },
+    });
+
+    /** The stored spelling's folder prefixes, from the root. */
+    function folders(key: string): string[] {
+      const segments = key.split("/").slice(0, -1);
+      return segments.map((_, index) => `${segments.slice(0, index + 1).join("/")}/`);
+    }
 
     it.each([
       ["head() answers the stored key", false],
       ["head() answers the key asked for", true],
-    ])("%s: one listing under the shared part finds it", async (_, headAnswersAskedKey) => {
+    ])("%s: one lookup per segment that can vary finds it", async (_, headAnswersAskedKey) => {
       const on = filesHarness(ORIGIN, { uploads: UPLOADS_ENV, headAnswersAskedKey });
       for (const stored of [NFD, MIXED]) {
         await resetLibrary();
-        await seedObjects([stored, "Bjarne/01.flac", "Bj\u00f6rk/J\u00f3ga/02 Other.flac"]);
+        const sibling = stored.replace(/01 [^/]*$/, "02 Other.flac");
+        await seedObjects([stored, sibling, "Bjarne/01.flac"]);
         on.r2Calls.length = 0;
 
         const { uploads } = await sign([{ key: NFC, size: 10, overwrite: true }], on);
@@ -321,40 +334,97 @@ describe("POST /api/files/uploads", () => {
         expect(replaced.key).toBe(stored);
         expect(new URL(replaced.url).pathname).toBe(canonicalObjectPath("navidrome", stored));
         expect(replaced.headers).toEqual({ "Content-Type": "audio/flac" });
+        const [artist, album] = folders(stored);
         expect(on.r2Calls).toEqual([
           { method: "head", argument: NFC },
-          { method: "list", argument: { prefix: "Bj", limit: 1000 } },
+          lookup("Bj"),
+          lookup(`${artist}J`),
+          lookup(`${album}01 J`),
         ]);
       }
     });
 
-    it("makes no listing for a key with one spelling", async () => {
-      await seedObjects(["Artist/Album/01 Title.flac", "坂本龍一/01.flac"]);
+    it("finds a folder that starts with an accent, in a listing of the root", async () => {
+      const nfc = "Édith Piaf/La Vie en rose/01 Hymne à l'amour.flac";
+      const stored = nfc.normalize("NFD");
+      await seedObjects([stored, "ABBA/01.flac", "Zappa/01.flac", "Édith Piaf.flac"]);
+
+      const { uploads } = await sign([{ key: nfc, size: 10, overwrite: true }]);
+
+      expect(signed(uploads[0]).key).toBe(stored);
+      expect(harness.r2Calls).toEqual([
+        { method: "head", argument: nfc },
+        lookup(""),
+        lookup(`${folders(stored)[1]}01 Hymne `),
+      ]);
+    });
+
+    it("finds a K stored as KELVIN SIGN, and checks the file under it", async () => {
+      const stored = "Kraftwerk/Autobahn/01.flac";
+      const asked = stored.normalize("NFC");
+      expect(asked).toBe("Kraftwerk/Autobahn/01.flac");
+      await seedObjects([stored, "Abba/01.flac"]);
+
+      const { uploads } = await sign([{ key: asked, size: 10, overwrite: true }]);
+
+      expect(signed(uploads[0]).key).toBe(stored);
+      expect(harness.r2Calls).toEqual([
+        { method: "head", argument: asked },
+        lookup(""),
+        lookup(stored),
+      ]);
+    });
+
+    it("makes no listing for a key whose every segment has one spelling", async () => {
+      await seedObjects(["Artist/Album/01 Title.flac"]);
 
       const { uploads } = await sign([
         { key: "Artist/Album/01 Title.flac", size: 10, overwrite: true },
-        { key: "坂本龍一/01.flac", size: 10, overwrite: true },
       ]);
 
-      expect(uploads.map((upload) => signed(upload).key)).toEqual([
-        "Artist/Album/01 Title.flac",
-        "坂本龍一/01.flac",
-      ]);
-      expect(harness.r2Calls.map((call) => call.method)).toEqual(["head", "head"]);
+      expect(signed(uploads[0]).key).toBe("Artist/Album/01 Title.flac");
+      expect(harness.r2Calls).toEqual([{ method: "head", argument: "Artist/Album/01 Title.flac" }]);
     });
 
-    it("falls back to head()'s key when the stored one is past the listing's page", async () => {
-      // Pages of 2: the two `Bja…` keys sort first, ahead of `Bjo…`.
-      const on = filesHarness(ORIGIN, {
-        uploads: UPLOADS_ENV,
-        headAnswersAskedKey: true,
-        listLimit: 2,
-      });
-      await seedObjects([NFD, "Bja/01.flac", "Bja/02.flac"]);
+    it("refuses with replace_unavailable when the stored spelling is past the pages it lists", async () => {
+      // Pages of 1: `A/` and `B/` fill the two pages a segment may list,
+      // ahead of `O…`.
+      const on = filesHarness(ORIGIN, { uploads: UPLOADS_ENV, listLimit: 1 });
+      const nfc = "Österreich/01.flac";
+      await seedObjects([nfc.normalize("NFD"), "A/01.flac", "B/01.flac", "Fine/01.flac"]);
 
-      const { uploads } = await sign([{ key: NFC, size: 10, overwrite: true }], on);
+      const { status, uploads } = await sign(
+        [
+          { key: nfc, size: 10, overwrite: true },
+          { key: "Fine/01.flac", size: 10, overwrite: true },
+        ],
+        on,
+      );
 
-      expect(signed(uploads[0]).key).toBe(NFC);
+      expect(status).toBe(200);
+      expect(uploads[0]).toEqual({ key: nfc, error: "replace_unavailable" });
+      expect(signed(uploads[1]).key).toBe("Fine/01.flac");
+      expect(on.r2Calls.filter((call) => call.method === "list")).toHaveLength(2);
+    });
+
+    it("refuses with replace_unavailable when two folders spell the same name", async () => {
+      await seedObjects(["Björk/a.flac", "Björk/b.flac"]);
+
+      const { uploads } = await sign([{ key: "Björk/b.flac", size: 10, overwrite: true }]);
+
+      expect(uploads[0]).toEqual({ key: "Björk/b.flac", error: "replace_unavailable" });
+    });
+
+    it("refuses with replace_unavailable past three listings, never guessing", async () => {
+      const nfc = "À/Á/Â/Ã.flac";
+      await seedObjects([nfc.normalize("NFD")]);
+
+      const { uploads } = await sign([{ key: nfc, size: 10, overwrite: true }]);
+
+      expect(uploads[0]).toEqual({ key: nfc, error: "replace_unavailable" });
+      expect(harness.r2Calls.filter((call) => call.method === "list")).toHaveLength(
+        SPELLING_LISTINGS,
+      );
     });
   });
 

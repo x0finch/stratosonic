@@ -188,6 +188,20 @@ Each URL is a bearer token for one `PUT`, bound to:
 One request signs at most 10 files (`limits.signBatch`), which keeps it
 to about 5 ms of CPU, inside the Worker's 10 ms.
 
+**Replace keeps the stored spelling.** R2 treats Unicode-equivalent keys
+(`Björk` composed, as Windows and Linux write it, or decomposed, as macOS
+does) as one object, but lists the spelling last uploaded, and a track's id
+is the hash of that exact key (ADR-0002). So a Replace writes under the key
+exactly as stored: each part of the path that could be spelled another way
+(anything but plain ASCII, and `K`, `;` and `` ` ``) is looked up in its
+folder, at most three listings a file (Class A). If the stored spelling
+cannot be found for certain (not within two pages of 1,000 entries of its
+folder, two folders spelling the same name, or more than three lookups), the
+file answers `{"key": …, "error": "replace_unavailable"}` and the others in
+the request are still signed. **Replace that file with rclone** instead,
+which writes the key you give it as is. A request makes at most 40 R2 calls:
+one `HeadObject` a file, plus those listings.
+
 An expired URL fails with `403` and no CORS headers, so the browser sees a
 network error. The console signs just before each upload and signs again if
 needed. After a successful `PUT`, the console reports the file
@@ -204,9 +218,9 @@ if it may have leaked, or on whatever schedule you keep:
    repository, apply it, and delete it:
 
    ```sh
-   # r2-token.json: {"R2_ACCESS_KEY_ID": "…", "R2_SECRET_ACCESS_KEY": "…"}
-   wrangler secret bulk r2-token.json
-   rm r2-token.json
+   # /tmp/r2-token.json: {"R2_ACCESS_KEY_ID": "…", "R2_SECRET_ACCESS_KEY": "…"}
+   wrangler secret bulk /tmp/r2-token.json
+   rm /tmp/r2-token.json
    ```
 
    `secret bulk` makes one new version live, with both values, so no code
