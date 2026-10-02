@@ -145,10 +145,18 @@ export function afterScanRequest(queryClient: QueryClient, result: ScanRequestRe
  * The sentence the Library scan section says about a pass the server will
  * run for recent file changes (#83, "Overview"), or `null` when none is
  * pending. A pass scheduled at a time already past is starting: its alarm is
- * due, or its first step has not reported yet. `now` is this browser's
- * clock, moved on with each poll.
+ * due, or its first step has not reported yet.
+ *
+ * `scheduledAt` is on the server's clock, so the time left is counted from
+ * the live read's `serverTime`, moved on by the time this browser has seen
+ * pass since it arrived (`receivedAt` to `now`), as now playing's positions
+ * are (`estimatePositionMs`): a browser clock minutes off changes nothing.
  */
-export function describeSchedule(scan: ScanStatus, now: number): string | null {
+export function describeSchedule(
+  scan: ScanStatus,
+  clock: Pick<LiveRead, "serverTime" | "receivedAt">,
+  now: number,
+): string | null {
   const { scheduled } = scan;
   if (!scheduled) {
     return null;
@@ -156,7 +164,8 @@ export function describeSchedule(scan: ScanStatus, now: number): string | null {
   if (scheduled.afterCurrentPass) {
     return "A scan is running. Another follows it for recent file changes.";
   }
-  const remaining = Date.parse(scheduled.scheduledAt) - now;
+  const serverNow = Date.parse(clock.serverTime) + Math.max(now - clock.receivedAt, 0);
+  const remaining = Date.parse(scheduled.scheduledAt) - serverNow;
   if (!(remaining > 0)) {
     return "A scan is starting.";
   }

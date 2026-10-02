@@ -323,26 +323,52 @@ describe("a scan request", () => {
 });
 
 describe("the scan's schedule, in words", () => {
-  const now = Date.parse("2026-10-02T12:00:00.000Z");
+  /** The server's clock at the live read. */
+  const server = Date.parse("2026-10-02T12:00:00.000Z");
+  /** A read that arrived at once, on a browser whose clock agrees. */
+  const inSync = { serverTime: new Date(server).toISOString(), receivedAt: server };
   const at = (offsetMs: number): ScanStatus => ({
     ...IDLE,
-    scheduled: { scheduledAt: new Date(now + offsetMs).toISOString(), afterCurrentPass: false },
+    scheduled: { scheduledAt: new Date(server + offsetMs).toISOString(), afterCurrentPass: false },
   });
 
   it("says nothing when no pass is scheduled", () => {
-    expect(describeSchedule(IDLE, now)).toBeNull();
+    expect(describeSchedule(IDLE, inSync, server)).toBeNull();
   });
 
   it("says when a pass starts, in whole minutes", () => {
-    expect(describeSchedule(at(120_000), now)).toBe("A scan is scheduled in about 2 minutes.");
-    expect(describeSchedule(at(100_000), now)).toBe("A scan is scheduled in about 2 minutes.");
-    expect(describeSchedule(at(80_000), now)).toBe("A scan is scheduled in about a minute.");
-    expect(describeSchedule(at(5_000), now)).toBe("A scan is scheduled in about a minute.");
+    expect(describeSchedule(at(120_000), inSync, server)).toBe(
+      "A scan is scheduled in about 2 minutes.",
+    );
+    expect(describeSchedule(at(100_000), inSync, server)).toBe(
+      "A scan is scheduled in about 2 minutes.",
+    );
+    expect(describeSchedule(at(80_000), inSync, server)).toBe(
+      "A scan is scheduled in about a minute.",
+    );
+    expect(describeSchedule(at(5_000), inSync, server)).toBe(
+      "A scan is scheduled in about a minute.",
+    );
   });
 
   it("says a pass is starting once its time has come", () => {
-    expect(describeSchedule(at(0), now)).toBe("A scan is starting.");
-    expect(describeSchedule(at(-30_000), now)).toBe("A scan is starting.");
+    expect(describeSchedule(at(0), inSync, server)).toBe("A scan is starting.");
+    expect(describeSchedule(at(-30_000), inSync, server)).toBe("A scan is starting.");
+  });
+
+  it("counts the time left on the server's clock, whatever the browser's says", () => {
+    // Due 150 s after the read; 30 s later, by the browser's own count, 120 s
+    // are left, with the browser's clock ten minutes behind or ahead.
+    const scan = at(150_000);
+    for (const skew of [-600_000, 600_000]) {
+      const receivedAt = server + skew;
+      const clock = { serverTime: inSync.serverTime, receivedAt };
+
+      expect(describeSchedule(scan, clock, receivedAt + 30_000)).toBe(
+        "A scan is scheduled in about 2 minutes.",
+      );
+      expect(describeSchedule(scan, clock, receivedAt + 160_000)).toBe("A scan is starting.");
+    }
   });
 
   it("says another pass follows the one running", () => {
@@ -352,7 +378,7 @@ describe("the scan's schedule, in words", () => {
       phase: "scan",
       scheduled: { scheduledAt: null, afterCurrentPass: true },
     };
-    expect(describeSchedule(scan, now)).toBe(
+    expect(describeSchedule(scan, inSync, server)).toBe(
       "A scan is running. Another follows it for recent file changes.",
     );
   });

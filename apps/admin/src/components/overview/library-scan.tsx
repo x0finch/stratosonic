@@ -11,7 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { requestScan, type ScanStatus } from "@/lib/api";
 import { formatCount, formatDuration } from "@/lib/format";
-import { afterScanRequest, describeSchedule } from "@/lib/overview";
+import { afterScanRequest, describeSchedule, type LiveRead } from "@/lib/overview";
 import { toastError, toastSuccess } from "@/lib/toasts";
 
 /**
@@ -24,20 +24,27 @@ import { toastError, toastSuccess } from "@/lib/toasts";
  * best denominator there is: R2's listing gives no total (#82). Before any
  * pass, between the poke and the first step, and while playlists import,
  * it is indeterminate, with a spinner beside its label.
+ *
+ * `clock` is the live read the scan came with: its `serverTime` and when it
+ * arrived, from which a scheduled pass's time left is counted.
  */
 export function LibraryScan({
   scan,
+  clock,
   canScan,
   now,
 }: {
   scan: ScanStatus | undefined;
+  clock: Pick<LiveRead, "serverTime" | "receivedAt"> | undefined;
   canScan: boolean;
   now: number;
 }) {
   return (
     <Section
       title="Library scan"
-      description={scan ? describeScan(scan, now) : "Reading the scan's state…"}
+      description={
+        scan ? describeScan(scan, clock ?? browserClock(now), now) : "Reading the scan's state…"
+      }
       action={canScan ? <ScanNowButton /> : null}
     >
       {scan === undefined ? (
@@ -57,8 +64,12 @@ export function LibraryScan({
  * pass's finish, as a running pass does: while a pass runs it says another
  * follows, and while idle when one starts. The last pass's counts stay below.
  */
-function describeScan(scan: ScanStatus, now: number): ReactNode {
-  const scheduled = describeSchedule(scan, now);
+function describeScan(
+  scan: ScanStatus,
+  clock: Pick<LiveRead, "serverTime" | "receivedAt">,
+  now: number,
+): ReactNode {
+  const scheduled = describeSchedule(scan, clock, now);
   if (scan.running) {
     if (scheduled !== null && scan.scheduled?.afterCurrentPass) {
       return scheduled;
@@ -77,6 +88,11 @@ function describeScan(scan: ScanStatus, now: number): ReactNode {
     );
   }
   return "No scan has finished yet.";
+}
+
+/** This browser's clock as a live read's, for a scan that came with none. */
+function browserClock(now: number): Pick<LiveRead, "serverTime" | "receivedAt"> {
+  return { serverTime: new Date(now).toISOString(), receivedAt: now };
 }
 
 /** How long a pass took, in seconds. */
