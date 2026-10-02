@@ -20,7 +20,9 @@ step and schedules the next about a second later until the scan's pass and the
 playlist import are done, and D1's `property` table stays the source of truth
 for what a pass has done. The object's own storage holds only the driver's
 bookkeeping — the pass in flight, the consecutive-failure count and its
-backoff — and is emptied when a pass ends. Queues are still unused, and the
+backoff — and is emptied when a pass ends, unless a file change is pending
+(ADR-0008: the driver also debounces the console's file changes into one
+pass). Queues are still unused, and the
 free-tier posture is unchanged: Durable Objects are available on the free plan
 with the SQLite backend, the per-step subrequest budget is untouched, and a
 full pass over 5,000 tracks costs about 840 of the 100,000 Durable Object
