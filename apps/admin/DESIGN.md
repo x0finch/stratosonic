@@ -64,10 +64,10 @@ it.
 
 ## Typography
 
-- **Geist** (`font-sans`, `font-heading`) is for all text, including numbers,
-  dates and table cells. `font-mono` (the theme's monospace stack) is for
-  short identifiers only: a path, an R2 key, an id, a command. Only the identifier
-  itself is set in mono, not its sentence or column.
+- **Geist** (`font-sans`, `font-heading`) is for all text, including
+  numbers, dates and table cells. `font-mono` (Tailwind's default monospace
+  stack) is for short identifiers only: a path, an R2 key, an id, a command.
+  Only the identifier itself is set in mono, not its sentence or column.
 - **Fixed roles:**
 
   | Role | Element | Classes |
@@ -77,7 +77,7 @@ it.
   | Sub-heading | h3 inside a section | `text-sm font-medium` |
   | Body and table text | p, td | `text-sm` |
   | Description and labels | p, dt, helper text | `text-sm text-muted-foreground` |
-  | Metadata | a secondary line under a figure, meter or item | `text-xs text-muted-foreground` |
+  | Metadata | a meter's label and value, or a secondary line under an item | `text-xs`, muted except the value |
   | Key figure | dd of a stat | `text-2xl font-semibold tabular-nums` |
 
 - **Peers share one role.** Equivalent items use the same size, weight and
@@ -88,8 +88,9 @@ it.
   product's own vocabulary ("Library scan", "Subsonic users").
 - **Copy is plain and specific.** Use sentence case and concrete nouns and
   verbs. A description that is a full sentence ends with a period; a short
-  phrase ("Tracks by genre") does not. In sentences, use commas, colons or parentheses
-  in place of em dashes, and write labels in sentence case rather than all caps.
+  phrase ("Tracks by genre") does not. In sentences, use commas, colons or
+  parentheses in place of em dashes, and write labels in sentence case
+  rather than all caps.
 - **Readable prose:** keep body text at `text-sm` (the metadata role is for
   short secondary lines, never for paragraphs), and keep
   explanatory paragraphs to a comfortable measure (about `max-w-prose`).
@@ -205,8 +206,8 @@ The details are in README.md, "Signing in".
 
 Before a UI change is done:
 
-1. Render the page in the real app (see README.md, "Local development"), with data
-   on the page.
+1. Render the page in the real app (see README.md, "Local development"),
+   with data on the page.
 2. Screenshot it at 1440 px in light and dark and at 390 px, and look at each
    one:
    - hierarchy reads at a glance;
