@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { AudioWaveformIcon, LayoutDashboardIcon, UsersIcon } from "lucide-react";
+import { AudioWaveformIcon, FolderIcon, LayoutDashboardIcon, UsersIcon } from "lucide-react";
 import type { ComponentProps } from "react";
 
 import { type NavItem, NavMain } from "@/components/nav-main";
@@ -21,6 +21,7 @@ import { can } from "@/lib/roles";
 const navMain: NavItem[] = [
   { title: "Overview", to: "/", icon: <LayoutDashboardIcon /> },
   { title: "Users", to: "/users", icon: <UsersIcon />, permission: "subsonic-users:read" },
+  { title: "Files", to: "/files", icon: <FolderIcon />, permission: "files:read" },
 ];
 
 /** Whether the signed-in console user's role grants what an entry's page needs. */
