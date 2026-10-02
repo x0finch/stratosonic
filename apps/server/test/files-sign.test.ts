@@ -227,6 +227,36 @@ describe("presignUpload", () => {
     expect(JSON.stringify(logged)).not.toContain(CONFIG.secretAccessKey);
   });
 
+  it("signs with the new secret when only the secret changes", async () => {
+    // The isolate's client, and its cached signing key, must not outlive
+    // the secret they were derived from.
+    const upload = { key: "A/b.mp3", size: 1, contentType: "audio/mpeg", replace: false };
+    const before = await presignUpload(CONFIG, upload, NOW);
+    const rotated = { ...CONFIG, secretAccessKey: "rotated-secret-only" };
+    const after = await presignUpload(rotated, upload, NOW);
+    const query = new URL(after.url).searchParams;
+
+    expect(query.get("X-Amz-Credential")).toBe(
+      new URL(before.url).searchParams.get("X-Amz-Credential"),
+    );
+    expect(query.get("X-Amz-Signature")).not.toBe(
+      new URL(before.url).searchParams.get("X-Amz-Signature"),
+    );
+    expect(query.get("X-Amz-Signature")).toBe(
+      await oracleSignature({
+        method: "PUT",
+        host: `${CONFIG.accountId}.r2.cloudflarestorage.com`,
+        canonicalPath: "/navidrome/A/b.mp3",
+        query: Object.fromEntries([...query].filter(([name]) => name !== "X-Amz-Signature")),
+        headers: { "content-length": "1", "content-type": "audio/mpeg", "if-none-match": "*" },
+        secretAccessKey: "rotated-secret-only",
+        amzDate: AMZ_DATE,
+        region: "auto",
+        service: "s3",
+      }),
+    );
+  });
+
   it("signs with the new token once it changes", async () => {
     const rotated = { ...CONFIG, accessKeyId: "rotated-key-id", secretAccessKey: "rotated-secret" };
     const upload = { key: "A/b.mp3", size: 1, contentType: "audio/mpeg", replace: false };
