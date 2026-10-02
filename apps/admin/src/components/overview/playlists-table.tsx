@@ -52,7 +52,7 @@ export function PlaylistsTable({
               <TableHead>Owner</TableHead>
               <TableHead className="text-right">Tracks</TableHead>
               <TableHead className="hidden text-right sm:table-cell">Length</TableHead>
-              <TableHead className="hidden text-right md:table-cell">Changed</TableHead>
+              <TableHead className="hidden md:table-cell">Changed</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -76,7 +76,7 @@ export function PlaylistsTable({
                   {formatDuration(playlist.durationSec)}
                 </TableCell>
                 <TableCell
-                  className="hidden text-right text-muted-foreground md:table-cell"
+                  className="hidden text-muted-foreground md:table-cell"
                   title={formatDateTime(playlist.changedAt)}
                 >
                   {formatRelative(playlist.changedAt, now)}

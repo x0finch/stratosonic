@@ -73,11 +73,9 @@ function SubsonicUsers() {
 
   return (
     <>
-      {/* The Tasks example's layout: a header row, and the table beneath it.
-          The page's h1 is "Subsonic users" already, so the section's own
-          heading names what they are. */}
+      {/* The Tasks example's layout: a header row, and the table beneath it. */}
       <Section
-        title="Client accounts"
+        title="Subsonic users"
         description="The accounts Subsonic clients, such as Substreamer, sign in with. They never sign in to this console."
         action={
           writable && users.isSuccess ? (

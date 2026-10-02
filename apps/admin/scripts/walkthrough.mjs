@@ -629,7 +629,8 @@ async function main() {
     await step("Subsonic users: add a user, and ping with it", async () => {
       await page.getByRole("link", { name: "Users" }).click();
       await page.waitForURL((url) => url.pathname === "/users");
-      await page.getByRole("heading", { name: "Subsonic users" }).waitFor();
+      // The page's h1; its one section's h2 has the same name.
+      await page.getByRole("heading", { level: 1, name: "Subsonic users" }).waitFor();
       const before = await listSubsonicUsers(page);
       check(
         !before.some((user) => user.username.startsWith("walkthrough-")),

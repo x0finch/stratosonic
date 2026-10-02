@@ -47,7 +47,6 @@ export function UsagePanel({
           {usage ? ` Read from Cloudflare ${formatRelative(usage.fetchedAt, now)}.` : null}
         </>
       }
-      className="gap-6"
     >
       {error ? <ErrorAlert error={error} /> : null}
       {usage ? (

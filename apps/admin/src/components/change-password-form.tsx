@@ -88,7 +88,6 @@ export function ChangePasswordForm({
     <Section
       title="Change password"
       description="The password of your console account. Subsonic passwords do not change."
-      className="gap-6"
       {...props}
     >
       <Separator />
