@@ -17,6 +17,7 @@
   "dependencies": {
     "@better-auth/drizzle-adapter": "1.7.6",
     "@stratosonic/db": "workspace:*",
+    "aws4fetch": "1.0.20",
     "better-auth": "1.7.6",
     "drizzle-orm": "0.45.2",
     "hono": "4.13.8",
