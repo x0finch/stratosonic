@@ -45,7 +45,10 @@
  * pass that started after the change lists the bucket after it. So a change
  * during a pass leaves the pass alone and queues exactly one more, still
  * debounced; a cron poke stamped before the change keeps it pending; and
- * **Scan now**, stamped with the wall clock, absorbs it.
+ * **Scan now**, stamped with the wall clock, absorbs it. A pass's start is
+ * the earliest its phases report from D1 (`coveredFrom`), since a pass that
+ * resumes a given-up cursor keeps the older stamp, and so the change is
+ * deleted only when a pass that covered it ends, never when one starts.
  *
  * Every decision reads `pending` and acts on storage with no other `await` in
  * between, so the input gates deliver no other event in between: a `touch`
