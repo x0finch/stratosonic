@@ -1,7 +1,7 @@
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { FolderIcon, FolderPlusIcon, InfoIcon, Trash2Icon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 import { ErrorAlert } from "@/components/error-alert";
 import { DeleteDialog } from "@/components/files/delete-dialog";
@@ -9,11 +9,14 @@ import { FilesTable } from "@/components/files/files-table";
 import { FolderPath, folderSearch } from "@/components/files/folder-path";
 import { NewFolderDialog } from "@/components/files/new-folder-dialog";
 import { ScanLine } from "@/components/files/scan-line";
+import { UploadMenu } from "@/components/files/upload-menu";
+import { UploadsSection } from "@/components/files/uploads-section";
 import { Section } from "@/components/section";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Empty,
+  EmptyContent,
   EmptyDescription,
   EmptyHeader,
   EmptyMedia,
@@ -22,6 +25,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { useClock } from "@/hooks/use-clock";
+import { useUploadQueue } from "@/hooks/use-upload-queue";
 import { ApiError, type Me, meQuery } from "@/lib/api";
 import {
   BUCKET_FALLBACK,
@@ -29,6 +33,7 @@ import {
   describeListing,
   filesConfigQuery,
   folderQuery,
+  folderTrail,
   latestView,
   leaveFolder,
   reopenFolder,
@@ -45,6 +50,7 @@ import { formatCount } from "@/lib/format";
 import { liveQuery } from "@/lib/overview";
 import { can } from "@/lib/roles";
 import { toastError } from "@/lib/toasts";
+import { planUploads } from "@/lib/uploads";
 
 export const Route = createFileRoute("/_shell/files")({
   validateSearch: validateFilesSearch,
@@ -54,9 +60,9 @@ export const Route = createFileRoute("/_shell/files")({
 
 /**
  * The Files page (#83, ticket D): the bound bucket, one folder at a time,
- * whose files and folders a role with `files:write` deletes. A folder is
- * `?prefix=`, so it is a deep link, and the browser's back button walks up.
- * Uploads are ticket E.
+ * whose files and folders a role with `files:write` deletes and uploads
+ * (ticket E). A folder is `?prefix=`, so it is a deep link, and the
+ * browser's back button walks up.
  */
 function Files() {
   const { data: me } = useQuery(meQuery);
@@ -106,6 +112,11 @@ function FilesPage({ me }: { me: Me | null }) {
   const mayWrite = can(me, "files:write");
   const writable = mayWrite && config.data?.writes.enabled === true;
   const readOnlyHere = mayWrite && config.data?.writes.enabled === false;
+  // Uploads, where the server can presign them too: R2 API credentials.
+  const uploadable = writable && config.data?.uploads.configured === true;
+  const uploadsMissing = writable && config.data?.uploads.configured === false;
+  const { queue, snapshot: uploads } = useUploadQueue();
+  const uploadView = uploads.schedule && viewOfWrite(uploads.schedule);
 
   // The scan line: the last write's schedule, or the live route's, whichever
   // came last. The live route is read only while a pass is scheduled or
@@ -117,9 +128,9 @@ function FilesPage({ me }: { me: Me | null }) {
     ...liveQuery,
     enabled: (query) =>
       canReadLibrary &&
-      scanActive(latestView(written, query.state.data && viewOfLive(query.state.data))),
+      scanActive(latestView(written, uploadView, query.state.data && viewOfLive(query.state.data))),
   });
-  const view = latestView(written, live.data && viewOfLive(live.data));
+  const view = latestView(written, uploadView, live.data && viewOfLive(live.data));
 
   const [selection, setSelection] = useState<Selection>({ prefix, targets: NO_SELECTION });
   const selected = selection.prefix === prefix ? selection.targets : NO_SELECTION;
@@ -133,6 +144,20 @@ function FilesPage({ me }: { me: Me | null }) {
   const folders = pages.flatMap((page) => page.folders);
   const files = pages.flatMap((page) => page.files);
   const empty = folder.data !== undefined && folders.length === 0 && files.length === 0;
+  const folderName = folderTrail(prefix).at(-1)?.name ?? bucket;
+
+  /**
+   * The picked files go into the folder on screen, each key in the deepest
+   * folder the loaded listings show (lib/uploads.ts, `uploadTarget`).
+   */
+  function upload(picked: readonly File[]) {
+    if (!config.data) {
+      return;
+    }
+    const listed = (at: string) =>
+      queryClient.getQueryData(folderQuery(at).queryKey)?.pages.flatMap((page) => page.folders);
+    queue.add(planUploads(picked, prefix, config.data, listed), config.data.limits.signBatch);
+  }
 
   function select(targets: readonly DeleteTarget[], checked: boolean) {
     setSelection((current) => {
@@ -196,6 +221,7 @@ function FilesPage({ me }: { me: Me | null }) {
         <FolderPlusIcon data-icon="inline-start" />
         New folder
       </Button>
+      {uploadable ? <UploadMenu onPick={upload} /> : null}
     </>
   ) : readOnlyHere ? (
     <p className="text-sm text-muted-foreground">Read-only on this deployment</p>
@@ -205,21 +231,23 @@ function FilesPage({ me }: { me: Me | null }) {
     <div className="@container flex min-w-0 flex-col gap-4">
       <FolderPath prefix={prefix} bucket={bucket} />
       <ScanLine view={view} />
-      {/* The folder is the page's one block, so it has no h2 and is no named
-          region (DESIGN.md, "A page with a single block has no section
-          heading"): the path's current page names the folder. Ticket E:
-          once the Uploads section joins it, the page has two blocks, so give
-          this one an h2 or an `aria-label` naming the folder. */}
+      {/* The folder has no h2: the path's current page names it. While it
+          is the page's one block, it is no named region either (DESIGN.md,
+          "A page with a single block has no section heading"); once the
+          Uploads section joins it, it is a region named after the folder. */}
       <Section
+        aria-label={uploads.items.length > 0 ? folderName : undefined}
         description={
-          // An empty folder says so in its `Empty` below, once.
-          empty
-            ? undefined
-            : folder.data
-              ? describeListing(folders.length, files.length, folder.hasNextPage)
-              : folder.isPending
-                ? "Reading the folder…"
-                : undefined
+          uploadsMissing
+            ? "Uploads need R2 API credentials on the server (see the server README)."
+            : // An empty folder says so in its `Empty` below, once.
+              empty
+              ? undefined
+              : folder.data
+                ? describeListing(folders.length, files.length, folder.hasNextPage)
+                : folder.isPending
+                  ? "Reading the folder…"
+                  : undefined
         }
         action={actions}
       >
@@ -233,7 +261,11 @@ function FilesPage({ me }: { me: Me | null }) {
         ) : folder.data === undefined ? (
           <ErrorAlert error={folder.error} />
         ) : empty ? (
-          <FolderEmpty prefix={prefix} made={made.has(prefix)} />
+          <FolderEmpty
+            prefix={prefix}
+            made={made.has(prefix)}
+            upload={uploadable ? <UploadMenu variant="outline" onPick={upload} /> : null}
+          />
         ) : (
           <>
             <FilesTable
@@ -263,6 +295,9 @@ function FilesPage({ me }: { me: Me | null }) {
           </>
         )}
       </Section>
+      {uploads.items.length > 0 ? (
+        <UploadsSection items={uploads.items} queue={queue} allowed={config.data?.allowed} />
+      ) : null}
       {writable && config.data ? (
         <>
           <NewFolderDialog
@@ -305,7 +340,16 @@ function FilesPage({ me }: { me: Me | null }) {
  * with nothing in it exists only on this page: one just made with New
  * folder, until a file lands, or one whose files are gone.
  */
-function FolderEmpty({ prefix, made }: { prefix: string; made: boolean }) {
+function FolderEmpty({
+  prefix,
+  made,
+  upload,
+}: {
+  prefix: string;
+  made: boolean;
+  /** The Upload menu, where uploads are possible. */
+  upload: ReactNode;
+}) {
   const root = prefix === "";
   return (
     <Empty>
@@ -316,12 +360,15 @@ function FolderEmpty({ prefix, made }: { prefix: string; made: boolean }) {
         <EmptyTitle>{root ? "The bucket is empty" : "This folder is empty"}</EmptyTitle>
         <EmptyDescription>
           {root
-            ? "Copy music into it with rclone, as the server README describes."
+            ? upload
+              ? "Upload files, or copy music into it with rclone, as the server README describes."
+              : "Copy music into it with rclone, as the server README describes."
             : made
               ? "Upload files to create this folder."
               : "A folder exists only while a file is in it."}
         </EmptyDescription>
       </EmptyHeader>
+      {upload ? <EmptyContent>{upload}</EmptyContent> : null}
     </Empty>
   );
 }
