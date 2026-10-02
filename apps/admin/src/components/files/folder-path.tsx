@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { Fragment } from "react";
+import { type ComponentProps, Fragment } from "react";
 
 import {
   Breadcrumb,
@@ -24,6 +24,22 @@ export function folderSearch(prefix: string): { prefix?: string } {
 }
 
 /**
+ * A link into a folder. The router marks a link active, with
+ * `aria-current="page"`, when its search is a subset of the page's, so the
+ * root's link (no search at all) would be "current" in every folder; an
+ * exact match marks only a link to the folder on screen, and the path
+ * shows that folder as a page, not a link.
+ */
+export function FolderLink({
+  prefix,
+  ...props
+}: { prefix: string } & Omit<ComponentProps<"a">, "href">) {
+  return (
+    <Link to="/files" search={folderSearch(prefix)} activeOptions={{ exact: true }} {...props} />
+  );
+}
+
+/**
  * Where the folder on screen is (#83, "Layout", item 1): the bucket, then
  * each folder down to this one, each a link but the last. In a narrow
  * column the folders between the bucket and this one collapse into the
@@ -40,7 +56,7 @@ export function FolderPath({ prefix, bucket }: { prefix: string; bucket: string 
       <BreadcrumbList>
         <BreadcrumbItem>
           {last ? (
-            <BreadcrumbLink render={<Link to="/files" search={{}} />}>{bucket}</BreadcrumbLink>
+            <BreadcrumbLink render={<FolderLink prefix="" />}>{bucket}</BreadcrumbLink>
           ) : (
             <BreadcrumbPage>{bucket}</BreadcrumbPage>
           )}
@@ -60,7 +76,7 @@ export function FolderPath({ prefix, bucket }: { prefix: string; bucket: string 
                   {middle.map((folder) => (
                     <DropdownMenuItem
                       key={folder.prefix}
-                      render={<Link to="/files" search={folderSearch(folder.prefix)} />}
+                      render={<FolderLink prefix={folder.prefix} />}
                     >
                       {folder.name}
                     </DropdownMenuItem>
@@ -74,7 +90,7 @@ export function FolderPath({ prefix, bucket }: { prefix: string; bucket: string 
           <Fragment key={folder.prefix}>
             <BreadcrumbSeparator className="hidden @md:list-item" />
             <BreadcrumbItem className="hidden @md:inline-flex">
-              <BreadcrumbLink render={<Link to="/files" search={folderSearch(folder.prefix)} />}>
+              <BreadcrumbLink render={<FolderLink prefix={folder.prefix} />}>
                 {folder.name}
               </BreadcrumbLink>
             </BreadcrumbItem>

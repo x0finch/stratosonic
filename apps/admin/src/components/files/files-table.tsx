@@ -1,4 +1,3 @@
-import { Link } from "@tanstack/react-router";
 import {
   EllipsisIcon,
   FileAudioIcon,
@@ -11,7 +10,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 
-import { folderSearch } from "@/components/files/folder-path";
+import { FolderLink } from "@/components/files/folder-path";
 import { RelativeTime } from "@/components/relative-time";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -115,13 +114,9 @@ export function FilesTable({
               actions={actions}
               icon={<FolderIcon className={ICON} />}
               name={
-                <Link
-                  to="/files"
-                  search={folderSearch(folder.prefix)}
-                  className="underline-offset-4 hover:underline"
-                >
+                <FolderLink prefix={folder.prefix} className="underline-offset-4 hover:underline">
                   {folder.name}
-                </Link>
+                </FolderLink>
               }
               modified={MISSING}
               size={MISSING}
