@@ -65,6 +65,13 @@ export interface FilesHarnessOptions {
   readonly refusedCursor?: string;
   /** Makes every listing throw, as an R2 outage would. */
   readonly failListing?: boolean;
+  /**
+   * Makes `head()` answer an object found under another Unicode spelling
+   * with the key it was asked for, rather than the stored one. R2 does not
+   * document which it answers; Replace must keep the stored spelling either
+   * way.
+   */
+  readonly headAnswersAskedKey?: boolean;
 }
 
 /**
@@ -169,7 +176,10 @@ export function filesHarness(origin: string, options: FilesHarnessOptions = {}):
             }
           }
           if (name === "head" && typeof argument === "string") {
-            return await headAnySpelling(target, argument);
+            const object = await headAnySpelling(target, argument);
+            return object !== null && options.headAnswersAskedKey
+              ? withKey(object, argument)
+              : object;
           }
           return await (value as (...args: unknown[]) => unknown).apply(target, [
             argument,
@@ -262,17 +272,36 @@ export function filesHarness(origin: string, options: FilesHarnessOptions = {}):
 }
 
 /**
- * `head()` as R2 answers it: the object under the key, or under its NFC or
- * NFD spelling, with the key it is stored under.
+ * `head()` as R2 answers it: the object under the key, or else under any
+ * spelling NFC-equal to it (composed, decomposed or mixed), with the key it
+ * is stored under. The other spellings are found by listing the whole
+ * bucket, which a test's bucket keeps small.
  */
 async function headAnySpelling(bucket: R2Bucket, key: string): Promise<R2Object | null> {
-  for (const spelling of new Set([key, key.normalize("NFC"), key.normalize("NFD")])) {
-    const object = await bucket.head(spelling);
-    if (object !== null) {
-      return object;
-    }
+  const exact = await bucket.head(key);
+  if (exact !== null) {
+    return exact;
   }
+
+  const nfc = key.normalize("NFC");
+  let cursor: string | undefined;
+  do {
+    const listing = await bucket.list({ cursor });
+    const match = listing.objects.find((object) => object.key.normalize("NFC") === nfc);
+    if (match !== undefined) {
+      return bucket.head(match.key);
+    }
+    cursor = listing.truncated ? listing.cursor : undefined;
+  } while (cursor !== undefined);
+
   return null;
+}
+
+/** The object as `head()` found it, but answering `key` as its key. */
+function withKey(object: R2Object, key: string): R2Object {
+  return new Proxy(object, {
+    get: (target, name) => (name === "key" ? key : Reflect.get(target, name)),
+  });
 }
 
 /** Every key in the bucket, sorted, past R2's 1,000-a-page listing. */

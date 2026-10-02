@@ -299,6 +299,65 @@ describe("POST /api/files/uploads", () => {
     expect(again[0]).toMatchObject({ key: nfc, error: "exists" });
   });
 
+  describe("Replace keeps the stored spelling, whichever key head() answers", () => {
+    const NFC = "Bj\u00f6rk/J\u00f3ga/01 J\u00f3ga.flac";
+    const NFD = NFC.normalize("NFD");
+    // A folder named on macOS (NFD), a file named elsewhere (NFC).
+    const MIXED = "Bjo\u0308rk/J\u00f3ga/01 J\u00f3ga.flac";
+
+    it.each([
+      ["head() answers the stored key", false],
+      ["head() answers the key asked for", true],
+    ])("%s: one listing under the shared part finds it", async (_, headAnswersAskedKey) => {
+      const on = filesHarness(ORIGIN, { uploads: UPLOADS_ENV, headAnswersAskedKey });
+      for (const stored of [NFD, MIXED]) {
+        await resetLibrary();
+        await seedObjects([stored, "Bjarne/01.flac", "Bj\u00f6rk/J\u00f3ga/02 Other.flac"]);
+        on.r2Calls.length = 0;
+
+        const { uploads } = await sign([{ key: NFC, size: 10, overwrite: true }], on);
+
+        const replaced = signed(uploads[0]);
+        expect(replaced.key).toBe(stored);
+        expect(new URL(replaced.url).pathname).toBe(canonicalObjectPath("navidrome", stored));
+        expect(replaced.headers).toEqual({ "Content-Type": "audio/flac" });
+        expect(on.r2Calls).toEqual([
+          { method: "head", argument: NFC },
+          { method: "list", argument: { prefix: "Bj", limit: 1000 } },
+        ]);
+      }
+    });
+
+    it("makes no listing for a key with one spelling", async () => {
+      await seedObjects(["Artist/Album/01 Title.flac", "坂本龍一/01.flac"]);
+
+      const { uploads } = await sign([
+        { key: "Artist/Album/01 Title.flac", size: 10, overwrite: true },
+        { key: "坂本龍一/01.flac", size: 10, overwrite: true },
+      ]);
+
+      expect(uploads.map((upload) => signed(upload).key)).toEqual([
+        "Artist/Album/01 Title.flac",
+        "坂本龍一/01.flac",
+      ]);
+      expect(harness.r2Calls.map((call) => call.method)).toEqual(["head", "head"]);
+    });
+
+    it("falls back to head()'s key when the stored one is past the listing's page", async () => {
+      // Pages of 2: the two `Bja…` keys sort first, ahead of `Bjo…`.
+      const on = filesHarness(ORIGIN, {
+        uploads: UPLOADS_ENV,
+        headAnswersAskedKey: true,
+        listLimit: 2,
+      });
+      await seedObjects([NFD, "Bja/01.flac", "Bja/02.flac"]);
+
+      const { uploads } = await sign([{ key: NFC, size: 10, overwrite: true }], on);
+
+      expect(signed(uploads[0]).key).toBe(NFC);
+    });
+  });
+
   it("signs a new key in NFC, whatever spelling it was asked in", async () => {
     const nfd = "Sigur Rós/()/01.flac";
 

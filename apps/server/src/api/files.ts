@@ -19,6 +19,7 @@ import {
   MAX_KEY_BYTES,
   MAX_SEGMENT_BYTES,
   type PathRefusal,
+  spellingInvariantPrefix,
   utf8Length,
 } from "../files/keys";
 import { RESCAN_QUIET_MS, recordLibraryChange, type ScanSchedule } from "../files/library-change";
@@ -119,10 +120,16 @@ import { requireSameOrigin } from "./same-origin";
  *    signed with `If-None-Match: *`, so R2 refuses it if it appears in the
  *    meantime. An existing key answers `exists`, with its size and time,
  *    unless the request says `overwrite: true` (Replace): then the URL is
- *    signed for the key exactly as R2 stores it, which may be another
- *    Unicode spelling of the one asked for, and without `If-None-Match`, so
- *    the track's id and annotations are kept (ADR-0002). Nothing has changed
- *    yet, so the library is not marked changed.
+ *    signed for the key exactly as R2 lists it, which may be another
+ *    Unicode spelling of the one asked for (`storedSpelling`), and without
+ *    `If-None-Match`, so the track's id and annotations are kept
+ *    (ADR-0002). Nothing has changed yet, so the library is not marked
+ *    changed.
+ *
+ *    Its cost: one `HeadObject` (Class B) per file that passes the rules,
+ *    and one `ListObjects` (Class A) more per Replace of an existing key
+ *    with more than one Unicode spelling. At most 10 of each, so at most 20
+ *    binding calls a request.
  * 2. `POST /api/files/uploads/complete` reports the keys whose `PUT`
  *    succeeded, and records the change as a delete does. It makes no R2 call:
  *    the keys are bounded by the upload rules, and a key that was not really
@@ -140,6 +147,9 @@ export const SIGN_BATCH = 10;
 
 /** The most `head()` calls in flight at once: a Worker waits on six connections at a time. */
 export const HEADS_IN_FLIGHT = 6;
+
+/** The keys the one listing that finds a Replace's stored spelling reaches: R2's own most. */
+const STORED_SPELLING_PAGE = 1000;
 
 /** The most keys one `POST /api/files/delete` takes; the body cap is sized for it. */
 export const DELETE_BATCH = 250;
@@ -433,7 +443,7 @@ async function signUpload(
     };
   }
 
-  const key = stored?.key ?? checked.key;
+  const key = stored === null ? checked.key : await storedSpelling(env, checked.key, stored.key);
   const presigned = await presignUpload(
     config,
     { key, size: file.size, contentType: checked.contentType, replace: stored !== null },
@@ -441,6 +451,34 @@ async function signUpload(
   );
 
   return { key, ...presigned };
+}
+
+/**
+ * The exact key, as R2 lists it, of the object `head(key)` found, for a
+ * Replace to write under. R2 treats Unicode-equivalent keys as one object,
+ * but a listing answers the spelling last uploaded, so a Replace under
+ * another spelling would change the key the scanner sees, and with it the
+ * track's id and its annotations (ADR-0002).
+ *
+ * Whether `head()` answers the stored spelling or the one asked for is not
+ * documented, so this does not rest on it. A key with one spelling (NFC and
+ * NFD alike: ASCII, CJK) costs nothing more. Any other costs one listing
+ * (one Class A operation) of up to 1,000 keys under the part all its
+ * spellings share (`spellingInvariantPrefix`), and takes the listed key that
+ * is NFC-equal to it. If none is in that page (a prefix as short as `Bj`
+ * over more than 1,000 keys, or a singleton decomposition such as KELVIN
+ * SIGN), `head()`'s key stands.
+ */
+async function storedSpelling(env: Env, key: string, headKey: string): Promise<string> {
+  const prefix = spellingInvariantPrefix(key);
+  if (prefix === key) {
+    return headKey;
+  }
+
+  const listing = await env.MUSIC.list({ prefix, limit: STORED_SPELLING_PAGE });
+  const listed = listing.objects.find((object) => object.key.normalize("NFC") === key);
+
+  return listed?.key ?? headKey;
 }
 
 /**

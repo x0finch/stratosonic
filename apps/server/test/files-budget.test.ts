@@ -265,6 +265,23 @@ describe("the Files routes' budget", () => {
     },
   );
 
+  it("POST /api/files/uploads, 10 Replace: one head() each, and one listing each for a key with two spellings", async () => {
+    // Five keys with one spelling, five stored in NFD and asked for in NFC.
+    const ascii = Array.from({ length: 5 }, (_, index) => `Album/${index}.flac`);
+    const accented = Array.from({ length: 5 }, (_, index) => `Bj\u00f6rk/${index}.flac`);
+    await seedObjects([...ascii, ...accented.map((key) => key.normalize("NFD"))]);
+    const files = [...ascii, ...accented].map((key) => ({ key, size: 1, overwrite: true }));
+
+    const result = await measured("POST", "/files/uploads", { files });
+
+    expect(result.status).toBe(200);
+    expect(result.route).toEqual([]);
+    expect(result.r2.filter((method) => method === "head")).toHaveLength(10);
+    expect(result.r2.filter((method) => method === "list")).toHaveLength(5);
+    expect(result.driver).toEqual([]);
+    expect(subrequests(result)).toBe(15);
+  });
+
   it("POST /api/files/uploads, not configured: nothing past the session", async () => {
     // Its session check reads the first harness's D1, so only the route's
     // own statements are counted here.
