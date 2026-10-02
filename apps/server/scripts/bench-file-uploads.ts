@@ -39,10 +39,54 @@ const UPLOADS: UploadsConfig = {
   bucket: "navidrome",
 };
 
-/** The bucket's objects, by key, as `head()` answers them. */
-const stored = new Map<string, Pick<R2Object, "key" | "size" | "uploaded">>();
+type StoredObject = Pick<R2Object, "key" | "size" | "uploaded">;
+
+/** The bucket's objects, by their key in NFC, as R2 finds them by any spelling. */
+const stored = new Map<string, StoredObject>();
+
+function store(key: string, size: number): void {
+  stored.set(key.normalize("NFC"), { key, size, uploaded: new Date() });
+  listings.clear();
+}
+
+/**
+ * Delimited listings, each computed once: on Workers a listing is I/O the
+ * Worker waits for, so only the route's own work on the answer is timed.
+ */
+const listings = new Map<string, R2Objects>();
+
+function list({ prefix = "", delimiter }: R2ListOptions): R2Objects {
+  const id = `${prefix}\u0000${delimiter ?? ""}`;
+  const cached = listings.get(id);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const objects: StoredObject[] = [];
+  const folders = new Set<string>();
+  for (const object of [...stored.values()].sort((a, b) => (a.key < b.key ? -1 : 1))) {
+    if (!object.key.startsWith(prefix)) {
+      continue;
+    }
+    const slash = delimiter === undefined ? -1 : object.key.indexOf(delimiter, prefix.length);
+    if (slash === -1) {
+      objects.push(object);
+    } else {
+      folders.add(object.key.slice(0, slash + 1));
+    }
+  }
+  const listing = {
+    objects,
+    delimitedPrefixes: [...folders],
+    truncated: false,
+  } as unknown as R2Objects;
+  listings.set(id, listing);
+  return listing;
+}
+
 const MUSIC = {
-  head: async (key: string) => stored.get(key) ?? null,
+  head: async (key: string) => stored.get(key.normalize("NFC")) ?? null,
+  list: async (options: R2ListOptions) => list(options),
 } as unknown as R2Bucket;
 
 /**
@@ -131,7 +175,7 @@ for (const [n, runs] of [
 
 // Every key exists: 10 head() calls and no signature.
 for (const file of files(10)) {
-  stored.set(file.key, { key: file.key, size: file.size, uploaded: new Date() });
+  store(file.key, file.size);
 }
 await bench(
   "POST /api/files/uploads, 10 files that exist (no signature)",
@@ -143,7 +187,7 @@ await bench(
     ),
 );
 await bench(
-  "POST /api/files/uploads, 10 Replace",
+  "POST /api/files/uploads, 10 Replace, one spelling (no listing)",
   500,
   async () => () =>
     expecting(
@@ -156,6 +200,35 @@ await bench(
       ),
     ),
 );
+
+// Replace of keys stored in NFD and asked for in NFC, in a bucket of 500
+// artist folders: half under `Björk/Jóga/` (three lookups each, the most a
+// Replace makes), half under `Édith Piaf/` (a lookup in the root's 500
+// folders, then the file's).
+for (let index = 0; index < 500; index++) {
+  store(`Artist ${String(index).padStart(3, "0")}/Album/01.flac`, 1);
+}
+const spelled = [
+  ...Array.from({ length: 5 }, (_, index) => `Bj\u00f6rk/J\u00f3ga/0${index} J\u00f3ga.flac`),
+  ...Array.from({ length: 5 }, (_, index) => `\u00c9dith Piaf/La Vie/0${index} Hymne \u00e0.flac`),
+];
+for (const key of spelled) {
+  store(key.normalize("NFD"), 41_234_567);
+}
+await bench("POST /api/files/uploads, 10 Replace, two spellings", 500, async () => async () => {
+  const response = await send(
+    apiRequest(ORIGIN, "/api/files/uploads", {
+      body: { files: spelled.map((key) => ({ key, size: 41_234_567, overwrite: true })) },
+      cookie,
+    }),
+  );
+  const { uploads } = (await response.json()) as { uploads: { key: string; url?: string }[] };
+  if (
+    uploads.some((upload, index) => upload.key !== spelled[index]?.normalize("NFD") || !upload.url)
+  ) {
+    throw new Error(`a Replace lost its stored spelling: ${JSON.stringify(uploads)}`);
+  }
+});
 
 /**
  * A completion, which must reach the driver: `scan: null` would mean the
