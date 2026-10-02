@@ -43,7 +43,7 @@ export interface FilesHarnessOptions {
   readonly listLimit?: number;
   /** Replaces the scan driver's binding, to make it fail. */
   readonly scanDriver?: Env["SCAN_DRIVER"];
-  /** `FILE_WRITES`, unset (writes on) unless given. */
+  /** `FILE_WRITES`: `""` (unset, writes on) unless given; `undefined` leaves it out. */
   readonly fileWrites?: string;
   /** Makes every write of a `property` row fail, as a D1 outage would. */
   readonly failPropertyWrite?: boolean;
@@ -52,6 +52,46 @@ export interface FilesHarnessOptions {
    * `UPLOADS_ENV` configures uploads.
    */
   readonly uploads?: Partial<Pick<Env, keyof typeof UPLOADS_ENV>>;
+  /** Makes the `MUSIC.delete` call of this number (from 1) throw before it deletes anything. */
+  readonly failDeleteCall?: number;
+  /** Makes a listing given this cursor throw, as R2 refuses a cursor it never issued. */
+  readonly refusedCursor?: string;
+  /** Makes every listing throw, as an R2 outage would. */
+  readonly failListing?: boolean;
+}
+
+/**
+ * A scan driver binding that answers every call at once and does nothing:
+ * no pass starts, so nothing runs in the background of a test that only
+ * needs the call to succeed. `start` answers "started" and any other method
+ * (`touch`, after #130) a schedule.
+ */
+export function inertDriver(): Env["SCAN_DRIVER"] {
+  return {
+    idFromName: (name: string) => testEnv.SCAN_DRIVER.idFromName(name),
+    get: () =>
+      new Proxy(
+        {},
+        {
+          get: (_, method) => async () =>
+            method === "start"
+              ? "started"
+              : { scheduledAt: new Date().toISOString(), afterCurrentPass: false },
+        },
+      ),
+  } as unknown as Env["SCAN_DRIVER"];
+}
+
+/** A scan driver binding whose every call fails, as an unreachable Durable Object would. */
+export function unreachableDriver(): Env["SCAN_DRIVER"] {
+  return {
+    idFromName: (name: string) => testEnv.SCAN_DRIVER.idFromName(name),
+    get: () =>
+      new Proxy(
+        {},
+        { get: () => () => Promise.reject(new Error("the scan driver is unreachable")) },
+      ),
+  } as unknown as Env["SCAN_DRIVER"];
 }
 
 export interface FilesHarness {
@@ -77,6 +117,7 @@ export function filesHarness(origin: string, options: FilesHarnessOptions = {}):
   const r2Calls: R2Call[] = [];
   const r2Peak = { inFlight: 0, peak: 0 };
   const driverCalls: string[] = [];
+  let deleteCalls = 0;
 
   const music = new Proxy(testEnv.MUSIC, {
     get(target, name) {
@@ -89,12 +130,23 @@ export function filesHarness(origin: string, options: FilesHarnessOptions = {}):
         r2Peak.inFlight++;
         r2Peak.peak = Math.max(r2Peak.peak, r2Peak.inFlight);
         try {
-          if (name === "list" && options.listLimit !== undefined) {
+          if (name === "delete" && ++deleteCalls === options.failDeleteCall) {
+            throw new Error("R2 is unavailable");
+          }
+          if (name === "list") {
             const listing = (argument ?? {}) as R2ListOptions;
-            return await target.list({
-              ...listing,
-              limit: Math.min(listing.limit ?? 1000, options.listLimit),
-            });
+            if (options.failListing) {
+              throw new Error("R2 is unavailable");
+            }
+            if (options.refusedCursor !== undefined && listing.cursor === options.refusedCursor) {
+              throw new Error("list: the cursor is not valid");
+            }
+            if (options.listLimit !== undefined) {
+              return await target.list({
+                ...listing,
+                limit: Math.min(listing.limit ?? 1000, options.listLimit),
+              });
+            }
           }
           if (name === "head" && typeof argument === "string") {
             return await headAnySpelling(target, argument);
@@ -164,7 +216,8 @@ export function filesHarness(origin: string, options: FilesHarnessOptions = {}):
     DB: db,
     MUSIC: music,
     SCAN_DRIVER: scanDriver,
-    FILE_WRITES: options.fileWrites ?? "",
+    // Given, even as undefined, or else unset as the pinned env has it.
+    FILE_WRITES: "fileWrites" in options ? options.fileWrites : "",
     ...options.uploads,
   };
   const app = createApp();

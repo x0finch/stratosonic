@@ -5,18 +5,19 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { DELETE_BATCH } from "../src/api/files";
 import { MAX_FILE_DELETE_BODY_BYTES, MAX_JSON_BODY_BYTES } from "../src/api/json-body";
 import { database } from "../src/db";
-import type { Env } from "../src/env";
 import { ALLOWED, MAX_KEY_BYTES, MAX_SEGMENT_BYTES } from "../src/files/keys";
 import { RESCAN_QUIET_MS } from "../src/files/library-change";
 import { type CookieJar, GUEST_ROLE, seedConsoleUser, signIn } from "./console-auth-support";
-import { driverIsIdle, driveUntilIdle } from "./driver-support";
+import { driverIsIdle, driveUntilIdle, poke } from "./driver-support";
 import {
   allKeys,
   expectRefusal,
   type FilesHarness,
   filesHarness,
+  inertDriver,
   rows,
   seedObjects,
+  unreachableDriver,
 } from "./files-support";
 import { resetLibrary } from "./scan-support";
 import { BASE, seedPlaylist, testEnv } from "./support";
@@ -63,17 +64,14 @@ function readOnly(): FilesHarness {
   return filesHarness(ORIGIN, { fileWrites: "off" });
 }
 
-/** A scan driver whose every call fails, as an unreachable Durable Object would. */
-function unreachableDriver(): Env["SCAN_DRIVER"] {
-  return {
-    idFromName: (name: string) => testEnv.SCAN_DRIVER.idFromName(name),
-    get: () =>
-      new Proxy(
-        {},
-        { get: () => () => Promise.reject(new Error("the scan driver is unreachable")) },
-      ),
-  } as unknown as Env["SCAN_DRIVER"];
-}
+/** `scan` when the driver was idle: a pass at about this time. */
+const SCHEDULED = {
+  scheduledAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/),
+  afterCurrentPass: false,
+};
+
+/** `scan` when a pass was running: one more follows it. */
+const AFTER_CURRENT_PASS = { scheduledAt: null, afterCurrentPass: true };
 
 /** A request that is not JSON, but otherwise as the console sends it. */
 function plainText(path: string): Request {
@@ -124,11 +122,25 @@ describe("GET /api/files/config", () => {
     expect(harness.driverCalls).toEqual([]);
   });
 
-  it("reports writes as disabled where FILE_WRITES is off", async () => {
-    const response = await readOnly().call(owner, "GET", "/files/config");
+  it.each([
+    ["off", false],
+    ["OFF", false],
+    [" off ", false],
+    ["Off\n", false],
+    [undefined, true],
+    ["", true],
+    ["on", true],
+    ["false", true],
+    ["offf", true],
+  ])("reports writes enabled: %j gives %s, case and spaces ignored", async (value, enabled) => {
+    const response = await filesHarness(ORIGIN, { fileWrites: value }).call(
+      owner,
+      "GET",
+      "/files/config",
+    );
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ writes: { enabled: false } });
+    expect(await response.json()).toMatchObject({ writes: { enabled } });
   });
 
   it("answers 401 without a session, and 403 to a role without files:read", async () => {
@@ -250,6 +262,29 @@ describe("GET /api/files", () => {
     );
   });
 
+  it("answers 400 invalid_cursor to a cursor R2 refuses, not 500", async () => {
+    // Miniflare's R2 takes any string as a cursor; the real one refuses a
+    // cursor it never issued, which the harness stands in for.
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const forged = filesHarness(ORIGIN, { refusedCursor: "forged" });
+
+    const response = await forged.call(owner, "GET", "/files?prefix=Artist%2F&cursor=forged");
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "invalid_cursor" });
+    expect(forged.r2Calls).toHaveLength(1);
+  });
+
+  it("answers 500 to a listing R2 fails without a cursor", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const failing = filesHarness(ORIGIN, { failListing: true });
+
+    const response = await failing.call(owner, "GET", "/files?prefix=Artist%2F");
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "internal" });
+  });
+
   it("answers 403 reserved_path for _covers/, without listing it", async () => {
     for (const prefix of ["_covers%2F", "_covers%2Fsub%2F"]) {
       const response = await harness.call(owner, "GET", `/files?prefix=${prefix}`);
@@ -313,10 +348,7 @@ describe("POST /api/files/delete", () => {
     const response = await harness.call(owner, "POST", "/files/delete", { keys: KEYS });
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({
-      deleted: 2,
-      scan: expect.objectContaining({}),
-    });
+    expect(await response.json()).toEqual({ deleted: 2, scan: SCHEDULED });
     expect(await allKeys()).toEqual(before.filter((key) => !KEYS.includes(key)));
     // No trash: nothing was written, copied or moved, only deleted.
     expect(harness.r2Calls).toEqual([{ method: "delete", argument: KEYS }]);
@@ -379,6 +411,25 @@ describe("POST /api/files/delete", () => {
     expect(changedAt).toBeLessThanOrEqual(after);
     expect(harness.driverCalls).toHaveLength(1);
     expect(await driverIsIdle()).toBe(false);
+  });
+
+  it("answers that a pass follows the one running, when one is", async () => {
+    await poke(new Date());
+
+    const response = await harness.call(owner, "POST", "/files/delete", { keys: KEYS });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ deleted: 2, scan: AFTER_CURRENT_PASS });
+  });
+
+  it("replaces an earlier LibraryChangedAt with the change's own instant", async () => {
+    await database(testEnv)
+      .insert(property)
+      .values({ id: "LibraryChangedAt", value: JSON.stringify({ at: 1_000 }) });
+
+    const before = Date.now();
+    expect((await harness.call(owner, "POST", "/files/delete", { keys: KEYS })).status).toBe(200);
+    expect(await libraryChangedAt()).toBeGreaterThanOrEqual(before);
   });
 
   it("keeps the later LibraryChangedAt when an earlier one arrives", async () => {
@@ -510,14 +561,28 @@ describe("POST /api/files/delete", () => {
     );
   });
 
-  it("answers 403 file_writes_disabled where FILE_WRITES is off, changing nothing", async () => {
-    const preview = readOnly();
-    await expectRefusal(
-      preview,
-      () => preview.call(owner, "POST", "/files/delete", { keys: KEYS }),
-      403,
-      "file_writes_disabled",
+  it.each(["off", "OFF", " off "])(
+    "answers 403 file_writes_disabled where FILE_WRITES is %j, changing nothing",
+    async (value) => {
+      const preview = filesHarness(ORIGIN, { fileWrites: value });
+      await expectRefusal(
+        preview,
+        () => preview.call(owner, "POST", "/files/delete", { keys: KEYS }),
+        403,
+        "file_writes_disabled",
+      );
+    },
+  );
+
+  it("works where FILE_WRITES is not set at all", async () => {
+    const response = await filesHarness(ORIGIN, { fileWrites: undefined }).call(
+      owner,
+      "POST",
+      "/files/delete",
+      { keys: KEYS },
     );
+
+    expect(response.status).toBe(200);
   });
 });
 
@@ -532,52 +597,48 @@ describe("POST /api/files/delete-folder", () => {
     "Small/x.mp3",
   ];
 
-  it("deletes 2,500 keys in two rounds, every depth, and nothing outside the prefix", async () => {
-    const inside = Array.from({ length: 2500 }, (_, index) =>
+  it("deletes 250 keys in two rounds of 2 pages of 100, every depth, and nothing outside the prefix", {
+    timeout: 30_000,
+  }, async () => {
+    // The production shape, 2,500 keys in rounds of 2 listings of 1,000,
+    // scaled down tenfold with an injected page, and a driver that starts
+    // no pass in the background.
+    const scaled = filesHarness(ORIGIN, { listLimit: 100, scanDriver: inertDriver() });
+    const inside = Array.from({ length: 250 }, (_, index) =>
       index % 5 === 0
         ? `Big/Folder/CD${index % 3}/${String(index).padStart(4, "0")}.lrc`
         : `Big/Folder/${String(index).padStart(4, "0")}.txt`,
     );
-    await seedObjects([...inside, ...OUTSIDE], 100);
-    harness.r2Calls.length = 0;
+    await seedObjects([...inside, ...OUTSIDE], 50);
 
-    const first = await harness.call(owner, "POST", "/files/delete-folder", {
+    const first = await scaled.call(owner, "POST", "/files/delete-folder", {
       prefix: "Big/Folder/",
     });
     expect(first.status).toBe(200);
-    expect(await first.json()).toEqual({
-      deleted: 2000,
-      done: false,
-      scan: expect.objectContaining({}),
-    });
-    expect(harness.r2Calls.map((call) => call.method)).toEqual([
-      "list",
-      "delete",
-      "list",
-      "delete",
-    ]);
-    expect(harness.r2Calls[0]?.argument).toEqual({ prefix: "Big/Folder/", limit: 1000 });
+    expect(await first.json()).toEqual({ deleted: 200, done: false, scan: SCHEDULED });
+    expect(scaled.r2Calls.map((call) => call.method)).toEqual(["list", "delete", "list", "delete"]);
+    // The route asks for R2's own page; the harness gives it 100.
+    expect(scaled.r2Calls[0]?.argument).toEqual({ prefix: "Big/Folder/", limit: 1000 });
 
-    const second = await harness.call(owner, "POST", "/files/delete-folder", {
+    const second = await scaled.call(owner, "POST", "/files/delete-folder", {
       prefix: "Big/Folder/",
     });
     expect(second.status).toBe(200);
-    expect(await second.json()).toMatchObject({ deleted: 500, done: true });
+    expect(await second.json()).toEqual({ deleted: 50, done: true, scan: SCHEDULED });
 
     expect(await allKeys("Big/Folder/")).toEqual([]);
     expect(await allKeys()).toEqual([...OUTSIDE].sort());
 
-    // A folder already gone: nothing deleted, nothing recorded.
-    harness.d1.reset();
-    const driverCalls = harness.driverCalls.length;
-    const third = await harness.call(owner, "POST", "/files/delete-folder", {
+    // A folder already gone: nothing deleted, nothing recorded, no `scan`.
+    scaled.d1.reset();
+    const driverCalls = scaled.driverCalls.length;
+    const third = await scaled.call(owner, "POST", "/files/delete-folder", {
       prefix: "Big/Folder/",
     });
-    expect(await third.json()).toEqual({ deleted: 0, done: true, scan: null });
-    expect(harness.driverCalls).toHaveLength(driverCalls);
-    // Seeding 2,505 objects in miniflare takes most of Vitest's default 5 s
-    // on a busy machine.
-  }, 30_000);
+    expect(await third.json()).toEqual({ deleted: 0, done: true });
+    expect(scaled.driverCalls).toHaveLength(driverCalls);
+    expect(scaled.d1.statements.some((statement) => /"property"/.test(statement.sql))).toBe(false);
+  });
 
   it("answers done once a listing comes back complete, with smaller pages", async () => {
     const paged = filesHarness(ORIGIN, { listLimit: 2 });
@@ -618,10 +679,61 @@ describe("POST /api/files/delete-folder", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ deleted: 2, done: true });
+    expect(await response.json()).toEqual({ deleted: 2, done: true, scan: SCHEDULED });
     expect(await database(testEnv).select().from(playlist).where(eq(playlist.id, id))).toEqual([]);
     expect(await libraryChangedAt()).not.toBeNull();
     expect(await driverIsIdle()).toBe(false);
+  });
+
+  it("answers that a pass follows the one running, when one is", async () => {
+    await seedObjects(["Mixes/a.lrc"]);
+    await poke(new Date());
+
+    const response = await harness.call(owner, "POST", "/files/delete-folder", {
+      prefix: "Mixes/",
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ deleted: 1, done: true, scan: AFTER_CURRENT_PASS });
+  });
+
+  it("accounts for the first page when the second delete fails, then answers 500", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const failing = filesHarness(ORIGIN, {
+      listLimit: 2,
+      failDeleteCall: 2,
+      scanDriver: inertDriver(),
+    });
+    // Sorts first, so the first page reaches it.
+    const id = await seedPlaylistFile("Half/0-mix.m3u");
+    await seedObjects(["Half/a.txt", "Half/b.txt", "Half/c.txt"]);
+
+    const response = await failing.call(owner, "POST", "/files/delete-folder", {
+      prefix: "Half/",
+    });
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "internal" });
+    // The first page is gone, and what follows a delete was done for it.
+    expect(await allKeys("Half/")).toEqual(["Half/b.txt", "Half/c.txt"]);
+    expect(await database(testEnv).select().from(playlist).where(eq(playlist.id, id))).toEqual([]);
+    expect(await libraryChangedAt()).not.toBeNull();
+    expect(failing.driverCalls).toHaveLength(1);
+  });
+
+  it("answers 500, recording nothing, when the first delete fails", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const failing = filesHarness(ORIGIN, { failDeleteCall: 1, scanDriver: inertDriver() });
+    await seedObjects(["Half/a.txt"]);
+
+    const response = await failing.call(owner, "POST", "/files/delete-folder", {
+      prefix: "Half/",
+    });
+
+    expect(response.status).toBe(500);
+    expect(await allKeys("Half/")).toEqual(["Half/a.txt"]);
+    expect(await libraryChangedAt()).toBeNull();
+    expect(failing.driverCalls).toEqual([]);
   });
 
   it("still answers 200, with scan: null, when the driver cannot be told", async () => {

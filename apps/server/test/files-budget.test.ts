@@ -11,7 +11,13 @@ import {
   signIn,
 } from "./console-auth-support";
 import { driveUntilIdle } from "./driver-support";
-import { type FilesHarness, filesHarness, seedObjects, UPLOADS_ENV } from "./files-support";
+import {
+  type FilesHarness,
+  filesHarness,
+  inertDriver,
+  seedObjects,
+  UPLOADS_ENV,
+} from "./files-support";
 import { resetLibrary } from "./scan-support";
 import { BASE, seedPlaylist, testEnv } from "./support";
 
@@ -29,10 +35,11 @@ import { BASE, seedPlaylist, testEnv } from "./support";
 
 const ORIGIN = "https://files-budget.stratosonic.test";
 /**
- * With uploads configured. It is the first to sign in, so the isolate's
- * Better Auth instance, and with it the session check, reads its D1 binding.
+ * With uploads configured, and a driver that starts no pass, so no scan runs
+ * behind the large seeds. It is the first to sign in, so the isolate's Better
+ * Auth instance, and with it the session check, reads its D1 binding.
  */
-const harness = filesHarness(ORIGIN, { uploads: UPLOADS_ENV });
+const harness = filesHarness(ORIGIN, { uploads: UPLOADS_ENV, scanDriver: inertDriver() });
 
 /** Entries in the one playlist each delete takes with it. */
 const ENTRIES = 25;
@@ -128,9 +135,7 @@ function subrequests({ route, r2, driver }: Measured): number {
   return cost(route).roundTrips + r2.length + driver.length;
 }
 
-// Seeding up to 2,000 objects in miniflare takes most of Vitest's default
-// 5 s on a busy machine.
-describe("the Files routes' budget", { timeout: 30_000 }, () => {
+describe("the Files routes' budget", () => {
   it("GET /api/files/config: no D1 statement, no binding call", async () => {
     const result = await measured("GET", "/files/config");
 
@@ -147,7 +152,9 @@ describe("the Files routes' budget", { timeout: 30_000 }, () => {
     expect(subrequests(result)).toBe(0);
   });
 
-  it("GET /api/files on a 1,000-entry folder: one listing and no D1 statement", async () => {
+  it("GET /api/files on a 1,000-entry folder: one listing and no D1 statement", {
+    timeout: 60_000,
+  }, async () => {
     await seedObjects(
       Array.from({ length: 1000 }, (_, index) => `Big/${String(index).padStart(4, "0")}.flac`),
       100,
@@ -165,7 +172,9 @@ describe("the Files routes' budget", { timeout: 30_000 }, () => {
     expect(subrequests(result)).toBe(1);
   });
 
-  it("POST /api/files/delete, 250 keys and a playlist: 2 round trips, 1 delete, 1 driver call", async () => {
+  it("POST /api/files/delete, 250 keys and a playlist: 2 round trips, 1 delete, 1 driver call", {
+    timeout: 60_000,
+  }, async () => {
     await seedPlaylistFile("Mixes/road.m3u");
     const keys = [
       "Mixes/road.m3u",
@@ -189,7 +198,7 @@ describe("the Files routes' budget", { timeout: 30_000 }, () => {
     expect(subrequests(result)).toBe(4);
   });
 
-  it("POST /api/files/delete without a playlist: 1 round trip", async () => {
+  it("POST /api/files/delete without a playlist: 1 round trip", { timeout: 60_000 }, async () => {
     const keys = Array.from({ length: 250 }, (_, index) => `Album/${index}.flac`);
     await seedObjects(keys, 100);
 
@@ -207,7 +216,9 @@ describe("the Files routes' budget", { timeout: 30_000 }, () => {
     expect(subrequests(result)).toBe(3);
   });
 
-  it("POST /api/files/delete-folder, a 2,000-key round: 2 listings, 2 deletes, 2 round trips", async () => {
+  it("POST /api/files/delete-folder, a 2,000-key round: 2 listings, 2 deletes, 2 round trips", {
+    timeout: 60_000,
+  }, async () => {
     // Sorts first, so this round reaches it.
     await seedPlaylistFile("Big/0-road.m3u");
     await seedObjects(

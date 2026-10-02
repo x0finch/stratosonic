@@ -16,22 +16,14 @@ import {
   checkUploadKey,
   checkUploadSize,
   isReservedKey,
-  kindOf,
-  type ListedKind,
   MAX_KEY_BYTES,
   MAX_SEGMENT_BYTES,
   type PathRefusal,
-  RESERVED_PREFIX,
   utf8Length,
 } from "../files/keys";
-import {
-  RESCAN_QUIET_MS,
-  recordLibraryChange,
-  type ScanScheduleView,
-} from "../files/library-change";
+import { RESCAN_QUIET_MS, recordLibraryChange, type ScanSchedule } from "../files/library-change";
+import { folderListing, playlistKeysOf } from "../files/listing";
 import { type PresignedUpload, presignUpload } from "../files/sign";
-import { suffixOf } from "../library/audio-formats";
-import { PLAYLIST_SUFFIXES } from "../playlists/m3u";
 import { deletePlaylistRowsByKeys } from "../playlists/repository";
 import { eraseObjects } from "../playlists/writes";
 import type { ApiApp } from "./app";
@@ -59,12 +51,14 @@ import { requireSameOrigin } from "./same-origin";
  *   uploads are configured, the allow-list, the limits, the quiet window and
  *   whether writes are enabled.
  * - `GET /api/files?prefix=&cursor=`: `200 {prefix, folders, files, cursor}`;
- *   `400 invalid_path`, `403 reserved_path`.
+ *   `400 invalid_path`, `403 reserved_path`, `400 invalid_cursor` (a cursor
+ *   R2 refuses: forged, stale or from another prefix).
  * - `POST /api/files/delete`, `{keys}`, 1–250 keys:
  *   `200 {deleted, scan}`; `400 invalid_request`, `403 reserved_path`.
  * - `POST /api/files/delete-folder`, `{prefix}`:
- *   `200 {deleted, done, scan}`, called again until `done`;
- *   `400 invalid_path`, `403 reserved_path`.
+ *   `200 {deleted, done, scan}`, called again until `done`, or
+ *   `200 {deleted: 0, done: true}`, with no `scan`, when there was nothing
+ *   left to delete; `400 invalid_path`, `403 reserved_path`.
  * - `POST /api/files/uploads`, `{files: [{key, size, overwrite?}]}`, 1–20
  *   files: `200 {uploads}`, one result per file, in order, each a presigned
  *   `PUT` or a per-file `error`; `400 invalid_request`,
@@ -88,8 +82,29 @@ import { requireSameOrigin } from "./same-origin";
  * (ADR-0006): the rows of every deleted key with a playlist suffix are
  * deleted right after the objects, in one round trip.
  *
- * `scan` is what the driver will do about the change, or null when it could
- * not be told, or when nothing was deleted.
+ * ## `scan`
+ *
+ * Every answer that deleted something, and every upload completion, carries
+ * `scan`, what the driver will do about the change (`ScanSchedule`,
+ * files/library-change.ts):
+ *
+ * - `{"scheduledAt": "<ISO 8601>", "afterCurrentPass": false}`: a pass
+ *   starts at about that time, once the library has stayed quiet;
+ * - `{"scheduledAt": null, "afterCurrentPass": true}`: a pass is running,
+ *   and one more follows it for the change;
+ * - `null`: the change is recorded, but the driver could not be told. The
+ *   next cron pass (at most 15 minutes away) indexes it.
+ *
+ * `null` has that one meaning. A delete-folder round that deleted nothing
+ * changed nothing, so it records no change and carries no `scan` at all.
+ *
+ * ## A folder delete that fails half way
+ *
+ * A delete-folder round whose second listing or delete fails after the
+ * first page went still does what follows a delete for the keys already
+ * gone (their playlists' rows, then the change record), and then answers
+ * 500. The console retries the round, which lists the folder again from its
+ * start.
  *
  * ## Uploads
  *
@@ -137,22 +152,6 @@ const FOLDER_DELETE_PAGE = 1000;
  */
 const FOLDER_DELETE_PAGES = 2;
 
-/** A folder of the folder browsed. */
-export interface FolderView {
-  readonly name: string;
-  readonly prefix: string;
-}
-
-/** A file of the folder browsed. */
-export interface FileView {
-  readonly name: string;
-  readonly key: string;
-  readonly size: number;
-  /** R2's `uploaded`, the only timestamp an object has. */
-  readonly uploadedAt: string;
-  readonly kind: ListedKind;
-}
-
 export function registerFileRoutes(api: ApiApp): void {
   const write = [requireFreshSession, requirePermission("files:write"), requireFileWrites] as const;
 
@@ -182,9 +181,15 @@ export function registerFileRoutes(api: ApiApp): void {
   );
 
   /**
-   * `GET /api/files`: one page of one folder, in one binding call, folders
-   * first and each in R2's order (lexicographic by key). `prefix` is the
-   * root when missing; `cursor` is R2's, null on the last page.
+   * `GET /api/files`: one page of one folder, in one binding call
+   * (`folderListing`). `prefix` is the root when missing; `cursor` is R2's,
+   * null on the last page.
+   *
+   * A listing R2 refuses while carrying a cursor answers
+   * `400 {"error":"invalid_cursor"}`: the cursor came from the client, and R2
+   * is what decides it is not one of its own. The console's answer is the
+   * same either way, to open the folder again from its first page. Without a
+   * cursor, a failed listing is the 500 it is.
    */
   api.get("/files", requireSession, requirePermission("files:read"), async (c) => {
     const prefix = c.req.query("prefix") ?? "";
@@ -193,35 +198,19 @@ export function registerFileRoutes(api: ApiApp): void {
       return refused(c, refusal);
     }
 
-    const listing = await c.env.MUSIC.list({
-      prefix,
-      delimiter: "/",
-      limit: BROWSE_PAGE,
-      cursor: c.req.query("cursor") || undefined,
-    });
+    const cursor = c.req.query("cursor") || undefined;
+    let listing: R2Objects;
+    try {
+      listing = await c.env.MUSIC.list({ prefix, delimiter: "/", limit: BROWSE_PAGE, cursor });
+    } catch (error) {
+      if (cursor === undefined) {
+        throw error;
+      }
+      console.warn("files: R2 refused a listing's cursor", error);
+      return c.json({ error: "invalid_cursor" }, 400);
+    }
 
-    const folders: FolderView[] = listing.delimitedPrefixes
-      // `_covers/` is the scanner's, and only ever at the root.
-      .filter((folder) => folder !== RESERVED_PREFIX)
-      .map((folder) => ({ name: folder.slice(prefix.length, -1), prefix: folder }));
-    const files: FileView[] = listing.objects
-      // An object named like the folder itself is a "folder marker" some S3
-      // tools write: the folder, not a file in it.
-      .filter((object) => object.key !== prefix)
-      .map((object) => ({
-        name: object.key.slice(prefix.length),
-        key: object.key,
-        size: object.size,
-        uploadedAt: object.uploaded.toISOString(),
-        kind: kindOf(object.key),
-      }));
-
-    return c.json({
-      prefix,
-      folders,
-      files,
-      cursor: listing.truncated ? listing.cursor : null,
-    });
+    return c.json(folderListing(prefix, listing));
   });
 
   /**
@@ -267,18 +256,35 @@ export function registerFileRoutes(api: ApiApp): void {
       return refused(c, refusal);
     }
 
+    // The keys of every delete call that succeeded.
     const deleted: string[] = [];
     let done = false;
-    for (let page = 0; page < FOLDER_DELETE_PAGES && !done; page++) {
-      const listing = await c.env.MUSIC.list({ prefix, limit: FOLDER_DELETE_PAGE });
-      const keys = listing.objects.map((object) => object.key);
-      await eraseObjects(c.env, keys);
-      deleted.push(...keys);
-      done = !listing.truncated;
+    let completed = false;
+    try {
+      for (let page = 0; page < FOLDER_DELETE_PAGES && !done; page++) {
+        const listing = await c.env.MUSIC.list({ prefix, limit: FOLDER_DELETE_PAGE });
+        const keys = listing.objects.map((object) => object.key);
+        await eraseObjects(c.env, keys);
+        deleted.push(...keys);
+        done = !listing.truncated;
+      }
+      completed = true;
+    } finally {
+      // A round that failed half way still accounts for what it deleted, and
+      // the error then goes on to the 500 handler. A failure of that work is
+      // logged rather than hiding the first one.
+      if (!completed && deleted.length > 0) {
+        await afterDelete(c.env, deleted).catch((error: unknown) => {
+          console.error("files: recording a half-done folder delete failed", error);
+        });
+      }
     }
 
-    const scan = deleted.length === 0 ? null : await afterDelete(c.env, deleted);
+    if (deleted.length === 0) {
+      return c.json({ deleted: 0, done });
+    }
 
+    const scan = await afterDelete(c.env, deleted);
     return c.json({ deleted: deleted.length, done, scan });
   });
 
@@ -327,7 +333,7 @@ export function registerFileRoutes(api: ApiApp): void {
       return invalidRequest(c);
     }
 
-    const scan = await recordLibraryChange(c.env, database(c.env), Date.now());
+    const scan = await recordLibraryChange(c.env, Date.now());
 
     return c.json({ scan });
   });
@@ -470,12 +476,10 @@ function isCompletedKeyList(keys: unknown): keys is string[] {
  * were, then the record of the change, which schedules the pass that takes
  * the deleted tracks out of the library.
  */
-async function afterDelete(env: Env, keys: readonly string[]): Promise<ScanScheduleView | null> {
-  const db = database(env);
-  const playlistKeys = keys.filter((key) => PLAYLIST_SUFFIXES.includes(suffixOf(key)));
-  await deletePlaylistRowsByKeys(db, playlistKeys);
+async function afterDelete(env: Env, keys: readonly string[]): Promise<ScanSchedule | null> {
+  await deletePlaylistRowsByKeys(database(env), playlistKeysOf(keys));
 
-  return recordLibraryChange(env, db, Date.now());
+  return recordLibraryChange(env, Date.now());
 }
 
 /** Whether `keys` is 1–250 keys, each a non-empty string of at most 1,024 bytes. */
