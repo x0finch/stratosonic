@@ -5,8 +5,8 @@
  *   pnpm --filter @stratosonic/server bench:file-uploads
  *
  * Not part of the test suite or CI: its numbers depend on the machine.
- * Re-run it when aws4fetch, files/sign.ts or the upload routes change, and
- * compare with the table in the PR that made the change.
+ * Re-run it when aws4fetch, files/sign.ts, the upload routes or `SIGN_BATCH`
+ * change, and compare with the table in the PR that made the change.
  *
  * It runs in Node for the reason bench-console-auth.ts gives (workerd does
  * not advance its clocks while JavaScript runs), over the same D1 stand-in,
@@ -109,7 +109,7 @@ function files(n: number) {
 for (const [n, runs] of [
   [1, 1000],
   [3, 1000],
-  [20, 500],
+  [10, 1000],
 ] as const) {
   const body = { files: files(n) };
   await bench(
@@ -120,35 +120,35 @@ for (const [n, runs] of [
   );
 }
 
-// Every key exists: 20 head() calls and no signature.
-for (const file of files(20)) {
+// Every key exists: 10 head() calls and no signature.
+for (const file of files(10)) {
   stored.set(file.key, { key: file.key, size: file.size, uploaded: new Date() });
 }
 await bench(
-  "POST /api/files/uploads, 20 files that exist (no signature)",
+  "POST /api/files/uploads, 10 files that exist (no signature)",
   500,
   async () => () =>
     expecting(
       200,
-      send(apiRequest(ORIGIN, "/api/files/uploads", { body: { files: files(20) }, cookie })),
+      send(apiRequest(ORIGIN, "/api/files/uploads", { body: { files: files(10) }, cookie })),
     ),
 );
 await bench(
-  "POST /api/files/uploads, 20 Replace",
+  "POST /api/files/uploads, 10 Replace",
   500,
   async () => () =>
     expecting(
       200,
       send(
         apiRequest(ORIGIN, "/api/files/uploads", {
-          body: { files: files(20).map((file) => ({ ...file, overwrite: true })) },
+          body: { files: files(10).map((file) => ({ ...file, overwrite: true })) },
           cookie,
         }),
       ),
     ),
 );
 
-const keys = files(20).map((file) => file.key);
+const keys = files(10).map((file) => file.key);
 await bench(
   "POST /api/files/uploads/complete, 1 key",
   1000,
@@ -161,7 +161,7 @@ await bench(
     ),
 );
 await bench(
-  "POST /api/files/uploads/complete, 20 keys",
+  "POST /api/files/uploads/complete, 10 keys",
   1000,
   async () => () =>
     expecting(

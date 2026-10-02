@@ -150,16 +150,16 @@ function captureLogs(): unknown[][] {
 /* ===================================================== GET /files/config == */
 
 describe("GET /api/files/config, uploads", () => {
-  it("names the bucket, says uploads are configured, and caps a sign batch at 20", async () => {
+  it("names the bucket, says uploads are configured, and caps a sign batch at 10", async () => {
     const response = await harness.call(owner, "GET", "/files/config");
 
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
       bucket: "navidrome",
       uploads: { configured: true },
-      limits: { maxKeyBytes: 1024, maxSegmentBytes: 255, signBatch: 20, deleteBatch: 250 },
+      limits: { maxKeyBytes: 1024, maxSegmentBytes: 255, signBatch: 10, deleteBatch: 250 },
     });
-    expect(SIGN_BATCH).toBe(20);
+    expect(SIGN_BATCH).toBe(10);
     expect(harness.r2Calls).toEqual([]);
   });
 
@@ -397,7 +397,7 @@ describe("POST /api/files/uploads", () => {
     expect(signed(uploads[0]).headers["Content-Type"]).toBe(contentType);
   });
 
-  it("signs 20 files with at most six head() calls in flight", async () => {
+  it("signs 10 files with at most six head() calls in flight", async () => {
     const files = Array.from({ length: SIGN_BATCH }, (_, index) => ({
       key: `Batch/${String(index).padStart(2, "0")}.flac`,
       size: 1_000 + index,
@@ -465,8 +465,8 @@ describe("POST /api/files/uploads", () => {
 
   it.each([
     [
-      "21 files",
-      { files: Array.from({ length: 21 }, (_, i) => ({ key: `k/${i}.flac`, size: 1 })) },
+      "11 files",
+      { files: Array.from({ length: 11 }, (_, i) => ({ key: `k/${i}.flac`, size: 1 })) },
     ],
     ["no file", { files: [] }],
     ["no files field", {}],
@@ -689,7 +689,7 @@ describe("POST /api/files/uploads/complete", () => {
   });
 
   it.each([
-    ["21 keys", { keys: Array.from({ length: 21 }, (_, index) => `k/${index}.flac`) }],
+    ["11 keys", { keys: Array.from({ length: 11 }, (_, index) => `k/${index}.flac`) }],
     ["no key", { keys: [] }],
     ["no keys field", {}],
     ["keys that are not a list", { keys: "A/b.flac" }],

@@ -183,6 +183,9 @@ Each URL is a bearer token for one `PUT`, bound to:
 - five minutes (`X-Amz-Expires=300`), checked when the upload starts, so a
   long upload is not cut off.
 
+One request signs at most 10 files (`limits.signBatch`), which keeps it
+to about 5 ms of CPU, inside the Worker's 10 ms.
+
 An expired URL fails with `403` and no CORS headers, so the browser sees a
 network error. The console signs just before each upload and signs again if
 needed. After a successful `PUT`, the console reports the file

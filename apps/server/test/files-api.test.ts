@@ -111,7 +111,7 @@ describe("GET /api/files/config", () => {
         playlist: { suffixes: ["m3u", "m3u8"], maxBytes: 4_194_304 },
         image: { suffixes: ["jpg", "png", "gif", "webp", "jpeg"], maxBytes: 20_971_520 },
       },
-      limits: { maxKeyBytes: 1024, maxSegmentBytes: 255, signBatch: 20, deleteBatch: 250 },
+      limits: { maxKeyBytes: 1024, maxSegmentBytes: 255, signBatch: 10, deleteBatch: 250 },
       rescanQuietSeconds: 120,
       writes: { enabled: true },
     });

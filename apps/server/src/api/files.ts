@@ -59,11 +59,11 @@ import { requireSameOrigin } from "./same-origin";
  *   `200 {deleted, done, scan}`, called again until `done`, or
  *   `200 {deleted: 0, done: true}`, with no `scan`, when there was nothing
  *   left to delete; `400 invalid_path`, `403 reserved_path`.
- * - `POST /api/files/uploads`, `{files: [{key, size, overwrite?}]}`, 1–20
+ * - `POST /api/files/uploads`, `{files: [{key, size, overwrite?}]}`, 1–10
  *   files: `200 {uploads}`, one result per file, in order, each a presigned
  *   `PUT` or a per-file `error`; `400 invalid_request`,
  *   `503 uploads_not_configured`.
- * - `POST /api/files/uploads/complete`, `{keys}`, 1–20 keys whose `PUT`
+ * - `POST /api/files/uploads/complete`, `{keys}`, 1–10 keys whose `PUT`
  *   succeeded: `200 {scan}`; `400 invalid_request`, `403 reserved_path`.
  * - Any write, where `FILE_WRITES` is `"off"`: `403 file_writes_disabled`.
  *
@@ -129,10 +129,12 @@ import { requireSameOrigin } from "./same-origin";
 
 /**
  * The most files one `POST /api/files/uploads` signs, and the most keys one
- * `POST /api/files/uploads/complete` reports: 20 presigns keep the request
- * well inside its 10 ms of CPU.
+ * `POST /api/files/uploads/complete` reports. Each presign is about 0.3 ms of
+ * CPU (bench-file-uploads.ts, in Node), so 10 keep a request near 5 ms,
+ * well inside its 10 ms; 20 measured about 8.4 ms, too close. The console
+ * signs at most 3 at a time anyway.
  */
-export const SIGN_BATCH = 20;
+export const SIGN_BATCH = 10;
 
 /** The most `head()` calls in flight at once: a Worker waits on six connections at a time. */
 export const HEADS_IN_FLIGHT = 6;
@@ -289,7 +291,7 @@ export function registerFileRoutes(api: ApiApp): void {
   });
 
   /**
-   * `POST /api/files/uploads` with `{files}`: 1–20 files to sign, each
+   * `POST /api/files/uploads` with `{files}`: 1–10 files to sign, each
    * `{key, size, overwrite?}`. A refused file does not fail the others: the
    * request answers 200 with one result per file, in order.
    */
@@ -315,7 +317,7 @@ export function registerFileRoutes(api: ApiApp): void {
   });
 
   /**
-   * `POST /api/files/uploads/complete` with `{keys}`: 1–20 keys whose `PUT`
+   * `POST /api/files/uploads/complete` with `{keys}`: 1–10 keys whose `PUT`
    * R2 accepted. It records the change, in one D1 statement and one call to
    * the scan driver, and answers what the driver will do about it.
    */
@@ -368,7 +370,7 @@ function uploadsView(env: Env) {
 }
 
 /**
- * The files of a sign request, or null unless it is 1–20 objects, each with a
+ * The files of a sign request, or null unless it is 1–10 objects, each with a
  * string `key`, a `size` that is a whole number of bytes, and an `overwrite`
  * that is a boolean when given.
  */
@@ -461,7 +463,7 @@ async function mapInFlight<T, R>(
   return results;
 }
 
-/** Whether `keys` is 1–20 strings, as a complete request reports them. */
+/** Whether `keys` is 1–10 strings, as a complete request reports them. */
 function isCompletedKeyList(keys: unknown): keys is string[] {
   return (
     Array.isArray(keys) &&

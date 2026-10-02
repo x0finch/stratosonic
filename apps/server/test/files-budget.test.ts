@@ -243,7 +243,7 @@ describe("the Files routes' budget", () => {
     expect(subrequests(result)).toBe(7);
   });
 
-  it.each([1, 3, 20])(
+  it.each([1, 3, 10])(
     "POST /api/files/uploads, %i files: one head() each, no D1 statement, no driver call",
     async (n) => {
       // One of them exists, which costs the same head() and no signature.
@@ -281,8 +281,8 @@ describe("the Files routes' budget", () => {
     expect(subrequests(result)).toBe(0);
   });
 
-  it("POST /api/files/uploads/complete, 20 keys: 1 statement, 1 driver call, no R2 call", async () => {
-    const keys = Array.from({ length: 20 }, (_, index) => `Album/${index}.flac`);
+  it("POST /api/files/uploads/complete, 10 keys: 1 statement, 1 driver call, no R2 call", async () => {
+    const keys = Array.from({ length: 10 }, (_, index) => `Album/${index}.flac`);
 
     const result = await measured("POST", "/files/uploads/complete", { keys });
 
