@@ -86,6 +86,51 @@ const MESSAGES: Record<string, ErrorMessage> = {
     title: "The request is too large",
     description: "Shorten what you entered and try again.",
   },
+  // The Files API's (#83). Keys and prefixes come from a listing, so a
+  // refused one most often means the bucket changed since it was read.
+  invalid_path: {
+    title: "The path is not valid",
+    description:
+      "A folder ends in a slash, and no path is over 1,024 bytes. Reload this page and try again.",
+  },
+  reserved_path: {
+    title: "That path is the scanner's own",
+    description:
+      "The scanner keeps the covers it extracts in _covers/, and nothing there can be changed.",
+  },
+  file_writes_disabled: {
+    title: "Files are read-only here",
+    description:
+      "This deployment, the preview, browses the bucket but cannot change it. Use the production console.",
+  },
+  invalid_cursor: {
+    title: "The folder changed while it was open",
+    description: "It is shown again from its first page.",
+  },
+  uploads_not_configured: {
+    title: "Uploads are not configured",
+    description: "Uploads need R2 API credentials on the server (see the server README).",
+  },
+  type_not_allowed: {
+    title: "That type of file is not accepted",
+    description: "Upload audio, lyrics, playlists or images, which the server reads.",
+  },
+  too_large: {
+    title: "The file is too large",
+    description: "It is over the largest size the server takes for its type.",
+  },
+  empty_file: {
+    title: "The file is empty",
+    description: "An empty file holds nothing the server can read.",
+  },
+  exists: {
+    title: "The file already exists",
+    description: "Replace it, or skip it.",
+  },
+  path_too_long: {
+    title: "The path is too long",
+    description: "A path is at most 1,024 bytes, and each name in it at most 255.",
+  },
   forbidden: {
     title: "Your role does not allow that",
     description: "Sign in with a console account whose role allows it.",
