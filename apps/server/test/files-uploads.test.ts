@@ -5,16 +5,17 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { HEADS_IN_FLIGHT, SIGN_BATCH } from "../src/api/files";
 import { MAX_JSON_BODY_BYTES } from "../src/api/json-body";
 import { database } from "../src/db";
-import type { Env } from "../src/env";
 import { forgetUploadsWarning } from "../src/files/config";
 import { ALLOWED } from "../src/files/keys";
+import { RESCAN_QUIET_MS } from "../src/files/library-change";
 import { type CookieJar, GUEST_ROLE, seedConsoleUser, signIn } from "./console-auth-support";
-import { driverIsIdle, driveUntilIdle } from "./driver-support";
+import { driverIsIdle, nextAlarmAt, poke, storedKeys } from "./driver-support";
 import {
   allKeys,
   expectRefusal,
   type FilesHarness,
   filesHarness,
+  resetDriver,
   seedObjects,
   UPLOADS_ENV,
   unreachableDriver,
@@ -37,6 +38,8 @@ import { BASE, testEnv } from "./support";
 
 const ORIGIN = "https://uploads.stratosonic.test";
 const harness = filesHarness(ORIGIN, { uploads: UPLOADS_ENV });
+/** The same over the pool's own scan driver, for what a completion tells it. */
+const real = filesHarness(ORIGIN, { uploads: UPLOADS_ENV, scanDriver: "real" });
 const ENDPOINT = `https://${UPLOADS_ENV.CF_ACCOUNT_ID}.r2.cloudflarestorage.com`;
 
 let owner: CookieJar;
@@ -56,13 +59,16 @@ beforeEach(async () => {
   harness.r2Calls.length = 0;
   harness.r2Peak.peak = 0;
   harness.driverCalls.length = 0;
+  real.r2Calls.length = 0;
+  real.driverCalls.length = 0;
   forgetUploadsWarning();
 });
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  // A completion pokes the driver; its pass must not leak into the next test.
-  await driveUntilIdle();
+  // What a test told the real driver, a pass or a pending change, must not
+  // leak into the next test.
+  await resetDriver();
 });
 
 /** A request that is not JSON, but otherwise as the console sends it. */
@@ -77,25 +83,6 @@ function plainText(path: string): Request {
 /** A `FILE_WRITES = "off"` deployment, as preview is, with uploads configured. */
 function readOnly(): FilesHarness {
   return filesHarness(ORIGIN, { fileWrites: "off", uploads: UPLOADS_ENV });
-}
-
-/**
- * Whether `scan` is one of the driver's answers (`ScanSchedule`): a pass at
- * a time; one more after the pass running; or none needed, the running pass
- * covering the change. `null` (the driver unreachable) is not one.
- */
-function isScanSchedule(scan: unknown): boolean {
-  if (typeof scan !== "object" || scan === null) {
-    return false;
-  }
-  const { scheduledAt, afterCurrentPass, ...rest } = scan as Record<string, unknown>;
-  if (Object.keys(rest).length > 0) {
-    return false;
-  }
-  if (typeof scheduledAt === "string") {
-    return afterCurrentPass === false && !Number.isNaN(Date.parse(scheduledAt));
-  }
-  return scheduledAt === null && typeof afterCurrentPass === "boolean";
 }
 
 async function libraryChangedAt(): Promise<number | null> {
@@ -579,65 +566,58 @@ describe("POST /api/files/uploads", () => {
 /* ============================================== POST /uploads/complete == */
 
 describe("POST /api/files/uploads/complete", () => {
-  it("records the change and tells the driver, with no R2 call", async () => {
+  it("records the change, and the driver holds it for the quiet window, with no R2 call", async () => {
     const before = Date.now();
-    const response = await harness.call(owner, "POST", "/files/uploads/complete", {
+    const response = await real.call(owner, "POST", "/files/uploads/complete", {
       keys: ["Artist/Album/01 Title.flac", "Artist/Album/01 Title.lrc"],
     });
     const after = Date.now();
 
     expect(response.status).toBe(200);
     const changedAt = await libraryChangedAt();
+    if (changedAt === null) {
+      throw new Error("the route recorded no change");
+    }
     expect(changedAt).toBeGreaterThanOrEqual(before);
     expect(changedAt).toBeLessThanOrEqual(after);
-    // The driver's schedule, as the delete routes answer it: with no pass
-    // running, a pass at a time.
-    const { scan } = (await response.json()) as { scan: { scheduledAt: unknown } };
-    expect(isScanSchedule(scan)).toBe(true);
-    expect(scan.scheduledAt).toEqual(expect.any(String));
-    expect(harness.r2Calls).toEqual([]);
-    expect(harness.driverCalls).toHaveLength(1);
-    expect(await driverIsIdle()).toBe(false);
+    expect(real.r2Calls).toEqual([]);
+    expect(real.driverCalls).toEqual(["touch"]);
+    // No pass yet: the change waits out the quiet window.
+    expect(await storedKeys()).toEqual(["pending"]);
+    expect(await nextAlarmAt()).toBe(changedAt + RESCAN_QUIET_MS);
+    expect(await response.json()).toEqual({
+      scan: {
+        scheduledAt: new Date(changedAt + RESCAN_QUIET_MS).toISOString(),
+        afterCurrentPass: false,
+      },
+    });
   });
 
-  it("answers the driver's schedule as it is, during a pass too", async () => {
-    // A driver with a pass running: `start` (the stand-in until #130 merges)
-    // and `touch` (#130) both say so.
-    const busy = {
-      idFromName: (name: string) => testEnv.SCAN_DRIVER.idFromName(name),
-      get: () =>
-        new Proxy(
-          {},
-          {
-            get: (_, method) => async () =>
-              method === "start" ? "running" : { scheduledAt: null, afterCurrentPass: true },
-          },
-        ),
-    } as unknown as Env["SCAN_DRIVER"];
-    const during = filesHarness(ORIGIN, { scanDriver: busy, uploads: UPLOADS_ENV });
+  it("answers that a pass follows the one running, when it began before the upload", async () => {
+    await poke(new Date());
 
-    const response = await during.call(owner, "POST", "/files/uploads/complete", {
+    const response = await real.call(owner, "POST", "/files/uploads/complete", {
       keys: ["A/b.flac"],
     });
 
     expect(response.status).toBe(200);
-    const { scan } = (await response.json()) as { scan: unknown };
-    expect(isScanSchedule(scan)).toBe(true);
-    expect(scan).toEqual({ scheduledAt: null, afterCurrentPass: true });
+    expect(await response.json()).toEqual({ scan: { scheduledAt: null, afterCurrentPass: true } });
+    expect(await storedKeys()).toEqual(["driver", "pending"]);
   });
 
-  it("knows every shape of the driver's schedule", () => {
-    expect(
-      isScanSchedule({ scheduledAt: "2026-10-02T12:00:00.000Z", afterCurrentPass: false }),
-    ).toBe(true);
-    expect(isScanSchedule({ scheduledAt: null, afterCurrentPass: true })).toBe(true);
-    // #137: the running pass already covers the change.
-    expect(isScanSchedule({ scheduledAt: null, afterCurrentPass: false })).toBe(true);
-    expect(isScanSchedule(null)).toBe(false);
-    expect(isScanSchedule({ scheduledAt: "soon", afterCurrentPass: false })).toBe(false);
-    expect(
-      isScanSchedule({ scheduledAt: "2026-10-02T12:00:00.000Z", afterCurrentPass: true }),
-    ).toBe(false);
+  it("answers that the pass running covers the upload, when it began after it", async () => {
+    // A pass stamped a minute ahead began, as the driver sees it, after the
+    // change the route records now.
+    await poke(new Date(Date.now() + 60_000));
+
+    const response = await real.call(owner, "POST", "/files/uploads/complete", {
+      keys: ["A/b.flac"],
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      scan: { scheduledAt: null, afterCurrentPass: false },
+    });
   });
 
   it("takes a Replace's stored spelling, which may be NFD", async () => {
