@@ -23,9 +23,34 @@
  * Object storage is only the driver's own bookkeeping: whether a pass is in
  * flight, which phase it is in, how many steps have failed in a row, and the
  * tuning of the pass in flight. When a pass ends the driver deletes all of
- * it, which is what lets the object cease to exist between passes
+ * it, unless a file change is pending (below), which is what lets the object
+ * cease to exist between passes
  * (developers.cloudflare.com/durable-objects/best-practices/access-durable-objects-storage,
  * "Remove a Durable Object's storage").
+ *
+ * ## File changes: one debounced pass (ADR-0008)
+ *
+ * The console's uploads and deletes mark the library changed (`touch`, through
+ * `markLibraryChanged` in `status.ts`). The driver keeps the latest change in a
+ * second key, `pending`, beside its state, and its one alarm serves both jobs:
+ * between passes it is the debounce timer, which every change moves to
+ * `changedAt + quiet` (`RESCAN_QUIET_MS`, 2 minutes), and when it fires after a
+ * quiet window it starts one pass. This is Navidrome's file watcher
+ * (`scanner/watcher.go`: one timer, reset on every change, and a scan that is
+ * already running makes it wait again rather than start a second one), with a
+ * longer window because our signal is one report per finished browser upload.
+ *
+ * One rule decides everything: **a change is pending if and only if its
+ * `changedAt` is at or after the `startedAt` of the latest pass**, because a
+ * pass that started after the change lists the bucket after it. So a change
+ * during a pass leaves the pass alone and queues exactly one more, still
+ * debounced; a cron poke stamped before the change keeps it pending; and
+ * **Scan now**, stamped with the wall clock, absorbs it.
+ *
+ * Every decision reads `pending` and acts on storage with no other `await` in
+ * between, so the input gates deliver no other event in between: a `touch`
+ * that lands while a step waits on R2 or D1 has written `pending` before the
+ * step's end reads it.
  *
  * ## What one alarm step costs
  *
@@ -64,8 +89,19 @@ import { DEFAULT_SCAN_LIMITS, runScan, type ScanLimits } from "./scan";
 /** The one instance: a library has one scan, so it has one driver. */
 export const SCAN_DRIVER_INSTANCE = "library";
 
-/** The single storage key the driver keeps, so a step reads one row. */
+/** The storage key of the pass in flight, so a step reads one row. */
 const STATE_KEY = "driver";
+
+/** The storage key of the latest file change no pass has covered yet. */
+const PENDING_KEY = "pending";
+
+/**
+ * How long the library has to stay unchanged before a change starts a pass
+ * (#83, "Rescan after a change"): long enough to coalesce an upload session
+ * whose files finish up to a minute apart, short next to the cron's quarter
+ * hour.
+ */
+export const RESCAN_QUIET_MS = 120_000;
 
 /** How long after a finished step the next one starts. */
 const STEP_DELAY_MS = 1_000;
@@ -87,6 +123,8 @@ const MAX_FAILURES = 10;
  * to move the delays out of the window a test runs in.
  */
 export interface ScanDriverTuning {
+  /** The debounce window after a file change (`RESCAN_QUIET_MS`). */
+  readonly quietMs?: number;
   readonly stepDelayMs?: number;
   readonly firstRetryDelayMs?: number;
   readonly maxRetryDelayMs?: number;
@@ -97,6 +135,7 @@ export interface ScanDriverTuning {
 
 /** The same, with every question answered, as the state carries it. */
 interface Tuning {
+  readonly quietMs: number;
   readonly stepDelayMs: number;
   readonly firstRetryDelayMs: number;
   readonly maxRetryDelayMs: number;
@@ -143,6 +182,24 @@ function livelyFor(tuning: Tuning): number {
   return tuning.maxRetryDelayMs + 15 * 60_000 + 60_000;
 }
 
+/** The latest file change, as the driver keeps it until a pass covers it. */
+interface Pending {
+  /** When the change was made; a pass stamped at or after it covers it. */
+  readonly changedAt: number;
+  /** The tuning of the pass the change starts, as `touch` was given it. */
+  readonly tuning: Tuning;
+}
+
+/**
+ * What the driver will do about recent file changes (#83, "API: uploads").
+ * `scheduledAt` is an ISO 8601 instant.
+ */
+export type ScanSchedule =
+  /** A pass starts at about this time, once the library has stayed quiet. */
+  | { readonly scheduledAt: string; readonly afterCurrentPass: false }
+  /** A pass is running, and one more follows it for the change. */
+  | { readonly scheduledAt: null; readonly afterCurrentPass: true };
+
 /** What a poke did. */
 export type PokeOutcome =
   /** There was no pass in flight, and now there is. */
@@ -186,11 +243,22 @@ export class ScanDriver extends DurableObject<Env> {
    * So a state is also taken as live while it is younger than `livelyFor`.
    * A state older than that whose alarm never arrived is the one thing that
    * would wedge the driver for ever, and a poke takes it over.
+   *
+   * A pending file change is kept while a pass is alive, so its follow-up
+   * still runs. A pass this poke starts covers the change only if it is
+   * stamped after it: **Scan now** is stamped with the wall clock and always
+   * absorbs it, while a cron poke whose scheduled time precedes the change
+   * leaves it pending, and the pass's end queues the follow-up (`finish`).
    */
   async start(pokedAt: number = Date.now(), tuning: ScanDriverTuning = {}): Promise<PokeOutcome> {
     const running = await this.read();
     if (running !== null && (await this.alive(running))) {
       return "running";
+    }
+
+    const pending = await this.readPending();
+    if (pending !== null && pending.changedAt < pokedAt) {
+      await this.ctx.storage.delete(PENDING_KEY);
     }
 
     const settings = resolved(tuning);
@@ -203,13 +271,48 @@ export class ScanDriver extends DurableObject<Env> {
   }
 
   /**
+   * Marks the library changed at `changedAt` and answers what the driver will
+   * do about it. The console's file routes call this, through
+   * `markLibraryChanged` (`status.ts`), after every upload and delete.
+   *
+   * The change is kept as the latest one (`pending`). With no pass alive, the
+   * alarm moves to `changedAt + quiet`, replacing any earlier debounce alarm:
+   * that is the reset, so a burst of changes makes one pass after the last of
+   * them. With a pass alive the step chain owns the alarm, and the pass's end
+   * queues the one follow-up (`finish`).
+   */
+  async touch(
+    changedAt: number = Date.now(),
+    tuning: ScanDriverTuning = {},
+  ): Promise<ScanSchedule> {
+    const stored = await this.readPending();
+    const pending: Pending = {
+      changedAt: Math.max(stored?.changedAt ?? changedAt, changedAt),
+      tuning: resolved(tuning),
+    };
+    await this.ctx.storage.put(PENDING_KEY, pending);
+
+    const running = await this.read();
+    if (running !== null && (await this.alive(running))) {
+      return { scheduledAt: null, afterCurrentPass: true };
+    }
+
+    const due = pending.changedAt + pending.tuning.quietMs;
+    await this.ctx.storage.setAlarm(due);
+
+    return { scheduledAt: new Date(due).toISOString(), afterCurrentPass: false };
+  }
+
+  /**
    * One step of the pass, and the alarm that carries on from it.
    *
-   * The handler returns without rescheduling in exactly two cases: the pass
+   * The handler stops the step chain in exactly two cases: the pass
    * finished, or it failed too many times. Both clear the state, so the next
    * cron poke starts a fresh pass rather than resuming a dead one - and the
    * scan itself resumes from the cursor in D1 either way, so nothing is lost
-   * but the attempt.
+   * but the attempt. A finished pass with a file change pending leaves the
+   * debounce alarm behind instead (`finish`), and an alarm with no pass in
+   * flight is that debounce alarm (`debounced`).
    *
    * `alarmInfo` should never say this is a platform retry, because every
    * failure inside a step is caught here and rescheduled by the driver
@@ -227,14 +330,16 @@ export class ScanDriver extends DurableObject<Env> {
 
     const state = await this.read();
     if (state === null) {
-      // An alarm that outlived its pass: the driver has already stopped.
+      // No pass in flight: the debounce alarm, or one that outlived its pass.
+      await this.debounced();
+
       return;
     }
 
     try {
       const next = await this.step(state);
       if (next === "done") {
-        await this.stop();
+        await this.finish(state);
 
         return;
       }
@@ -243,6 +348,59 @@ export class ScanDriver extends DurableObject<Env> {
     } catch (error) {
       await this.retry(state, error);
     }
+  }
+
+  /**
+   * The debounce alarm, with no pass in flight. With no change pending it is
+   * stale and does nothing. One that fires before the deadline a later
+   * `touch` moved it to re-arms for that deadline and runs nothing.
+   * Otherwise the library has been quiet for the whole window, and a pass
+   * starts as `start` starts one, stamped now, so it covers every change so
+   * far.
+   */
+  private async debounced(): Promise<void> {
+    const pending = await this.readPending();
+    if (pending === null) {
+      return;
+    }
+
+    const now = Date.now();
+    const due = pending.changedAt + pending.tuning.quietMs;
+    if (now < due) {
+      await this.ctx.storage.setAlarm(due);
+
+      return;
+    }
+
+    await this.ctx.storage.delete(PENDING_KEY);
+    await this.arm(
+      { phase: "scan", startedAt: now, armedAt: 0, failures: 0, tuning: pending.tuning },
+      pending.tuning.stepDelayMs,
+    );
+  }
+
+  /**
+   * Ends a pass that completed. A change made at or after the pass's start is
+   * one the pass may not have seen, so exactly one more pass is queued, still
+   * debounced from that change: the pass's own state goes (not `deleteAll`,
+   * which would take the change with it) and the alarm becomes the debounce
+   * alarm. Otherwise the driver stops, as it always has.
+   *
+   * `pending` is read here, after the step's last wait on R2 or D1, so a
+   * `touch` that arrived during the step is seen.
+   */
+  private async finish(state: DriverState): Promise<void> {
+    const pending = await this.readPending();
+    if (pending === null || pending.changedAt < state.startedAt) {
+      await this.stop();
+
+      return;
+    }
+
+    await this.ctx.storage.delete(STATE_KEY);
+    await this.ctx.storage.setAlarm(
+      Math.max(Date.now() + pending.tuning.stepDelayMs, pending.changedAt + pending.tuning.quietMs),
+    );
   }
 
   /** Runs the phase's step and says which phase the next one belongs to. */
@@ -323,7 +481,9 @@ export class ScanDriver extends DurableObject<Env> {
   }
 
   /**
-   * Ends the pass. Emptying the storage is what lets the object cease to
+   * Ends the pass, and with it any pending change. On giving up that is
+   * deliberate: the next cron poke resumes from the D1 cursor, and its pass
+   * covers the change. Emptying the storage is what lets the object cease to
    * exist until the next poke, and deleting the specific key would not: the
    * docs are explicit that only `deleteAll()` clears everything a Durable
    * Object is billed for.
@@ -344,6 +504,11 @@ export class ScanDriver extends DurableObject<Env> {
   private async read(): Promise<DriverState | null> {
     return restored(await this.ctx.storage.get(STATE_KEY));
   }
+
+  /** The pending file change, or null when there is none, read as `read` reads. */
+  private async readPending(): Promise<Pending | null> {
+    return restoredPending(await this.ctx.storage.get(PENDING_KEY));
+  }
 }
 
 /* ------------------------------------------------------- the state -- */
@@ -362,6 +527,7 @@ function resolved(tuning: ScanDriverTuning): Tuning {
   const playlists = tuning.playlistLimits ?? {};
 
   return {
+    quietMs: positive(tuning.quietMs, RESCAN_QUIET_MS),
     stepDelayMs: positive(tuning.stepDelayMs, STEP_DELAY_MS),
     firstRetryDelayMs: positive(tuning.firstRetryDelayMs, FIRST_RETRY_DELAY_MS),
     maxRetryDelayMs: positive(tuning.maxRetryDelayMs, MAX_RETRY_DELAY_MS),
@@ -416,4 +582,23 @@ function restored(stored: unknown): DriverState | null {
       typeof state.failures === "number" && state.failures > 0 ? Math.floor(state.failures) : 0,
     tuning: resolved(tuning),
   };
+}
+
+function restoredPending(stored: unknown): Pending | null {
+  if (typeof stored !== "object" || stored === null) {
+    return null;
+  }
+
+  const pending = stored as Partial<Record<keyof Pending, unknown>>;
+  const changedAt = pending.changedAt;
+  if (typeof changedAt !== "number" || !Number.isFinite(changedAt)) {
+    return null;
+  }
+
+  const tuning =
+    typeof pending.tuning === "object" && pending.tuning !== null
+      ? (pending.tuning as ScanDriverTuning)
+      : {};
+
+  return { changedAt, tuning: resolved(tuning) };
 }
