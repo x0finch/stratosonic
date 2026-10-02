@@ -202,6 +202,40 @@ the request are still signed. **Replace that file with rclone** instead,
 which writes the key you give it as is. A request makes at most 40 R2 calls:
 one `HeadObject` a file, plus those listings.
 
+**Uploading into a folder keeps its spelling.** A new key is normalised to
+NFC, but a whole-key NFC would split a folder stored in NFD (a Mac or
+rclone library's `Björk/`) into a second, NFC `Björk/`, under which every
+later Replace answers `replace_unavailable`. So the console sends the
+folder it uploads into, exactly as browse listed it:
+
+```jsonc
+// POST /api/files/uploads
+{ "prefix": "Björk/Homogenic/",            // optional; as listed, never normalised
+  "files": [{ "key": "Björk/Homogenic/01 Jóga.flac", "size": 41234567, "overwrite": false }] }
+```
+
+- `prefix` is checked as browse checks one: `""` (the root) or ending in
+  `/`, at most 1,024 bytes, well-formed, not under `_covers/`. A bad one
+  answers `400 invalid_path` (`403 reserved_path` for `_covers/`, and
+  `400 invalid_request` if it is not a string) for the whole request.
+- Each `key` must start with `prefix`. Only the part after it is
+  normalised to NFC, so the folder keeps its stored bytes. A key outside it
+  answers `invalid_path` for that file.
+- Without `prefix`, the whole key is normalised, as before.
+
+Each file's result is a presigned `PUT` or one of these errors, and a
+refused file never fails the others:
+
+| `error` | Meaning |
+|---|---|
+| `invalid_path` | Not a key an upload may take (empty, absolute, a folder, `.`/`..`, a hidden segment, a control character, a backslash, a lone surrogate), or outside `prefix` |
+| `path_too_long` | Over 1,024 bytes, or a segment over 255 bytes, of UTF-8 |
+| `reserved_path` | Under the scanner's `_covers/` |
+| `type_not_allowed` | A suffix outside the allow-list |
+| `too_large` / `empty_file` | Over the kind's size limit, or empty |
+| `exists` | The key exists (with `existing: {size, uploadedAt}`); sign again with `overwrite: true` to Replace |
+| `replace_unavailable` | A Replace whose stored spelling cannot be found for certain: replace this file with rclone |
+
 An expired URL fails with `403` and no CORS headers, so the browser sees a
 network error. The console signs just before each upload and signs again if
 needed. After a successful `PUT`, the console reports the file
