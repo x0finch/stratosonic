@@ -3,6 +3,7 @@ import { CONSOLE_AUTH_ROUTES } from "../console-auth/auth";
 import { type ConsoleEnv, loadConsoleAuth, requireSession } from "../console-auth/middleware";
 import { permissionsOf } from "../console-auth/permissions";
 import { registerAccountRoutes } from "./account";
+import { registerFileRoutes } from "./files";
 import { registerOverviewRoutes } from "./overview";
 import { registerSetupRoutes } from "./setup";
 import { registerSubsonicUserRoutes } from "./subsonic-users";
@@ -58,6 +59,7 @@ export function createApiApp(): ApiApp {
   registerSubsonicUserRoutes(api);
   registerOverviewRoutes(api);
   registerUsageRoutes(api);
+  registerFileRoutes(api);
 
   // A sub-app's `notFound` is never called once it is mounted — Hono only
   // runs the top-level app's — so the unknown paths are caught by a route.
