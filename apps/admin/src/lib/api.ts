@@ -115,6 +115,19 @@ async function readBody(response: Response): Promise<unknown> {
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 async function call<T>(method: Method, path: string, body?: unknown): Promise<T> {
+  return (await exchange<T>(method, path, body)).payload;
+}
+
+/**
+ * A call, with the instant the server answered as its `Date` header names it
+ * (to the second), or `null` when there is none: the clock a write's
+ * `ScanSchedule` is counted down on (`withClock`).
+ */
+async function exchange<T>(
+  method: Method,
+  path: string,
+  body?: unknown,
+): Promise<{ payload: T; date: string | null }> {
   const write = method !== "GET";
   let response: Response;
   try {
@@ -140,7 +153,7 @@ async function call<T>(method: Method, path: string, body?: unknown): Promise<T>
       errorReason(payload),
     );
   }
-  return payload as T;
+  return { payload: payload as T, date: response.headers.get("Date") };
 }
 
 /**
@@ -477,4 +490,123 @@ export function requestScan(): Promise<ScanRequestResult> {
 
 export function fetchUsage(): Promise<Usage> {
   return call<Usage>("GET", "/api/usage");
+}
+
+/**
+ * The server's clock at an answer, with the moment the answer arrived on
+ * this browser's clock: what a `ScanSchedule` is counted down from, as the
+ * live route's `serverTime` and `receivedAt` are (#83 amendments:
+ * `serverTime + (now − receivedAt)`), so a browser clock minutes off
+ * changes nothing.
+ */
+export interface ServerClock {
+  serverTime: string;
+  receivedAt: number;
+}
+
+/**
+ * A write's answer with its clock: the server's `Date` header, or this
+ * browser's clock when the answer has none that parses.
+ */
+function withClock<T>({ payload, date }: { payload: T; date: string | null }): T & {
+  clock: ServerClock;
+} {
+  const receivedAt = Date.now();
+  const at = date === null ? Number.NaN : Date.parse(date);
+  const serverTime = new Date(Number.isFinite(at) ? at : receivedAt).toISOString();
+  return { ...payload, clock: { serverTime, receivedAt } };
+}
+
+/** The kinds of file the server reads, and `other` for the rest (#83). */
+export type FileKind = "audio" | "lyrics" | "playlist" | "image" | "other";
+
+/**
+ * `GET /api/files/config` (#83, "API: configuration"), read once a session.
+ * `bucket` and `uploads` come with the upload routes (ticket C), so a
+ * server without them leaves both out.
+ */
+export interface FilesConfig {
+  bucket?: string | null;
+  uploads?: { configured: true } | { configured: false; missing: string[] };
+  allowed: Record<Exclude<FileKind, "other">, { suffixes: string[]; maxBytes: number }>;
+  limits: { maxKeyBytes: number; maxSegmentBytes: number; deleteBatch: number };
+  rescanQuietSeconds: number;
+  /** False where `FILE_WRITES` is `"off"` (the preview): the page is read-only. */
+  writes: { enabled: boolean };
+}
+
+/** A folder of the folder browsed: a common prefix, ending in `/`. */
+export interface FolderEntry {
+  name: string;
+  prefix: string;
+}
+
+/** A file of the folder browsed, with its key exactly as R2 lists it. */
+export interface FileEntry {
+  name: string;
+  key: string;
+  size: number;
+  /** R2's `uploaded`, the only timestamp an object has. */
+  uploadedAt: string;
+  kind: FileKind;
+}
+
+/** One page of one folder, as `GET /api/files` answers it: folders, then files, in R2's order. */
+export interface FolderListing {
+  prefix: string;
+  folders: FolderEntry[];
+  files: FileEntry[];
+  /** R2's cursor for the next page, or `null` on the last. */
+  cursor: string | null;
+}
+
+/** What `POST /api/files/delete` did. `scan` is `null` when the driver could not be told. */
+export interface DeleteFilesResult {
+  deleted: number;
+  scan: ScanSchedule | null;
+  clock: ServerClock;
+}
+
+/**
+ * One round of `POST /api/files/delete-folder`, called again until `done`.
+ * A round that found nothing left to delete has no `scan` at all (#83
+ * amendments): the round before it still speaks for the change.
+ */
+export interface DeleteFolderResult {
+  deleted: number;
+  done: boolean;
+  scan?: ScanSchedule | null;
+  clock: ServerClock;
+}
+
+export function fetchFilesConfig(): Promise<FilesConfig> {
+  return call<FilesConfig>("GET", "/api/files/config");
+}
+
+/** One page of the folder `prefix` (`""` for the root), from R2's `cursor` when given. */
+export function fetchFiles(prefix: string, cursor?: string | null): Promise<FolderListing> {
+  const query = new URLSearchParams({ prefix });
+  if (cursor) {
+    query.set("cursor", cursor);
+  }
+  return call<FolderListing>("GET", `/api/files?${query}`);
+}
+
+/** Deletes 1–250 keys, exactly as browse listed them. Permanent: there is no undo. */
+export async function deleteFiles(keys: readonly string[]): Promise<DeleteFilesResult> {
+  return withClock(
+    await exchange<Omit<DeleteFilesResult, "clock">>("POST", "/api/files/delete", { keys }),
+  );
+}
+
+/**
+ * One round of a folder delete: up to 2,000 keys under `prefix`, at any
+ * depth. Permanent: there is no undo.
+ */
+export async function deleteFolderRound(prefix: string): Promise<DeleteFolderResult> {
+  return withClock(
+    await exchange<Omit<DeleteFolderResult, "clock">>("POST", "/api/files/delete-folder", {
+      prefix,
+    }),
+  );
 }

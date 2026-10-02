@@ -7,7 +7,9 @@ import {
   type LiveOverview,
   type NowPlayingEntry,
   type ScanRequestResult,
+  type ScanSchedule,
   type ScanStatus,
+  type ServerClock,
 } from "@/lib/api";
 
 /**
@@ -38,9 +40,7 @@ export const USAGE_INTERVAL_MS = 5 * 60_000;
  * a scan request that replaces only `scan` keeps the anchor its positions
  * were read at.
  */
-export interface LiveRead extends LiveOverview {
-  receivedAt: number;
-}
+export interface LiveRead extends LiveOverview, ServerClock {}
 
 /** The live route's interval: 10 s while `scan.running`, 30 s otherwise. */
 export function liveRefetchInterval(live: LiveOverview | undefined): number {
@@ -152,31 +152,67 @@ export function afterScanRequest(queryClient: QueryClient, result: ScanRequestRe
  * pass since it arrived (`receivedAt` to `now`), as now playing's positions
  * are (`estimatePositionMs`): a browser clock minutes off changes nothing.
  */
-export function describeSchedule(
-  scan: ScanStatus,
-  clock: Pick<LiveRead, "serverTime" | "receivedAt">,
+export function describeSchedule(scan: ScanStatus, clock: ServerClock, now: number): string | null {
+  const state = scheduleState(scan.scheduled, clock, now);
+  switch (state?.state) {
+    case undefined:
+      return null;
+    case "after-current-pass":
+      return "A scan is running. Another follows it for recent file changes.";
+    case "covered":
+      return "A scan is running.";
+    case "starting":
+      return "A scan is starting.";
+    case "scheduled":
+      return `A scan is scheduled in ${aboutMinutes(state.minutes)}.`;
+  }
+}
+
+/**
+ * Where a `ScanSchedule` stands by `now`, which the Overview's Library scan
+ * and the Files page's scan line each put in their own words:
+ *
+ * - `scheduled`: a pass starts in about `minutes` (at least 1);
+ * - `starting`: its time has come, and its alarm is due or its first step
+ *   has not reported yet;
+ * - `after-current-pass`: a pass is running, and one more follows it;
+ * - `covered`: a pass is running that began after the change, and covers it.
+ *
+ * The time left is counted on the server's clock: `clock.serverTime`, moved
+ * on by the time this browser has seen pass since the answer arrived
+ * (`receivedAt` to `now`).
+ */
+export type ScheduleState =
+  | { state: "scheduled"; minutes: number }
+  | { state: "starting" }
+  | { state: "after-current-pass" }
+  | { state: "covered" };
+
+export function scheduleState(
+  scheduled: ScanSchedule | null,
+  clock: ServerClock,
   now: number,
-): string | null {
-  const { scheduled } = scan;
+): ScheduleState | null {
   if (!scheduled) {
     return null;
   }
   if (scheduled.afterCurrentPass) {
-    return "A scan is running. Another follows it for recent file changes.";
+    return { state: "after-current-pass" };
   }
   if (scheduled.scheduledAt === null) {
-    // The pass in flight covers the change.
-    return "A scan is running.";
+    return { state: "covered" };
   }
   const serverNow = Date.parse(clock.serverTime) + Math.max(now - clock.receivedAt, 0);
   const remaining = Date.parse(scheduled.scheduledAt) - serverNow;
   if (!(remaining > 0)) {
-    return "A scan is starting.";
+    return { state: "starting" };
   }
-  const minutes = Math.max(Math.round(remaining / 60_000), 1);
-  return minutes === 1
-    ? "A scan is scheduled in about a minute."
-    : `A scan is scheduled in about ${minutes} minutes.`;
+  return { state: "scheduled", minutes: Math.max(Math.round(remaining / 60_000), 1) };
+}
+
+/** `about a minute`, `about 2 minutes`. */
+export function aboutMinutes(minutes: number): string {
+  return minutes === 1 ? "about a minute" : `about ${minutes} minutes`;
 }
 
 /**

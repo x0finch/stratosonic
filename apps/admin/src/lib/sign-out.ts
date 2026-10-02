@@ -1,6 +1,22 @@
 import type { QueryClient } from "@tanstack/react-query";
 
-import { meQuery } from "@/lib/api";
+import { ApiError, meQuery } from "@/lib/api";
+
+/**
+ * A call the server refused for want of a session (it was revoked, or ran
+ * out) signs the console out: the shell then shows the sign-in screen,
+ * which returns to the same page (routes/_shell.tsx). main.tsx runs it for
+ * every failed query and mutation; a caller that settles a failure itself,
+ * such as a delete that stopped part way, runs it too. Answers whether it
+ * signed out.
+ */
+export function signOutWhenUnauthenticated(queryClient: QueryClient, error: unknown): boolean {
+  if (error instanceof ApiError && error.code === "unauthenticated") {
+    queryClient.setQueryData(meQuery.queryKey, null);
+    return true;
+  }
+  return false;
+}
 
 /** The one navigation `leaveSignedOut` makes, so a test can stand in for the router. */
 export interface SignOutNavigator {
