@@ -1,6 +1,7 @@
 import { SELF } from "cloudflare:test";
 import { playlistTrack } from "@stratosonic/db";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { SIGN_BATCH, SPELLING_LISTINGS } from "../src/api/files";
 import { database } from "../src/db";
 import {
   type CookieJar,
@@ -11,7 +12,13 @@ import {
   signIn,
 } from "./console-auth-support";
 import { driveUntilIdle } from "./driver-support";
-import { filesHarness, inertDriver, seedObjects } from "./files-support";
+import {
+  type FilesHarness,
+  filesHarness,
+  inertDriver,
+  seedObjects,
+  UPLOADS_ENV,
+} from "./files-support";
 import { resetLibrary } from "./scan-support";
 import { BASE, seedPlaylist, testEnv } from "./support";
 
@@ -28,8 +35,12 @@ import { BASE, seedPlaylist, testEnv } from "./support";
  */
 
 const ORIGIN = "https://files-budget.stratosonic.test";
-// A driver that starts no pass, so no scan runs behind the large seeds.
-const harness = filesHarness(ORIGIN, { scanDriver: inertDriver() });
+/**
+ * With uploads configured, and a driver that starts no pass, so no scan runs
+ * behind the large seeds. It is the first to sign in, so the isolate's Better
+ * Auth instance, and with it the session check, reads its D1 binding.
+ */
+const harness = filesHarness(ORIGIN, { uploads: UPLOADS_ENV, scanDriver: inertDriver() });
 
 /** Entries in the one playlist each delete takes with it. */
 const ENTRIES = 25;
@@ -75,12 +86,17 @@ interface Measured {
 }
 
 /** What one request cost past the console session's own check. */
-async function measured(method: string, path: string, body?: unknown): Promise<Measured> {
-  harness.d1.reset();
-  harness.r2Calls.length = 0;
-  harness.driverCalls.length = 0;
-  const response = await harness.call(owner, method, path, body);
-  const statements = [...harness.d1.statements];
+async function measured(
+  method: string,
+  path: string,
+  body?: unknown,
+  on: FilesHarness = harness,
+): Promise<Measured> {
+  on.d1.reset();
+  on.r2Calls.length = 0;
+  on.driverCalls.length = 0;
+  const response = await on.call(owner, method, path, body);
+  const statements = [...on.d1.statements];
   const session = statements.filter((statement) =>
     ["select session", "select user"].includes(shape(statement)),
   );
@@ -90,8 +106,8 @@ async function measured(method: string, path: string, body?: unknown): Promise<M
     body: await response.json(),
     session: session.map(shape),
     route: statements.filter((statement) => !session.includes(statement)),
-    r2: harness.r2Calls.map((call) => call.method),
-    driver: [...harness.driverCalls],
+    r2: on.r2Calls.map((call) => call.method),
+    driver: [...on.driverCalls],
   };
 }
 
@@ -226,5 +242,98 @@ describe("the Files routes' budget", () => {
     expect(result.r2).toEqual(["list", "delete", "list", "delete"]);
     expect(result.driver).toHaveLength(1);
     expect(subrequests(result)).toBe(7);
+  });
+
+  it.each([1, 3, 10])(
+    "POST /api/files/uploads, %i files: one head() each, no D1 statement, no driver call",
+    async (n) => {
+      // One of them exists, which costs the same head() and no signature.
+      await seedObjects(["Album/00.flac"]);
+      const files = Array.from({ length: n }, (_, index) => ({
+        key: `Album/${String(index).padStart(2, "0")}.flac`,
+        size: 40_000_000,
+      }));
+
+      const result = await measured("POST", "/files/uploads", { files });
+
+      expect(result.status).toBe(200);
+      expect((result.body as { uploads: unknown[] }).uploads).toHaveLength(n);
+      expect(result.session).toEqual(["select session", "select user"]);
+      expect(result.route).toEqual([]);
+      expect(result.r2).toEqual(Array.from({ length: n }, () => "head"));
+      expect(result.driver).toEqual([]);
+      expect(subrequests(result)).toBe(n);
+    },
+  );
+
+  it("POST /api/files/uploads, 10 Replace: one head() each, and a listing per segment that can vary", async () => {
+    // Five keys with one spelling; five stored in NFD and asked for in NFC,
+    // each a looked-up folder (`Björk/`) and the file under it.
+    const ascii = Array.from({ length: 5 }, (_, index) => `Album/${index}.flac`);
+    const accented = Array.from({ length: 5 }, (_, index) => `Björk/${index}.flac`);
+    await seedObjects([...ascii, ...accented.map((key) => key.normalize("NFD"))]);
+    const files = [...ascii, ...accented].map((key) => ({ key, size: 1, overwrite: true }));
+
+    const result = await measured("POST", "/files/uploads", { files });
+
+    expect(result.status).toBe(200);
+    expect(result.route).toEqual([]);
+    expect(result.r2.filter((method) => method === "head")).toHaveLength(10);
+    expect(result.r2.filter((method) => method === "list")).toHaveLength(10);
+    expect(result.driver).toEqual([]);
+    expect(subrequests(result)).toBe(20);
+  });
+
+  it("POST /api/files/uploads, 10 Replace at the bound: 40 binding calls, 42 subrequests with the session", async () => {
+    // Three segments that can vary in each key: the most listings a Replace makes.
+    const keys = Array.from({ length: SIGN_BATCH }, (_, index) => `À/Á/${index} Â.flac`);
+    await seedObjects(keys.map((key) => key.normalize("NFD")));
+    const files = keys.map((key) => ({ key, size: 1, overwrite: true }));
+
+    const result = await measured("POST", "/files/uploads", { files });
+
+    expect(result.status).toBe(200);
+    expect(
+      (result.body as { uploads: { key: string }[] }).uploads.map((upload) => upload.key),
+    ).toEqual(keys.map((key) => key.normalize("NFD")));
+    expect(result.r2).toHaveLength(SIGN_BATCH * (1 + SPELLING_LISTINGS));
+    expect(result.session).toEqual(["select session", "select user"]);
+    expect(subrequests(result) + result.session.length).toBe(42);
+    expect(subrequests(result) + result.session.length).toBeLessThanOrEqual(50);
+  });
+
+  it("POST /api/files/uploads, not configured: nothing past the session", async () => {
+    // Its session check reads the first harness's D1, so only the route's
+    // own statements are counted here.
+    const result = await measured(
+      "POST",
+      "/files/uploads",
+      { files: [{ key: "Album/01.flac", size: 1 }] },
+      filesHarness(ORIGIN),
+    );
+
+    expect(result.status).toBe(503);
+    expect(result.route).toEqual([]);
+    expect(result.r2).toEqual([]);
+    expect(subrequests(result)).toBe(0);
+  });
+
+  it("POST /api/files/uploads/complete, 10 keys: 1 statement, 1 driver call, no R2 call", async () => {
+    const keys = Array.from({ length: 10 }, (_, index) => `Album/${index}.flac`);
+
+    const result = await measured("POST", "/files/uploads/complete", { keys });
+
+    expect(result.status).toBe(200);
+    expect(result.session).toEqual(["select session", "select user"]);
+    expect(rows(result.route)).toEqual([["insert property", 0, 2]]);
+    expect(cost(result.route)).toEqual({
+      statements: 1,
+      roundTrips: 1,
+      rowsRead: 0,
+      rowsWritten: 2,
+    });
+    expect(result.r2).toEqual([]);
+    expect(result.driver).toHaveLength(1);
+    expect(subrequests(result)).toBe(2);
   });
 });

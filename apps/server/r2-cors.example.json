@@ -1,0 +1,13 @@
+{
+  "rules": [
+    {
+      "allowed": {
+        "origins": ["https://stratosonic.<your-subdomain>.workers.dev"],
+        "methods": ["PUT"],
+        "headers": ["content-type", "if-none-match"]
+      },
+      "exposeHeaders": ["ETag"],
+      "maxAgeSeconds": 3600
+    }
+  ]
+}

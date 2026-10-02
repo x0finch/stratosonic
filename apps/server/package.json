@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "pnpm --filter @stratosonic/admin build && wrangler dev",
     "fixtures": "node scripts/generate-fixtures.mjs",
-    "bench:console-auth": "tsx scripts/bench-console-auth.ts",
+    "bench:console-auth": "tsx --import ./scripts/bench-register.mjs scripts/bench-console-auth.ts",
+    "bench:file-uploads": "tsx --import ./scripts/bench-register.mjs scripts/bench-file-uploads.ts",
     "bench:files": "tsx scripts/bench-files.ts",
     "bench:startup": "node scripts/bench-startup.mjs",
     "cf-typegen": "wrangler types --include-runtime=false --strict-vars=false --env-file /dev/null",
@@ -18,6 +19,7 @@
   "dependencies": {
     "@better-auth/drizzle-adapter": "1.7.6",
     "@stratosonic/db": "workspace:*",
+    "aws4fetch": "1.0.20",
     "better-auth": "1.7.6",
     "drizzle-orm": "0.45.2",
     "hono": "4.13.8",

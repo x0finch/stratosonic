@@ -4,11 +4,16 @@ import {
   checkBrowsePrefix,
   checkFolderPrefix,
   checkUploadKey,
+  checkUploadPrefix,
   checkUploadSize,
   contentTypeOf,
+  hasOneSpelling,
+  isAscii,
   kindOf,
   MAX_KEY_BYTES,
   MAX_SEGMENT_BYTES,
+  newKeySpelling,
+  oneSpellingPrefix,
 } from "../src/files/keys";
 import { AUDIO_CONTENT_TYPES, AUDIO_SUFFIXES } from "../src/library/audio-formats";
 import { MAX_SIDECAR_BYTES, SIDECAR_SUFFIXES } from "../src/lyrics/sidecar";
@@ -55,6 +60,8 @@ describe("a new upload key", () => {
     ["a hidden file", "Artist/.DS_Store"],
     ["an AppleDouble file", "Artist/._01.flac"],
     ["a hidden folder", "Artist/.hidden/01.flac"],
+    ["a lone high surrogate", "Artist/01 \ud800.flac"],
+    ["a lone low surrogate", "Artist/\udc00/01.flac"],
   ])("refuses %s as invalid_path", (_, key) => {
     expect(checkUploadKey(key)).toEqual({ error: "invalid_path" });
   });
@@ -191,5 +198,102 @@ describe("a folder's prefix", () => {
   it("is taken as given, not normalised", () => {
     // A NFD prefix from a listing is a valid prefix as it stands.
     expect(checkBrowsePrefix("Björk/")).toBeNull();
+  });
+});
+
+describe("a segment's spellings", () => {
+  it("are three ASCII characters' own besides: K, ; and ` are another code point's NFC", () => {
+    // Every code point whose NFC is a single ASCII character other than
+    // itself: the ASCII a stored key may spell another way.
+    const targets = new Set<string>();
+    for (let code = 0x80; code <= 0x10ffff; code++) {
+      if (code >= 0xd800 && code <= 0xdfff) {
+        continue;
+      }
+      const nfc = String.fromCodePoint(code).normalize("NFC");
+      if (nfc.length === 1 && nfc.charCodeAt(0) < 0x80) {
+        targets.add(nfc);
+      }
+    }
+
+    expect([...targets].sort()).toEqual([";", "K", "`"]);
+  }, 60_000);
+
+  it.each([
+    ["ASCII", "01 Title.flac", true],
+    ["ASCII with a K", "Kraftwerk", false],
+    ["ASCII with a semicolon", "a;b.flac", false],
+    ["ASCII with a backtick", "a`b.flac", false],
+    ["a composed letter", "Bj\u00f6rk", false],
+    ["CJK", "坂本龍一", false],
+  ])("has one spelling, or not: %s", (_, segment, one) => {
+    expect(hasOneSpelling(segment)).toBe(one);
+  });
+
+  it.each([
+    ["an ASCII name, whole", "01 Title.flac", "01 Title.flac"],
+    ["up to a composed letter", "Bj\u00f6rk", "Bj"],
+    ["nothing before a leading accent", "\u00c9dith Piaf", ""],
+    ["up to a K", "Das Kabinett", "Das "],
+    ["nothing before CJK", "坂本龍一", ""],
+  ])("starts every spelling with its one-spelling prefix: %s", (_, segment, prefix) => {
+    expect(oneSpellingPrefix(segment)).toBe(prefix);
+  });
+
+  it("puts that prefix at the start of every spelling, composed, decomposed or mixed", () => {
+    for (const nfc of ["Bj\u00f6rk", "\u00c9dith Piaf", "01 J\u00f3ga \u00e9t\u00e9.flac"]) {
+      const prefix = oneSpellingPrefix(nfc);
+      const mixed = nfc.replace("\u00e9", "e\u0301");
+      for (const spelling of [nfc, nfc.normalize("NFD"), mixed]) {
+        expect(spelling.normalize("NFC")).toBe(nfc);
+        expect(spelling.startsWith(prefix)).toBe(true);
+      }
+    }
+  });
+
+  it("tells ASCII apart without normalising", () => {
+    expect(isAscii("Artist/01.flac")).toBe(true);
+    expect(isAscii("Bj\u00f6rk")).toBe(false);
+    expect(isAscii("")).toBe(true);
+  });
+});
+
+describe("a new key in a listed folder", () => {
+  // A folder named on macOS, stored in NFD, as browse lists it.
+  const FOLDER = "Björk/Homogenic/";
+
+  it("keeps the folder's spelling and normalises only the rest to NFC", () => {
+    const raw = `${FOLDER}01 Jóga.flac`;
+
+    const checked = checkUploadKey(raw, FOLDER);
+
+    expect(checked).toMatchObject({ key: `${FOLDER}01 Jóga.flac`, kind: "audio" });
+    expect(newKeySpelling(raw, FOLDER)).toBe(`${FOLDER}01 Jóga.flac`);
+    // Without the folder, the whole key is NFC: another folder.
+    expect(checkUploadKey(raw)).toMatchObject({ key: raw.normalize("NFC") });
+  });
+
+  it("refuses a key outside the folder as invalid_path", () => {
+    expect(checkUploadKey("Björk/Homogenic/01.flac", FOLDER)).toEqual({
+      error: "invalid_path",
+    });
+    expect(checkUploadKey("Other/01.flac", FOLDER)).toEqual({ error: "invalid_path" });
+  });
+
+  it("still applies every rule to the whole key", () => {
+    expect(checkUploadKey(`${FOLDER}.hidden.flac`, FOLDER)).toEqual({ error: "invalid_path" });
+    expect(checkUploadKey(`${FOLDER}notes.pdf`, FOLDER)).toEqual({ error: "type_not_allowed" });
+    expect(checkUploadKey("_covers/a.png", "_covers/")).toEqual({ error: "reserved_path" });
+  });
+
+  it.each([
+    ["the root", "", null],
+    ["a folder in NFD, taken as it is", FOLDER, null],
+    ["a prefix that is not a folder", "Björk", "invalid_path"],
+    ["a prefix over 1,024 bytes", `${"a".repeat(1024)}/`, "invalid_path"],
+    ["a lone surrogate", "A\ud800/", "invalid_path"],
+    ["the cover prefix", "_covers/", "reserved_path"],
+  ])("checks the folder as browse does: %s", (_, prefix, refusal) => {
+    expect(checkUploadPrefix(prefix)).toBe(refusal);
   });
 });

@@ -11,11 +11,28 @@ import { driver, driverIsIdle } from "./driver-support";
 import { testEnv } from "./support";
 
 /**
- * The Files API under test (#83, #131): the Worker's app over a D1 binding
- * that records every statement, an R2 binding that records every call it is
- * asked for and can be given a smaller listing page, and a scan driver
- * binding that records every call it is asked for.
+ * The Files API under test (#83, #131, #132): the Worker's app over a D1
+ * binding that records every statement, an R2 binding that records every call
+ * it is asked for (and how many were in flight at once) and can be given a
+ * smaller listing page, and a scan driver binding that records every call it
+ * is asked for.
+ *
+ * The R2 binding's `head()` treats Unicode-equivalent keys as one object, as
+ * R2 does ("Unicode interoperability") and miniflare's simulation does not:
+ * a key stored in NFD is found by its NFC spelling, and answered with the
+ * stored one.
  */
+
+/**
+ * A complete, made-up upload configuration: the token's two values, the
+ * account id and the bucket's name. Nothing signed with it reaches R2.
+ */
+export const UPLOADS_ENV = {
+  R2_ACCESS_KEY_ID: "test-access-key-id",
+  R2_SECRET_ACCESS_KEY: "test-secret-access-key-not-real",
+  CF_ACCOUNT_ID: "0123456789abcdef0123456789abcdef",
+  R2_BUCKET_NAME: "navidrome",
+} as const;
 
 /** One call to the bucket's binding: its method and first argument. */
 export interface R2Call {
@@ -37,12 +54,24 @@ export interface FilesHarnessOptions {
   readonly fileWrites?: string;
   /** Makes every write of a `property` row fail, as a D1 outage would. */
   readonly failPropertyWrite?: boolean;
+  /**
+   * The upload settings, over the pinned ones (where the token is unset):
+   * `UPLOADS_ENV` configures uploads.
+   */
+  readonly uploads?: Partial<Pick<Env, keyof typeof UPLOADS_ENV>>;
   /** Makes the `MUSIC.delete` call of this number (from 1) throw before it deletes anything. */
   readonly failDeleteCall?: number;
   /** Makes a listing given this cursor throw, as R2 refuses a cursor it never issued. */
   readonly refusedCursor?: string;
   /** Makes every listing throw, as an R2 outage would. */
   readonly failListing?: boolean;
+  /**
+   * Makes `head()` answer an object found under another Unicode spelling
+   * with the key it was asked for, rather than the stored one. R2 does not
+   * document which it answers; Replace must keep the stored spelling either
+   * way.
+   */
+  readonly headAnswersAskedKey?: boolean;
 }
 
 /**
@@ -97,6 +126,8 @@ export interface FilesHarness {
   readonly d1: ReturnType<typeof countingD1>;
   /** Every call to `MUSIC` the app made, in order. */
   readonly r2Calls: R2Call[];
+  /** The most calls to `MUSIC` in flight at once, since the last reset. */
+  readonly r2Peak: { inFlight: number; peak: number };
   /** Every method called on the scan driver's stub, in order. */
   readonly driverCalls: string[];
   /** Calls a route as the console would, signed in with `jar`. */
@@ -111,6 +142,7 @@ export interface FilesHarness {
 
 export function filesHarness(origin: string, options: FilesHarnessOptions = {}): FilesHarness {
   const r2Calls: R2Call[] = [];
+  const r2Peak = { inFlight: 0, peak: 0 };
   const driverCalls: string[] = [];
   let deleteCalls = 0;
 
@@ -122,25 +154,40 @@ export function filesHarness(origin: string, options: FilesHarnessOptions = {}):
       }
       return async (argument: unknown, ...rest: unknown[]) => {
         r2Calls.push({ method: String(name), argument });
-        if (name === "delete" && ++deleteCalls === options.failDeleteCall) {
-          throw new Error("R2 is unavailable");
-        }
-        if (name === "list") {
-          const listing = (argument ?? {}) as R2ListOptions;
-          if (options.failListing) {
+        r2Peak.inFlight++;
+        r2Peak.peak = Math.max(r2Peak.peak, r2Peak.inFlight);
+        try {
+          if (name === "delete" && ++deleteCalls === options.failDeleteCall) {
             throw new Error("R2 is unavailable");
           }
-          if (options.refusedCursor !== undefined && listing.cursor === options.refusedCursor) {
-            throw new Error("list: the cursor is not valid");
+          if (name === "list") {
+            const listing = (argument ?? {}) as R2ListOptions;
+            if (options.failListing) {
+              throw new Error("R2 is unavailable");
+            }
+            if (options.refusedCursor !== undefined && listing.cursor === options.refusedCursor) {
+              throw new Error("list: the cursor is not valid");
+            }
+            if (options.listLimit !== undefined) {
+              return await target.list({
+                ...listing,
+                limit: Math.min(listing.limit ?? 1000, options.listLimit),
+              });
+            }
           }
-          if (options.listLimit !== undefined) {
-            return target.list({
-              ...listing,
-              limit: Math.min(listing.limit ?? 1000, options.listLimit),
-            });
+          if (name === "head" && typeof argument === "string") {
+            const object = await headAnySpelling(target, argument);
+            return object !== null && options.headAnswersAskedKey
+              ? withKey(object, argument)
+              : object;
           }
+          return await (value as (...args: unknown[]) => unknown).apply(target, [
+            argument,
+            ...rest,
+          ]);
+        } finally {
+          r2Peak.inFlight--;
         }
-        return (value as (...args: unknown[]) => unknown).apply(target, [argument, ...rest]);
       };
     },
   });
@@ -202,6 +249,7 @@ export function filesHarness(origin: string, options: FilesHarnessOptions = {}):
     SCAN_DRIVER: scanDriver,
     // Given, even as undefined, or else unset as the pinned env has it.
     FILE_WRITES: "fileWrites" in options ? options.fileWrites : "",
+    ...options.uploads,
   };
   const app = createApp();
   const send = (request: Request) => app.request(request, undefined, env);
@@ -210,6 +258,7 @@ export function filesHarness(origin: string, options: FilesHarnessOptions = {}):
     send,
     d1,
     r2Calls,
+    r2Peak,
     driverCalls,
     call: async (jar, method, path, body, headers = {}) => {
       const request = consoleRequest(origin, `/api${path}`, { method, body, jar });
@@ -220,6 +269,39 @@ export function filesHarness(origin: string, options: FilesHarnessOptions = {}):
       return send(request);
     },
   };
+}
+
+/**
+ * `head()` as R2 answers it: the object under the key, or else under any
+ * spelling NFC-equal to it (composed, decomposed or mixed), with the key it
+ * is stored under. The other spellings are found by listing the whole
+ * bucket, which a test's bucket keeps small.
+ */
+async function headAnySpelling(bucket: R2Bucket, key: string): Promise<R2Object | null> {
+  const exact = await bucket.head(key);
+  if (exact !== null) {
+    return exact;
+  }
+
+  const nfc = key.normalize("NFC");
+  let cursor: string | undefined;
+  do {
+    const listing = await bucket.list({ cursor });
+    const match = listing.objects.find((object) => object.key.normalize("NFC") === nfc);
+    if (match !== undefined) {
+      return bucket.head(match.key);
+    }
+    cursor = listing.truncated ? listing.cursor : undefined;
+  } while (cursor !== undefined);
+
+  return null;
+}
+
+/** The object as `head()` found it, but answering `key` as its key. */
+function withKey(object: R2Object, key: string): R2Object {
+  return new Proxy(object, {
+    get: (target, name) => (name === "key" ? key : Reflect.get(target, name)),
+  });
 }
 
 /** Every key in the bucket, sorted, past R2's 1,000-a-page listing. */
