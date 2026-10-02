@@ -44,8 +44,11 @@
 
 import { isAudioKey, suffixOf } from "../library/audio-formats";
 
-/** The suffixes that make an object a playlist, as Navidrome's `IsValidPlaylist`. */
-const PLAYLIST_SUFFIXES: readonly string[] = ["m3u", "m3u8"];
+/**
+ * The suffixes that make an object a playlist, as Navidrome's `IsValidPlaylist`.
+ * The console's upload allow-list is built from them (files/keys.ts).
+ */
+export const PLAYLIST_SUFFIXES: readonly string[] = ["m3u", "m3u8"];
 
 /** Prefix of the line that gives a playlist its name. */
 const NAME_DIRECTIVE = "#PLAYLIST:";
