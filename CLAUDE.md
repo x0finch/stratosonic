@@ -28,6 +28,13 @@ uploaded to R2 with rclone; the first admin user is created on first run from
 - Reserve questions for the user for genuine product/scope trade-offs that no
   source can settle, and keep them rare.
 
+## Console UI
+
+- **Before changing any page, component, or user-visible copy or formatting
+  in `apps/admin`, read `apps/admin/DESIGN.md`**. It holds the console's
+  design rules, including its theme-only colors, its sections in place of
+  nested cards, and the screenshot check that ends every UI change.
+
 ## Language conventions
 
 - **Chat / interaction with the user: Chinese (中文).** All conversational

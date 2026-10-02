@@ -5,6 +5,8 @@ TanStack Query, shadcn/ui on Base UI, Tailwind CSS v4) that the Worker in
 `apps/server` serves as its static assets. There is no separate deployment:
 `wrangler deploy` uploads `dist/` with the Worker.
 
+Every page and component follows the design rules in [DESIGN.md](DESIGN.md).
+
 ## How it is served
 
 `apps/server/wrangler.jsonc` points `assets.directory` at `../admin/dist`.
