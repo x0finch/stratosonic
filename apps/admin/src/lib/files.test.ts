@@ -24,15 +24,17 @@ import {
   filesConfigQuery,
   folderPath,
   folderQuery,
-  folderTitle,
   folderTrail,
   latestView,
+  leaveFolder,
   listedNames,
   planDelete,
   reopenFolder,
   runDelete,
   scanActive,
   scanLine,
+  selectionWhere,
+  shownIds,
   validateFilesSearch,
   viewOfLive,
   viewOfWrite,
@@ -50,7 +52,7 @@ function file(key: string): DeleteTarget {
 }
 
 function folder(prefix: string): DeleteTarget {
-  return { type: "folder", prefix, name: folderTitle(prefix, "Bucket") };
+  return { type: "folder", prefix, name: folderTrail(prefix).at(-1)?.name ?? "" };
 }
 
 describe("the folder path", () => {
@@ -63,18 +65,23 @@ describe("the folder path", () => {
     ]);
   });
 
-  it("names a folder by its last segment, and the root by the bucket", () => {
-    expect(folderTitle("", "navidrome")).toBe("navidrome");
-    expect(folderTitle("Artist/Album/", "navidrome")).toBe("Album");
+  it("names a folder in a toast by its path without the final slash", () => {
     expect(folderPath("Artist/Album/")).toBe("Artist/Album");
   });
 
   it("takes a folder from ?prefix=, and the root for anything else", () => {
     expect(validateFilesSearch({})).toEqual({});
     expect(validateFilesSearch({ prefix: "" })).toEqual({});
-    expect(validateFilesSearch({ prefix: 12 })).toEqual({});
+    expect(validateFilesSearch({ prefix: null })).toEqual({});
+    expect(validateFilesSearch({ prefix: {} })).toEqual({});
+    expect(validateFilesSearch({ prefix: Number.NaN })).toEqual({});
     expect(validateFilesSearch({ prefix: "Artist/Album/" })).toEqual({ prefix: "Artist/Album/" });
     expect(validateFilesSearch({ prefix: "Artist/Album" })).toEqual({ prefix: "Artist/Album/" });
+  });
+
+  it("takes back a folder name the router parsed as JSON: ?prefix=2024 is 2024/", () => {
+    expect(validateFilesSearch({ prefix: 2024 })).toEqual({ prefix: "2024/" });
+    expect(validateFilesSearch({ prefix: true })).toEqual({ prefix: "true/" });
   });
 });
 
@@ -192,6 +199,7 @@ describe("running a delete", () => {
         { prefix: "A/C/", deleted: 3 },
       ],
       schedule: { scan: SCHEDULED, clock: CLOCK },
+      reached: ["A/1.flac", "A/2.flac", "A/B/", "A/C/"],
     });
   });
 
@@ -225,6 +233,7 @@ describe("running a delete", () => {
       files: 0,
       folders: [{ prefix: "Gone/", deleted: 0 }],
       schedule: undefined,
+      reached: ["Gone/"],
     });
   });
 
@@ -263,8 +272,59 @@ describe("running a delete", () => {
       files: 1,
       folders: [],
       schedule: { scan: SCHEDULED, clock: CLOCK },
+      reached: ["a"],
       error: refused,
     });
+  });
+
+  it("is not done with a folder a failure stopped part way", async () => {
+    const ended = new ApiError(401, "unauthenticated", "");
+    let round = 0;
+    const outcome = await runDelete(
+      { fileBatches: [["a"]], folders: ["F/", "G/"] },
+      {
+        deleteFiles: async () => ({ deleted: 1, scan: SCHEDULED, clock: CLOCK }),
+        deleteFolderRound: async () => {
+          round += 1;
+          if (round === 2) {
+            throw ended;
+          }
+          return { deleted: 2000, done: false, scan: SCHEDULED, clock: CLOCK };
+        },
+      },
+    );
+
+    expect(outcome.reached).toEqual(["a"]);
+    expect(outcome.folders).toEqual([{ prefix: "F/", deleted: 2000 }]);
+    expect(outcome.error).toBe(ended);
+  });
+});
+
+describe("the selection", () => {
+  it("keeps only the ids a test lets through", () => {
+    const selection = new Map([
+      ["A/", folder("A/")],
+      ["a.flac", file("a.flac")],
+      ["b.flac", file("b.flac")],
+    ]);
+    const done = new Set(["A/", "a.flac"]);
+
+    expect([...selectionWhere(selection, (id) => !done.has(id)).keys()]).toEqual(["b.flac"]);
+    // The original is left as it was.
+    expect(selection.size).toBe(3);
+  });
+
+  it("knows which rows a folder's loaded pages show", () => {
+    const shown = shownIds({
+      pages: [
+        { prefix: "", folders: [{ name: "A", prefix: "A/" }], files: [], cursor: "c" },
+        page("b.flac", null),
+      ],
+      pageParams: [null, "c"],
+    });
+
+    expect([...shown]).toEqual(["A/", "b.flac"]);
+    expect(shownIds(undefined).size).toBe(0);
   });
 });
 
@@ -525,6 +585,21 @@ describe("the Files queries", () => {
       )?.pages,
     ).toHaveLength(1);
     unsubscribe();
+  });
+
+  it("cuts a folder it leaves back to its first page, so a stale return reads one", async () => {
+    const { queryClient, fetch, unsubscribe } = await twoPagesOnScreen();
+    unsubscribe();
+
+    leaveFolder(queryClient, "A/");
+    await queryClient.invalidateQueries({ queryKey: folderQuery("A/").queryKey });
+    const back = new InfiniteQueryObserver(queryClient, folderQuery("A/"));
+    const again = back.subscribe(() => {});
+    await vi.waitFor(() => expect(back.getCurrentResult().isFetching).toBe(false));
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(back.getCurrentResult().data?.pages).toHaveLength(1);
+    again();
   });
 
   it("opens a folder again from its first page after a refused cursor", async () => {

@@ -250,13 +250,18 @@ the sidebar's Files entry; one with `files:write` also gets the checkboxes,
 each row's menu, **Delete** and **New folder**.
 
 - A folder is `?prefix=Artist/Album/`, so it is a deep link and the
-  browser's back button walks up. The path above the folder links each
-  folder from the bucket down; in a narrow column the folders in between
-  collapse into the breadcrumb's ellipsis.
+  browser's back button walks up (`?prefix=2024` opens `2024/`). The path
+  above the folder links each folder from the bucket down, and its current
+  page names the folder: the folder is the page's one block, so it has no
+  h2 (DESIGN.md). In a narrow column the folders in between collapse into
+  the breadcrumb's ellipsis.
 - A folder lists 1,000 entries a page, folders first, in R2's order;
   **Load more** reads the next page while there is one. R2 gives no total,
   so the description counts what is loaded ("12 files so far"). A cursor R2
-  refuses (`invalid_cursor`) opens the folder again from its first page.
+  refuses (`invalid_cursor`) opens the folder again from its first page,
+  and the selection keeps only the rows that page shows.
+- A delete takes out of the selection only what it is done with: a delete
+  that stopped part way leaves the rest selected for another try.
 - **New folder** writes nothing: R2 has no folders, so the page opens the
   new prefix ("Upload files to create this folder."), and the folder exists
   once a file lands in it. Its name is checked here with the server's rules
@@ -268,8 +273,8 @@ each row's menu, **Delete** and **New folder**.
   counts "Deleting… 2,000 files". The toast says what went ("Deleted 4
   files", "Deleted Artist/Album (532 files)").
 - **Preview is read-only** (owner decision 2): where `GET /api/files/config`
-  says `writes.enabled: false`, no write control shows, and the folder's
-  heading says "Read-only on this deployment" instead.
+  says `writes.enabled: false`, no write control shows, and "Read-only on
+  this deployment" stands where the actions would be.
 - **The scan line**, under the path, shows only while a pass is scheduled or
   running: "Library scan in about 2 minutes.", "Library scan starting.", "A
   scan is running. Another follows it for your recent changes." or "A scan is
@@ -281,7 +286,8 @@ each row's menu, **Delete** and **New folder**.
 What it reads, for the free-tier budget: `GET /api/files/config` once a
 session; `GET /api/files` on opening a folder (fresh for 30 s), on **Load
 more**, and once after a delete (only the first page, whatever was
-loaded); `GET /api/overview/live` only while a pass is scheduled or running,
+loaded); a folder the page leaves is cut back to its first page, so a
+return to it once stale reads one page too; `GET /api/overview/live` only while a pass is scheduled or running,
 with `library:read`, at the Overview's pace (every 30 s, every 10 s while a
 pass runs). Nothing else is polled, a return to the tab reads nothing, and
 a hidden tab reads nothing.

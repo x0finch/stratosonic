@@ -1,7 +1,7 @@
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { FolderIcon, FolderPlusIcon, InfoIcon, Trash2Icon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { ErrorAlert } from "@/components/error-alert";
 import { DeleteDialog } from "@/components/files/delete-dialog";
@@ -29,11 +29,13 @@ import {
   describeListing,
   filesConfigQuery,
   folderQuery,
-  folderTitle,
   latestView,
+  leaveFolder,
   reopenFolder,
   type ScanView,
   scanActive,
+  selectionWhere,
+  shownIds,
   targetId,
   validateFilesSearch,
   viewOfLive,
@@ -95,6 +97,9 @@ function FilesPage({ me }: { me: Me | null }) {
 
   const config = useQuery(filesConfigQuery);
   const folder = useInfiniteQuery(folderQuery(prefix));
+  // Leaving a folder cuts its listing back to its first page, so that a
+  // return to it once stale reads one page, not every page loaded.
+  useEffect(() => () => leaveFolder(queryClient, prefix), [queryClient, prefix]);
 
   // The write controls: for a role with `files:write`, where the server
   // takes file writes (owner decision 2: not in the preview).
@@ -150,8 +155,17 @@ function FilesPage({ me }: { me: Me | null }) {
       }
       if (result.error instanceof ApiError && result.error.code === "invalid_cursor") {
         // R2 refused the cursor: the folder opens again from its first page.
+        // The selection keeps only the rows that page shows again, so a
+        // delete never takes a row that is no longer on screen.
         toastError(result.error);
-        void reopenFolder(queryClient, prefix);
+        void reopenFolder(queryClient, prefix).then(() => {
+          const shown = shownIds(queryClient.getQueryData(folderQuery(prefix).queryKey));
+          setSelection((current) =>
+            current.prefix === prefix
+              ? { prefix, targets: selectionWhere(current.targets, (id) => shown.has(id)) }
+              : current,
+          );
+        });
       } else {
         toastError(result.error, "The next page could not be read");
       }
@@ -191,8 +205,12 @@ function FilesPage({ me }: { me: Me | null }) {
     <div className="@container flex min-w-0 flex-col gap-4">
       <FolderPath prefix={prefix} bucket={bucket} />
       <ScanLine view={view} />
+      {/* The folder is the page's one block, so it has no h2 and is no named
+          region (DESIGN.md, "A page with a single block has no section
+          heading"): the path's current page names the folder. Ticket E:
+          once the Uploads section joins it, the page has two blocks, so give
+          this one an h2 or an `aria-label` naming the folder. */}
       <Section
-        title={folderTitle(prefix, bucket)}
         description={
           // An empty folder says so in its `Empty` below, once.
           empty
@@ -263,11 +281,17 @@ function FilesPage({ me }: { me: Me | null }) {
             onOpenChange={closeOf("delete")}
             batch={config.data.limits.deleteBatch}
             rescanQuietSeconds={config.data.rescanQuietSeconds}
-            onDeleted={(_, schedule) => {
+            onDeleted={({ reached }, schedule) => {
               if (schedule) {
                 setWritten(viewOfWrite(schedule));
               }
-              setSelection({ prefix, targets: NO_SELECTION });
+              // Only what the delete is done with leaves the selection: a
+              // delete that stopped part way leaves the rest selected.
+              const done = new Set(reached);
+              setSelection((current) => ({
+                ...current,
+                targets: selectionWhere(current.targets, (id) => !done.has(id)),
+              }));
             }}
           />
         </>

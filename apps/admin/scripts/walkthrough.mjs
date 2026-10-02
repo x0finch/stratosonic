@@ -441,14 +441,16 @@ async function filesConfig(page) {
   return page.evaluate(async () => (await fetch("/api/files/config")).json());
 }
 
-/** That the Files page shows the folder `prefix`: its URL and its h2 (the bucket's at the root). */
+/**
+ * That the Files page shows the folder `prefix`: its URL, and the folder
+ * path's current page (`aria-current="page"`), which names the folder (the
+ * bucket at the root). The folder is the page's one block, so it has no h2.
+ */
 async function inFolder(page, prefix) {
   await page.waitForURL((url) => (url.searchParams.get("prefix") ?? "") === prefix);
   const name = prefix.split("/").at(-2);
-  await (name === undefined
-    ? page.getByRole("heading", { level: 2 })
-    : page.getByRole("heading", { level: 2, name, exact: true })
-  ).waitFor();
+  const current = folderPath(page).locator('[aria-current="page"]');
+  await (name === undefined ? current : current.getByText(name, { exact: true })).waitFor();
 }
 
 /** The folder path above the table. */
@@ -964,6 +966,7 @@ async function main() {
           return "skipped";
         }
         files.writable = (await filesConfig(page)).writes.enabled;
+        await checkNoSectionHeading(page, "the Files page");
         const [scratch] = FILES_PREFIX.split("/");
         await page.getByRole("link", { name: scratch, exact: true }).click();
         await inFolder(page, FILES_PREFIX);

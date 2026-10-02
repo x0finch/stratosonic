@@ -28,7 +28,7 @@ import { aboutMinutes, type LiveRead, scheduleState } from "@/lib/overview";
  * | Query | `staleTime` | Read again |
  * |---|---|---|
  * | `/api/files/config` | `Infinity` | never: once a session |
- * | `/api/files?prefix=` | 30 s | on Load more, and after every delete (its first page only) |
+ * | `/api/files?prefix=` | 30 s | on open once stale, on Load more, and after every delete (open and delete read the first page only) |
  * | `/api/overview/live` | 0, as the Overview's | only while a scan is scheduled or running, with `library:read` |
  *
  * Nothing is polled while no scan is scheduled or running, and a hidden tab
@@ -101,13 +101,51 @@ export function reopenFolder(queryClient: QueryClient, prefix: string): Promise<
 }
 
 /**
+ * When the page leaves a folder (for another, or for another page), the
+ * folder's listing is cut back to its first page: an infinite query read
+ * again reads every page it holds, so a return to it once stale reads one
+ * page, not every page Load more had added. A return within 30 s shows the
+ * first page from the cache, and Load more reads on from there.
+ */
+export function leaveFolder(queryClient: QueryClient, prefix: string): void {
+  queryClient.setQueryData(folderQuery(prefix).queryKey, firstPage);
+}
+
+/** The ids of every row a folder's loaded pages show (`targetId`). */
+export function shownIds(data: InfiniteData<FolderListing, unknown> | undefined): Set<string> {
+  return new Set(
+    (data?.pages ?? []).flatMap((page) => [
+      ...page.folders.map((folder) => folder.prefix),
+      ...page.files.map((file) => file.key),
+    ]),
+  );
+}
+
+/** A copy of `selection` without the ids `keep` turns down. */
+export function selectionWhere<T>(
+  selection: ReadonlyMap<string, T>,
+  keep: (id: string) => boolean,
+): Map<string, T> {
+  return new Map([...selection].filter(([id]) => keep(id)));
+}
+
+/**
  * The `?prefix=` search parameter of `/files`: a folder's prefix, ending in
  * `/`, or absent for the root. A deep link that names a folder without its
- * final slash gets it; anything that is not a string opens the root.
+ * final slash gets it. The router parses each search value as JSON first,
+ * so `?prefix=2024` arrives as the number 2024, and `?prefix=true` as a
+ * boolean: both are taken back as the folder names they were typed as.
+ * Anything else that is not a string opens the root.
  */
 export function validateFilesSearch(search: Record<string, unknown>): { prefix?: string } {
-  const { prefix } = search;
-  if (typeof prefix !== "string" || prefix === "") {
+  const raw = search.prefix;
+  const prefix =
+    typeof raw === "string"
+      ? raw
+      : (typeof raw === "number" && Number.isFinite(raw)) || typeof raw === "boolean"
+        ? String(raw)
+        : "";
+  if (prefix === "") {
     return {};
   }
   return { prefix: prefix.endsWith("/") ? prefix : `${prefix}/` };
@@ -120,11 +158,6 @@ export function folderTrail(prefix: string): { name: string; prefix: string }[] 
     name,
     prefix: `${names.slice(0, index + 1).join("/")}/`,
   }));
-}
-
-/** A folder's own name, or the bucket's at the root. */
-export function folderTitle(prefix: string, bucket: string): string {
-  return folderTrail(prefix).at(-1)?.name ?? bucket;
 }
 
 /** A folder as a toast names it: its path without the final slash, `Artist/Album`. */
@@ -160,9 +193,12 @@ function utf8Length(value: string): number {
 /**
  * Checks a New folder name against the server's rules for a new key's segment
  * (apps/server `files/keys.ts`), and answers the folder's prefix, or why the
- * name is refused, in words for beside the field. The name is trimmed and
- * written in NFC, as every new key is. Nothing is written: R2 has no folders,
- * so the folder exists once a file lands in it.
+ * name is refused, in words for beside the field. The name is written in
+ * NFC, as the server writes every new key. It is also trimmed, which is the
+ * console's own choice, not a server rule: the server keeps spaces at either
+ * end of a segment, but a folder name typed with one is almost always a slip.
+ * Nothing is written: R2 has no folders, so the folder exists once a file
+ * lands in it.
  */
 export function checkFolderName(
   raw: string,
@@ -248,6 +284,13 @@ export interface DeleteOutcome {
    * none did, so the page keeps the one it had.
    */
   schedule: WriteSchedule | undefined;
+  /**
+   * The targets it is done with, by `targetId`: the keys of every batch the
+   * server answered, and each folder whose rounds reached `done`. A folder
+   * a failure stopped part way is not among them, so it stays selected for
+   * another try.
+   */
+  reached: string[];
   /** Why it stopped before the end, if it did. */
   error?: unknown;
 }
@@ -275,12 +318,13 @@ export async function runDelete(
   calls: DeleteCalls,
   onProgress: (deleted: number) => void = () => {},
 ): Promise<DeleteOutcome> {
-  const outcome: DeleteOutcome = { files: 0, folders: [], schedule: undefined };
+  const outcome: DeleteOutcome = { files: 0, folders: [], schedule: undefined, reached: [] };
   try {
     for (const keys of plan.fileBatches) {
       const result = await calls.deleteFiles(keys);
       outcome.files += result.deleted;
       outcome.schedule = { scan: result.scan, clock: result.clock };
+      outcome.reached.push(...keys);
       onProgress(deletedCount(outcome));
     }
     for (const prefix of plan.folders) {
@@ -294,6 +338,7 @@ export async function runDelete(
         }
         onProgress(deletedCount(outcome));
         if (result.done) {
+          outcome.reached.push(prefix);
           break;
         }
       }
