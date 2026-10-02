@@ -59,6 +59,36 @@ the path"), which fails the whole request: the Worker's log line gives the
 error's path (for example `viewer/accounts/0/r2Storage`), which tells the two
 apart.
 
+## Files: browsing and deleting
+
+The console's Files page manages the bound bucket (`MUSIC`) as folders,
+through `/api/files`. It needs no configuration to browse and delete:
+
+- `GET /api/files?prefix=` lists one folder, a page of 1,000 entries at a
+  time. The scanner's `_covers/` prefix is hidden, and every write under it
+  is refused. A `cursor` R2 refuses answers `400 {"error":"invalid_cursor"}`.
+- `POST /api/files/delete` (up to 250 keys) and
+  `POST /api/files/delete-folder` (2,000 keys a call, called again until
+  `done`) delete objects. **Deletes are permanent**: there is no trash and no
+  undo. Tracks leave the library at the scan that follows the change;
+  playlists leave at once. Each answer that deleted something carries
+  `scan`: `{"scheduledAt": "<ISO 8601>", "afterCurrentPass": false}`,
+  `{"scheduledAt": null, "afterCurrentPass": true}` (a pass follows the one
+  running), `{"scheduledAt": null, "afterCurrentPass": false}` (the pass in
+  flight already covers the change), or `null` when the scan
+  driver could not be told (the next cron pass indexes the change). A
+  delete-folder call that found nothing left to delete answers
+  `{"deleted": 0, "done": true}`, with no `scan`.
+
+**Preview is read-only for files.** The preview environment binds the
+production bucket, so `wrangler.jsonc` sets the var `FILE_WRITES = "off"` in
+`env.preview.vars`. With it, every Files route that writes answers
+`403 {"error":"file_writes_disabled"}`, and `GET /api/files/config` reports
+`"writes": {"enabled": false}`, so the console hides its write controls.
+Production leaves `FILE_WRITES` unset. The value is read ignoring case and
+surrounding spaces (`OFF` and ` off ` are off too); any other value, or none,
+leaves writes on.
+
 ## Console users and Subsonic users
 
 The console has users of its own, **console users**, which are separate from

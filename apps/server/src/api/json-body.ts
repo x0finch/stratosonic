@@ -27,8 +27,25 @@ export const MAX_JSON_BODY_BYTES = 16 * 1024;
  */
 export const limitJsonBody = bodyLimit({
   maxSize: MAX_JSON_BODY_BYTES,
-  onError: (c) => c.json({ error: "payload_too_large" }, 413),
+  onError: payloadTooLarge,
 });
+
+/**
+ * The largest body of `POST /api/files/delete` (#83, "Permissions"): its 250
+ * keys of up to 1,024 bytes each are 250 KiB, and JSON may escape a key's
+ * characters, so twice that leaves room. Still nothing to parse.
+ */
+export const MAX_FILE_DELETE_BODY_BYTES = 512 * 1024;
+
+/** `limitJsonBody` for that one route, with the same answer. */
+export const limitFileDeleteBody = bodyLimit({
+  maxSize: MAX_FILE_DELETE_BODY_BYTES,
+  onError: payloadTooLarge,
+});
+
+function payloadTooLarge(c: Context) {
+  return c.json({ error: "payload_too_large" }, 413);
+}
 
 /**
  * The request's body as a JSON object, or `null` when it is not one: not

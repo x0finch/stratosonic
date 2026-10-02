@@ -138,17 +138,28 @@ export async function erasePlaylist(
 export const R2_DELETE_KEYS_PER_CALL = 1000;
 
 /**
- * Removes many playlists' files, in one R2 binding call per thousand keys,
- * and none for no key. The rows are the caller's to delete afterwards, in
- * the order `erasePlaylist` keeps and for its reason: a crash in between
- * leaves rows whose files have gone, which the next sweep removes, never a
- * file that the next pass would bring back as a playlist.
+ * Removes many objects, in one R2 binding call per thousand keys, and none
+ * for no key. Deleting a key that is not there is not an error, and
+ * `DeleteObject` is a free R2 operation. The keys are used exactly as given:
+ * they name what a listing returned (files/keys.ts).
  *
  * A binding call counts against the Worker's 1,000 internal subrequests, not
- * its 50 external ones. A call R2 fails throws, and the rows stay.
+ * its 50 external ones. A call R2 fails throws; the keys of the calls before
+ * it are gone.
  */
-export async function erasePlaylistFiles(env: Env, r2Keys: readonly string[]): Promise<void> {
+export async function eraseObjects(env: Env, r2Keys: readonly string[]): Promise<void> {
   for (let start = 0; start < r2Keys.length; start += R2_DELETE_KEYS_PER_CALL) {
     await env.MUSIC.delete(r2Keys.slice(start, start + R2_DELETE_KEYS_PER_CALL));
   }
+}
+
+/**
+ * Removes many playlists' files (`eraseObjects`). The rows are the caller's
+ * to delete afterwards, in the order `erasePlaylist` keeps and for its
+ * reason: a crash in between leaves rows whose files have gone, which the
+ * next sweep removes, never a file that the next pass would bring back as a
+ * playlist. A call R2 fails throws, and the rows stay.
+ */
+export function erasePlaylistFiles(env: Env, r2Keys: readonly string[]): Promise<void> {
+  return eraseObjects(env, r2Keys);
 }

@@ -30,6 +30,13 @@ const IMAGE_EXTENSIONS: Readonly<Record<string, string>> = {
 };
 
 /**
+ * The extensions a cover is stored with, each once: the image types the
+ * console accepts as uploads are built from them (files/keys.ts), so the two
+ * cannot drift.
+ */
+export const IMAGE_SUFFIXES: readonly string[] = [...new Set(Object.values(IMAGE_EXTENSIONS))];
+
+/**
  * What to call the file holding an image of this type.
  *
  * An unlisted `image/...` type keeps its own subtype as the extension rather

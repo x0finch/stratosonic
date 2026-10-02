@@ -80,6 +80,9 @@
   // the first Subsonic user, an admin, on first run. They still work in this
   // release, beside the console, which creates Subsonic users too, but they
   // keep a password in the secrets and never make a console user.
+  //
+  // `FILE_WRITES` is a var production leaves unset: `"off"` makes the
+  // console's Files page read-only, as `env.preview` sets it (below).
   "vars": {
     "INITIAL_USER": "admin"
   },
@@ -127,9 +130,14 @@
           "new_sqlite_classes": ["ScanDriver"]
         }
       ],
-      // Deprecated, as at the top level: the first Subsonic user only.
+      // `INITIAL_USER` is deprecated, as at the top level: the first Subsonic
+      // user only. `FILE_WRITES = "off"` makes preview read-only for files
+      // (#83, owner decision 2): preview binds the production bucket below,
+      // so its console may browse the bucket but never delete or upload, and
+      // the write routes under `/api/files` answer 403 file_writes_disabled.
       "vars": {
-        "INITIAL_USER": "admin"
+        "INITIAL_USER": "admin",
+        "FILE_WRITES": "off"
       },
       "d1_databases": [
         {
