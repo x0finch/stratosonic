@@ -4,10 +4,7 @@ import { ErrorAlert } from "@/components/error-alert";
 import { Section } from "@/components/section";
 import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress";
 import type { ConfiguredUsage, UsageFigure } from "@/lib/api";
-import { formatBytes, formatCount, formatPercent, formatRelative } from "@/lib/format";
-
-/** What the panel writes for a figure Cloudflare's answer did not carry. */
-const MISSING = "—";
+import { formatBytes, formatCount, formatPercent, formatRelative, MISSING } from "@/lib/format";
 
 const wholeCount = (value: number) => formatCount(Math.round(value));
 

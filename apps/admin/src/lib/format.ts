@@ -3,6 +3,9 @@
  * of the console is, with the browser's time zone for dates.
  */
 
+/** What the console writes for a value it does not have: one em dash. */
+export const MISSING = "—";
+
 const COUNT = new Intl.NumberFormat("en");
 
 /** A count, grouped: `5,012`. */
@@ -31,7 +34,10 @@ export function formatDuration(seconds: number): string {
   return `${total} s`;
 }
 
-/** A track position or length as a player shows it: `4:01`, `1:02:03`. */
+/**
+ * A track position or length as a player shows it: `4:01`, `1:02:03`. A
+ * position is floored, so the clock never runs ahead of the track.
+ */
 export function formatClock(milliseconds: number): string {
   const total = Math.max(Math.floor(milliseconds / 1_000), 0);
   const hours = Math.floor(total / 3_600);
@@ -40,6 +46,15 @@ export function formatClock(milliseconds: number): string {
   return hours > 0
     ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}`
     : `${minutes}:${seconds}`;
+}
+
+/**
+ * A length in seconds as a music app lists it, the same in every row:
+ * `4:01`, then `1:02:03` once it reaches an hour. The humane units of
+ * `formatDuration` are for a single total, such as the library's.
+ */
+export function formatLength(seconds: number): string {
+  return formatClock(Math.max(Math.round(seconds), 0) * 1_000);
 }
 
 const BYTE_UNITS = ["B", "kB", "MB", "GB", "TB", "PB"];
@@ -62,7 +77,7 @@ export function formatBytes(bytes: number): string {
 /** A share of a limit, as a whole percentage, or with a decimal below 10 %. */
 export function formatPercent(value: number, limit: number): string {
   if (limit <= 0) {
-    return "–";
+    return MISSING;
   }
   const percent = (value / limit) * 100;
   return `${percent < 10 ? percent.toFixed(1) : Math.round(percent)}%`;

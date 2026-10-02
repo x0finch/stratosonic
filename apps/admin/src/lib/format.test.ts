@@ -5,8 +5,10 @@ import {
   formatClock,
   formatCount,
   formatDuration,
+  formatLength,
   formatPercent,
   formatRelative,
+  MISSING,
 } from "@/lib/format";
 
 describe("the Overview's numbers", () => {
@@ -31,6 +33,18 @@ describe("the Overview's numbers", () => {
     expect(formatClock(0)).toBe("0:00");
   });
 
+  it("writes a length in one clock format, whatever its size", () => {
+    expect(formatLength(28)).toBe("0:28");
+    expect(formatLength(59.6)).toBe("1:00");
+    expect(formatLength(241.3)).toBe("4:01");
+    expect(formatLength(3_599)).toBe("59:59");
+    expect(formatLength(3_600)).toBe("1:00:00");
+    expect(formatLength(3_723)).toBe("1:02:03");
+    expect(formatLength(36_000)).toBe("10:00:00");
+    expect(formatLength(0)).toBe("0:00");
+    expect(formatLength(-5)).toBe("0:00");
+  });
+
   it("writes sizes in decimal units", () => {
     expect(formatBytes(98_765_432_100)).toBe("98.8 GB");
     expect(formatBytes(10_000_000_000)).toBe("10.0 GB");
@@ -41,7 +55,8 @@ describe("the Overview's numbers", () => {
   it("writes a share of a limit", () => {
     expect(formatPercent(1_234, 100_000)).toBe("1.2%");
     expect(formatPercent(52_345, 100_000)).toBe("52%");
-    expect(formatPercent(1, 0)).toBe("–");
+    expect(formatPercent(1, 0)).toBe(MISSING);
+    expect(MISSING).toBe("\u2014");
   });
 
   it("says how long ago", () => {

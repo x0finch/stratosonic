@@ -10,7 +10,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { RecentAlbum } from "@/lib/api";
-import { formatCount, formatDateTime, formatRelative } from "@/lib/format";
+import { formatCount, formatDateTime, formatRelative, MISSING } from "@/lib/format";
 
 /**
  * The twelve albums added last, newest first, as `getAlbumList2?type=newest`
@@ -51,7 +51,7 @@ export function RecentAlbums({ albums, now }: { albums: RecentAlbum[] | undefine
                   </div>
                 </TableCell>
                 <TableCell className="hidden text-right align-top tabular-nums md:table-cell">
-                  {album.year ?? "–"}
+                  {album.year ?? MISSING}
                 </TableCell>
                 <TableCell className="hidden text-right align-top tabular-nums sm:table-cell">
                   {formatCount(album.songCount)}

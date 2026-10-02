@@ -11,7 +11,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { PlaylistSummary } from "@/lib/api";
-import { formatCount, formatDateTime, formatDuration, formatRelative } from "@/lib/format";
+import { formatCount, formatDateTime, formatLength, formatRelative } from "@/lib/format";
 
 /**
  * Every playlist, by name, with the Subsonic user it belongs to and its
@@ -73,7 +73,7 @@ export function PlaylistsTable({
                   {formatCount(playlist.songCount)}
                 </TableCell>
                 <TableCell className="hidden text-right tabular-nums sm:table-cell">
-                  {formatDuration(playlist.durationSec)}
+                  {formatLength(playlist.durationSec)}
                 </TableCell>
                 <TableCell
                   className="hidden text-muted-foreground md:table-cell"
