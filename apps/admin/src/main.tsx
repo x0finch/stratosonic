@@ -7,27 +7,24 @@ import "./index.css";
 import { ThemeProvider } from "@/components/theme-provider.tsx";
 import { Toaster } from "@/components/ui/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { ApiError, meQuery, retryUnlessRefused } from "@/lib/api";
+import { retryUnlessRefused } from "@/lib/api";
+import { signOutWhenUnauthenticated } from "@/lib/sign-out";
 import { routeTree } from "./routeTree.gen";
 
 /**
- * A call the server refused for want of a session (it was revoked, or ran
- * out) signs the console out: the shell then shows the sign-in screen,
- * which returns to the same page (routes/_shell.tsx). That holds for a
- * write and for a read alike, such as the Overview's polls, which would
- * otherwise keep asking. `/api/me` itself answers no session as `null`,
- * not as an error.
+ * A call the server refused for want of a session signs the console out
+ * (lib/sign-out.ts). That holds for a write and for a read alike, such as
+ * the Overview's polls, which would otherwise keep asking. `/api/me` itself
+ * answers no session as `null`, not as an error.
  */
-function signOutWhenUnauthenticated(error: unknown): void {
-  if (error instanceof ApiError && error.code === "unauthenticated") {
-    queryClient.setQueryData(meQuery.queryKey, null);
-  }
+function onError(error: unknown): void {
+  signOutWhenUnauthenticated(queryClient, error);
 }
 
 const queryClient: QueryClient = new QueryClient({
   defaultOptions: { queries: { retry: retryUnlessRefused } },
-  queryCache: new QueryCache({ onError: signOutWhenUnauthenticated }),
-  mutationCache: new MutationCache({ onError: signOutWhenUnauthenticated }),
+  queryCache: new QueryCache({ onError }),
+  mutationCache: new MutationCache({ onError }),
 });
 
 const router = createRouter({ routeTree, context: { queryClient } });

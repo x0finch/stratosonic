@@ -28,6 +28,7 @@ import {
   type WriteSchedule,
 } from "@/lib/files";
 import { formatCount } from "@/lib/format";
+import { signOutWhenUnauthenticated } from "@/lib/sign-out";
 import { toastError, toastSuccess } from "@/lib/toasts";
 
 /**
@@ -78,6 +79,9 @@ export function DeleteDialog({
     },
     onSuccess: (outcome) => {
       const deleted = deletedCount(outcome);
+      // A session that ended part way signs the console out, as any refused
+      // call does (main.tsx): this failure is settled here, not thrown.
+      signOutWhenUnauthenticated(queryClient, outcome.error);
       if (outcome.error === undefined) {
         toastSuccess(deletedTitle(outcome), "Tracks leave the library at the next scan.");
       } else {
