@@ -834,7 +834,10 @@ async function main() {
         );
         const scanSection = page.getByRole("region", { name: "Library scan" });
         // The playlists phase names itself twice (description and progress label).
-        await scanSection.getByText(/A scan is running|Importing playlists/).first().waitFor();
+        await scanSection
+          .getByText(/A scan is running|Importing playlists/)
+          .first()
+          .waitFor();
         await shot(page, "overview-scanning");
 
         // The live route is read every 10 s during a pass, and the read that
