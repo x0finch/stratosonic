@@ -8,12 +8,14 @@ const TICK_MS = 5_000;
 /**
  * The scan line (#83, "Layout", item 2): while a pass is scheduled or
  * running, a badge for its state and one muted sentence, such as "Library
- * scan in about 2 minutes.". The region is always there, empty and so hidden
- * otherwise, so that a screen reader hears the line when it appears.
+ * scan in about 2 minutes.". The region is always there, and stays in the
+ * accessibility tree while empty (`sr-only`, not `hidden`, which would take
+ * it out and so lose the first announcement), taking no room on the page,
+ * so that a screen reader hears the line when it appears.
  */
 export function ScanLine({ view }: { view: ScanView | undefined }) {
   return (
-    <div aria-live="polite" className="empty:hidden">
+    <div aria-live="polite" className="empty:sr-only">
       {view === undefined ? null : <ScanLineText view={view} />}
     </div>
   );
