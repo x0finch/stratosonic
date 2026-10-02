@@ -20,6 +20,9 @@ and never written to `wrangler.jsonc`. For `wrangler dev`, copy
   run, described below. It does nothing else.
 - `CF_ANALYTICS_TOKEN` and `CF_ACCOUNT_ID` (optional): the console's
   free-tier usage panel, described below. Without both, the panel is hidden.
+- `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` (optional): an R2 API token
+  for the console's file uploads, described below. Uploads also need
+  `CF_ACCOUNT_ID` and the `R2_BUCKET_NAME` var.
 
 ## Usage panel (optional)
 
@@ -80,6 +83,126 @@ production bucket, so `wrangler.jsonc` sets the var `FILE_WRITES = "off"` in
 `"writes": {"enabled": false}`, so the console hides its write controls.
 Production leaves `FILE_WRITES` unset; any value other than `off` leaves
 writes on.
+
+## File uploads (optional)
+
+The Files page can also upload files. The browser sends each file straight
+to the bucket's S3 endpoint, `https://<CF_ACCOUNT_ID>.r2.cloudflarestorage.com`,
+with a `PUT` URL the Worker presigns, so the bytes never pass through the
+Worker. Signing needs an R2 API token. Without one, the console hides the
+upload controls. Browsing and deleting still work.
+
+### 1. Create the token
+
+1. In the Cloudflare dashboard, open **R2 object storage**, then
+   **Manage** next to **API Tokens** under **Account Details**.
+2. Choose **Create Account API token**. A user token works too, but it stops
+   working if your user leaves the account.
+3. Under **Permissions**, choose **Object Read & Write**. Under the bucket
+   scope, choose **Apply to specific buckets only** and pick the one bucket
+   the Worker binds (`navidrome`). Nothing else is needed.
+4. Create it, and copy the **Access Key ID** and the **Secret Access Key**.
+   The dashboard shows the secret only once.
+
+### 2. Set the secrets
+
+```sh
+wrangler secret put R2_ACCESS_KEY_ID
+wrangler secret put R2_SECRET_ACCESS_KEY
+```
+
+Uploads also need two values the Worker already has. `CF_ACCOUNT_ID` is the
+usage panel's secret, and the S3 endpoint is built from it, so set it as
+described there if it is not set yet. `R2_BUCKET_NAME` is a var in
+`wrangler.jsonc`, `navidrome`. It must equal `r2_buckets[].bucket_name`,
+because the binding does not expose the bucket's name.
+
+Uploads are configured only when all four values are set. Otherwise
+`GET /api/files/config` answers `"uploads": {"configured": false,
+"missing": [...]}`, which names the values that are missing and never their
+contents, and `POST /api/files/uploads` answers
+`503 {"error":"uploads_not_configured"}`. If the token is set but something
+else is missing, the Worker logs a warning once per isolate.
+
+Do not set the token on the preview environment. Preview binds the
+production bucket and has `FILE_WRITES = "off"`, so its upload routes answer
+`403 file_writes_disabled` with or without the token.
+
+The secret key stays on the server: it is in no URL, response or log line.
+The Access Key ID appears in each presigned URL (`X-Amz-Credential`), as
+SigV4 requires. It names the key but does not grant access.
+
+### 3. Allow the console's origin in the bucket's CORS
+
+The browser `PUT`s to another origin, so the bucket needs a CORS rule. A
+presigned URL is valid either way, but the browser blocks the upload without
+one. Copy `r2-cors.example.json` to `r2-cors.json` (git-ignored). Set the
+origin to the console's exact origin: the scheme and host, with no trailing
+slash, no wildcard, and no `localhost` on the production bucket. Then apply
+the rule from this directory and check it:
+
+```sh
+pnpm exec wrangler r2 bucket cors set navidrome --file r2-cors.json
+pnpm exec wrangler r2 bucket cors list navidrome
+```
+
+- `cors set` **replaces** the bucket's whole CORS configuration. If the
+  bucket already has rules, add them to the file first.
+- Only `PUT` is allowed. Browsing and deleting go through the Worker's
+  binding, not the S3 endpoint.
+- `content-type` and `if-none-match` are the only headers the console sends.
+  The browser sets `Content-Length` itself, and that header never appears in
+  a preflight.
+- `ETag` is exposed, so the console can show that R2 accepted the object.
+- `maxAgeSeconds: 3600` lets the browser reuse one preflight for an hour of
+  uploads instead of sending an `OPTIONS` for each file.
+- A new rule can take up to 30 seconds to apply.
+
+**Custom domains.** Presigned URLs work only on
+`<account>.r2.cloudflarestorage.com`, never on a custom domain connected to
+the bucket, so that is the host the URLs use. The console's own origin
+matters only in the CORS rule. If the console moves to a custom domain
+(away from `workers.dev`), update the rule's origin and run `cors set`
+again.
+
+### What a URL allows
+
+Each URL is a bearer token for one `PUT`, bound to:
+
+- the key;
+- the file's exact size (a signed `Content-Length`);
+- the content type, which comes from the file's suffix;
+- `If-None-Match: *`, unless the owner chose **Replace**, so the URL cannot
+  overwrite an existing file (R2 answers `412`);
+- five minutes (`X-Amz-Expires=300`), checked when the upload starts, so a
+  long upload is not cut off.
+
+An expired URL fails with `403` and no CORS headers, so the browser sees a
+network error. The console signs just before each upload and signs again if
+needed. After a successful `PUT`, the console reports the file
+(`POST /api/files/uploads/complete`), and the debounced scan picks it up. A
+report that never arrives is covered by the next cron pass.
+
+### Rotating the token
+
+The token is a long-lived write credential for the whole bucket. Rotate it
+if it may have leaked, or on whatever schedule you keep:
+
+1. Create a new token, as in step 1.
+2. Set both values: `wrangler secret put R2_ACCESS_KEY_ID`, then
+   `wrangler secret put R2_SECRET_ACCESS_KEY`. Each `secret put` makes a new
+   version live, so no code deploy is needed. The Worker signs with the new
+   token from its next request.
+3. Delete the old token in the dashboard. URLs signed with it stop working,
+   and none lives longer than five minutes anyway.
+
+### `rclone sync` deletes console uploads
+
+A file uploaded from the console exists only in the bucket. A later
+`rclone sync <local> r2:navidrome` from a tree that lacks it **deletes it**,
+just as ADR-0006 warns for client-made playlists. Use `rclone copy`, which
+never deletes, or first bring the bucket's files down
+(`rclone copy r2:navidrome <local>`) and sync only from a tree that has them.
 
 ## Console users and Subsonic users
 
@@ -234,5 +357,6 @@ Run from the repository root with `pnpm --filter @stratosonic/server <script>`:
 - `dev` builds the console and starts `wrangler dev`.
 - `test` runs the Workers-pool tests, then the routing tests.
 - `typecheck` regenerates the binding types and type-checks.
-- `bench:console-auth` and `bench:startup` measure the console's CPU and the
-  Worker's startup cost; see the scripts for how to read them.
+- `bench:console-auth`, `bench:file-uploads` and `bench:startup` measure the
+  CPU of the console's auth and upload routes and the Worker's startup cost;
+  see the scripts for how to read them.
