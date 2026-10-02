@@ -347,6 +347,18 @@ describe("POST /api/files/uploads", () => {
     ]);
   });
 
+  it("refuses a key with a lone surrogate as invalid_path, and still signs the other", async () => {
+    const { status, uploads } = await sign([
+      { key: "Artist/01 \ud800.flac", size: 10 },
+      { key: "Artist/02 Fine.flac", size: 10 },
+    ]);
+
+    expect(status).toBe(200);
+    expect(uploads[0]).toMatchObject({ error: "invalid_path" });
+    expect(signed(uploads[1]).key).toBe("Artist/02 Fine.flac");
+    expect(harness.r2Calls).toEqual([{ method: "head", argument: "Artist/02 Fine.flac" }]);
+  });
+
   it("refuses every malformed key with invalid_path or path_too_long, and heads none", async () => {
     const { status, uploads } = await sign([
       { key: "/absolute.flac", size: 10 },
@@ -686,6 +698,7 @@ describe("POST /api/files/uploads/complete", () => {
     ["a key that is not a string", { keys: ["A/b.flac", 7] }],
     ["a key no upload could write", { keys: ["A/b.flac", "A/notes.pdf"] }],
     ["a hidden key", { keys: [".hidden/b.flac"] }],
+    ["a key with a lone surrogate", { keys: ["A/b \ud800.flac"] }],
     ["an empty key", { keys: [""] }],
     ["a body that is not an object", ["A/b.flac"]],
   ])("answers 400 invalid_request to %s, touching nothing", async (_, body) => {

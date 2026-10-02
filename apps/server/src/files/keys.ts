@@ -154,15 +154,20 @@ function isAcceptableSegment(segment: string): boolean {
  * Checks a key a new upload would take, after normalising it to NFC, and
  * answers it with its kind and content type, or why it is refused:
  *
- * - `invalid_path`: empty, absolute (a leading `/`), a folder (a trailing
- *   `/`), an empty segment (`a//b`), a `.` or `..` segment, a segment that
- *   starts with a dot, a control character or a backslash;
+ * - `invalid_path`: not well-formed UTF-16 (a lone surrogate, which no
+ *   UTF-8 key can hold and which no URL can encode), empty, absolute (a
+ *   leading `/`), a folder (a trailing `/`), an empty segment (`a//b`), a
+ *   `.` or `..` segment, a segment that starts with a dot, a control
+ *   character or a backslash;
  * - `path_too_long`: over `MAX_KEY_BYTES`, or a segment over
  *   `MAX_SEGMENT_BYTES`, in bytes of UTF-8;
  * - `reserved_path`: under `_covers/`;
  * - `type_not_allowed`: a suffix outside the allow-list.
  */
 export function checkUploadKey(raw: string): UploadKey | { readonly error: PathRefusal } {
+  if (!isWellFormed(raw)) {
+    return { error: "invalid_path" };
+  }
   const key = raw.normalize("NFC");
   const segments = key.split("/");
   if (!segments.every(isAcceptableSegment)) {
@@ -185,6 +190,37 @@ export function checkUploadKey(raw: string): UploadKey | { readonly error: PathR
   }
 
   return { key, kind, suffix, contentType: contentTypeOf(kind, suffix) };
+}
+
+/**
+ * Whether a string is well-formed UTF-16: no lone surrogate.
+ * `String.prototype.isWellFormed` (ES2024) is in workerd and Node 22, but
+ * not in this project's ES2022 lib, hence the cast.
+ */
+function isWellFormed(value: string): boolean {
+  return (value as string & { isWellFormed(): boolean }).isWellFormed();
+}
+
+/**
+ * The leading part of a key that its Unicode spellings share: the code
+ * points its NFC and NFD forms have in common, from the start. A spelling
+ * that mixes composed and decomposed characters (a folder named on macOS, in
+ * NFD, and a file named elsewhere, in NFC) starts with it too, since a code
+ * point both forms leave alike there neither composes with what follows nor
+ * decomposes. So a listing under it finds the object whichever of those
+ * spellings it is stored under. The exception is a character with a
+ * singleton decomposition (KELVIN SIGN for `K`, OHM SIGN for `Ω`), which
+ * NFC and NFD both replace; a caller falls back for it.
+ */
+export function spellingInvariantPrefix(key: string): string {
+  const nfc = Array.from(key.normalize("NFC"));
+  const nfd = Array.from(key.normalize("NFD"));
+  let length = 0;
+  while (length < nfc.length && length < nfd.length && nfc[length] === nfd[length]) {
+    length++;
+  }
+
+  return nfc.slice(0, length).join("");
 }
 
 /** Why an upload's size is refused, or null when its kind takes it. */

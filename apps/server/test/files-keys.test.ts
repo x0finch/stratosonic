@@ -9,6 +9,7 @@ import {
   kindOf,
   MAX_KEY_BYTES,
   MAX_SEGMENT_BYTES,
+  spellingInvariantPrefix,
 } from "../src/files/keys";
 import { AUDIO_CONTENT_TYPES, AUDIO_SUFFIXES } from "../src/library/audio-formats";
 import { MAX_SIDECAR_BYTES, SIDECAR_SUFFIXES } from "../src/lyrics/sidecar";
@@ -55,6 +56,8 @@ describe("a new upload key", () => {
     ["a hidden file", "Artist/.DS_Store"],
     ["an AppleDouble file", "Artist/._01.flac"],
     ["a hidden folder", "Artist/.hidden/01.flac"],
+    ["a lone high surrogate", "Artist/01 \ud800.flac"],
+    ["a lone low surrogate", "Artist/\udc00/01.flac"],
   ])("refuses %s as invalid_path", (_, key) => {
     expect(checkUploadKey(key)).toEqual({ error: "invalid_path" });
   });
@@ -191,5 +194,39 @@ describe("a folder's prefix", () => {
   it("is taken as given, not normalised", () => {
     // A NFD prefix from a listing is a valid prefix as it stands.
     expect(checkBrowsePrefix("Björk/")).toBeNull();
+  });
+});
+
+describe("the part every spelling of a key shares", () => {
+  it.each([
+    [
+      "an ASCII key, which has one spelling",
+      "Artist/Album/01 Title.flac",
+      "Artist/Album/01 Title.flac",
+    ],
+    [
+      "a key with CJK only, which NFC and NFD leave alike",
+      "坂本龍一/音楽図鑑/01.flac",
+      "坂本龍一/音楽図鑑/01.flac",
+    ],
+    ["a composed folder name", "Bj\u00f6rk/Homogenic/01.flac", "Bj"],
+    ["a decomposed folder name", "Bjo\u0308rk/Homogenic/01.flac", "Bj"],
+    ["a composed file name", "Sigur Ros/()/01 Vaka \u00e9.flac", "Sigur Ros/()/01 Vaka "],
+    ["an emoji, a pair of surrogates kept whole", "🎵/Bj\u00f6rk.flac", "🎵/Bj"],
+  ])("is the whole of it, or up to the first difference: %s", (_, key, prefix) => {
+    expect(spellingInvariantPrefix(key)).toBe(prefix);
+  });
+
+  it("starts every spelling, composed, decomposed or mixed", () => {
+    const nfc = "Bj\u00f6rk/J\u00f3ga/01.flac";
+    const nfd = nfc.normalize("NFD");
+    const mixed = "Bjo\u0308rk/J\u00f3ga/01.flac";
+    const prefix = spellingInvariantPrefix(nfc);
+
+    for (const spelling of [nfc, nfd, mixed]) {
+      expect(spelling.normalize("NFC")).toBe(nfc);
+      expect(spelling.startsWith(prefix)).toBe(true);
+      expect(spellingInvariantPrefix(spelling)).toBe(prefix);
+    }
   });
 });
