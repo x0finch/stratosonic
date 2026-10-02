@@ -4,6 +4,7 @@ import { InfoIcon, PlusIcon, UsersIcon } from "lucide-react";
 import { useState } from "react";
 
 import { ErrorAlert } from "@/components/error-alert";
+import { Section } from "@/components/section";
 import { CreateUserDialog } from "@/components/subsonic-users/create-user-dialog";
 import { DeleteUserDialog } from "@/components/subsonic-users/delete-user-dialog";
 import { EditUserDialog } from "@/components/subsonic-users/edit-user-dialog";
@@ -11,14 +12,6 @@ import { SetPasswordDialog } from "@/components/subsonic-users/set-password-dial
 import { type UserAction, UsersTable } from "@/components/subsonic-users/users-table";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import {
   Empty,
   EmptyDescription,
@@ -80,51 +73,46 @@ function SubsonicUsers() {
 
   return (
     <>
-      <Card>
-        <CardHeader>
-          <CardTitle>Subsonic users</CardTitle>
-          <CardDescription>
-            The accounts Subsonic clients, such as Substreamer, sign in with. They never sign in to
-            this console.
-          </CardDescription>
-          {writable && users.isSuccess && (
-            <CardAction>
-              <Button onClick={() => openFor("create", null)}>
-                <PlusIcon />
-                Add user
-              </Button>
-            </CardAction>
-          )}
-        </CardHeader>
-        <CardContent>
-          {users.isPending ? (
-            <div className="flex flex-col gap-2" aria-busy="true">
-              <span className="sr-only">Loading the Subsonic users…</span>
-              <Skeleton className="h-8 w-full" />
-              <Skeleton className="h-8 w-full" />
-              <Skeleton className="h-8 w-full" />
-            </div>
-          ) : users.isError ? (
-            <ErrorAlert error={users.error} />
-          ) : list.length === 0 ? (
-            <Empty>
-              <EmptyHeader>
-                <EmptyMedia variant="icon">
-                  <UsersIcon />
-                </EmptyMedia>
-                <EmptyTitle>No Subsonic users yet</EmptyTitle>
-                <EmptyDescription>
-                  {writable
-                    ? "Add the first one to sign in from a Subsonic client. It will be a Subsonic admin, as library scans and the playlist import need one."
-                    : "No Subsonic client can sign in yet. Adding Subsonic users needs a role that can manage them."}
-                </EmptyDescription>
-              </EmptyHeader>
-            </Empty>
-          ) : (
-            <UsersTable users={list} onAction={writable ? openFor : undefined} />
-          )}
-        </CardContent>
-      </Card>
+      {/* The Tasks example's layout: a header row, and the table beneath it. */}
+      <Section
+        title="Subsonic users"
+        description="The accounts Subsonic clients, such as Substreamer, sign in with. They never sign in to this console."
+        action={
+          writable && users.isSuccess ? (
+            <Button onClick={() => openFor("create", null)}>
+              <PlusIcon />
+              Add user
+            </Button>
+          ) : null
+        }
+      >
+        {users.isPending ? (
+          <div className="flex flex-col gap-2" aria-busy="true">
+            <span className="sr-only">Loading the Subsonic users…</span>
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-full" />
+          </div>
+        ) : users.isError ? (
+          <ErrorAlert error={users.error} />
+        ) : list.length === 0 ? (
+          <Empty>
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <UsersIcon />
+              </EmptyMedia>
+              <EmptyTitle>No Subsonic users yet</EmptyTitle>
+              <EmptyDescription>
+                {writable
+                  ? "Add the first one to sign in from a Subsonic client. It will be a Subsonic admin, as library scans and the playlist import need one."
+                  : "No Subsonic client can sign in yet. Adding Subsonic users needs a role that can manage them."}
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : (
+          <UsersTable users={list} onAction={writable ? openFor : undefined} />
+        )}
+      </Section>
       {writable && (
         <>
           <CreateUserDialog

@@ -629,7 +629,8 @@ async function main() {
     await step("Subsonic users: add a user, and ping with it", async () => {
       await page.getByRole("link", { name: "Users" }).click();
       await page.waitForURL((url) => url.pathname === "/users");
-      await page.getByRole("heading", { name: "Subsonic users" }).waitFor();
+      // The page's h1; its one section's h2 has the same name.
+      await page.getByRole("heading", { level: 1, name: "Subsonic users" }).waitFor();
       const before = await listSubsonicUsers(page);
       check(
         !before.some((user) => user.username.startsWith("walkthrough-")),
@@ -831,14 +832,18 @@ async function main() {
           page,
           outcome === "started" ? "Scan started" : "A scan is already running",
         );
-        const card = page.locator('[data-slot="card"]').filter({ hasText: "Library scan" });
-        await card.getByText(/A scan is running|Importing playlists/).waitFor();
+        const scanSection = page.getByRole("region", { name: "Library scan" });
+        // The playlists phase names itself twice (description and progress label).
+        await scanSection
+          .getByText(/A scan is running|Importing playlists/)
+          .first()
+          .waitFor();
         await shot(page, "overview-scanning");
 
         // The live route is read every 10 s during a pass, and the read that
         // finds it over reads the library again. A fixture library passes in
         // seconds.
-        await card.getByText(/Last scan finished/).waitFor({ timeout: SCAN_TIMEOUT_MS });
+        await scanSection.getByText(/Last scan finished/).waitFor({ timeout: SCAN_TIMEOUT_MS });
         const readAgain = () => {
           const ended = reads.findIndex(
             (read, index) =>

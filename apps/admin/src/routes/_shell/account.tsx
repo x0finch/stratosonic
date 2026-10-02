@@ -21,7 +21,7 @@ function Account() {
 
   // A page of one form: the form keeps its own width, centered on both axes
   // in the shell's column, as the overview's empty state is (#113). Auto
-  // margins, not justify-center: a card taller than the column then starts
+  // margins, not justify-center: a form taller than the column then starts
   // at its top, and the inset scrolls to its bottom, instead of losing its top.
   return (
     <div className="m-auto w-full max-w-md">

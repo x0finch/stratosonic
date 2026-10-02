@@ -88,6 +88,13 @@ the sign-in, setup and account forms (`login-form.tsx`, `setup-form.tsx`,
 from the `login-01` block; and `mode-toggle.tsx` is the one from shadcn/ui's
 Vite dark-mode guide.
 
+The inset is the page's card already, so nothing inside the shell is a
+`Card` (#125): each block of a page is a section (`src/components/section.tsx`),
+an h2 under the header's h1 with a one-line description, as in shadcn/ui's
+Tasks and Settings examples, and the Overview's rows are divided by a
+`Separator`. Only the full-screen sign-in, setup and error screens, on the
+plain page background, keep the `login-01` block's card.
+
 ## Signing in
 
 The console signs in **console users**, its own accounts, which are separate

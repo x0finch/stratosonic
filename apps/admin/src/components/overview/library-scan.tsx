@@ -1,16 +1,9 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ScanSearchIcon } from "lucide-react";
 
+import { Section } from "@/components/section";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
@@ -28,7 +21,7 @@ import { toastError, toastSuccess } from "@/lib/toasts";
  * pass, between the poke and the first step, and while playlists import,
  * it is indeterminate, with a spinner beside its label.
  */
-export function ScanCard({
+export function LibraryScan({
   scan,
   canScan,
   now,
@@ -38,40 +31,31 @@ export function ScanCard({
   now: number;
 }) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Library scan</CardTitle>
-        <CardDescription>
-          {scan ? describeScan(scan, now) : "Reading the scan's state…"}
-        </CardDescription>
-        {canScan ? (
-          <CardAction>
-            <ScanNowButton />
-          </CardAction>
-        ) : null}
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        {scan === undefined ? (
-          <Skeleton className="h-16 w-full" />
-        ) : (
-          <>
-            {scan.running ? <ScanProgress scan={scan} /> : null}
-            <LastPass scan={scan} canScan={canScan} now={now} />
-          </>
-        )}
-      </CardContent>
-    </Card>
+    <Section
+      title="Library scan"
+      description={scan ? describeScan(scan, now) : "Reading the scan's state…"}
+      action={canScan ? <ScanNowButton /> : null}
+    >
+      {scan === undefined ? (
+        <Skeleton className="h-16 w-full" />
+      ) : (
+        <>
+          {scan.running ? <ScanProgress scan={scan} /> : null}
+          <LastPass scan={scan} canScan={canScan} now={now} />
+        </>
+      )}
+    </Section>
   );
 }
 
 function describeScan(scan: ScanStatus, now: number): string {
   if (scan.running) {
-    return scan.phase === "playlists" ? "Importing playlists" : "A scan is running";
+    return scan.phase === "playlists" ? "Importing playlists" : "A scan is running.";
   }
   if (scan.last) {
-    return `Last scan finished ${formatRelative(scan.last.finishedAt, now)}`;
+    return `Last scan finished ${formatRelative(scan.last.finishedAt, now)}.`;
   }
-  return "No scan has finished yet";
+  return "No scan has finished yet.";
 }
 
 function ScanNowButton() {

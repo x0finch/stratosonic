@@ -1,15 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { LayoutDashboardIcon } from "lucide-react";
-import { useState } from "react";
+import { Fragment, type ReactNode, useState } from "react";
 
 import { ErrorAlert } from "@/components/error-alert";
 import { GenreChart } from "@/components/overview/genre-chart";
-import { LibraryCards } from "@/components/overview/library-cards";
+import { LibraryScan } from "@/components/overview/library-scan";
+import { LibraryTotals } from "@/components/overview/library-totals";
 import { NowPlaying } from "@/components/overview/now-playing";
 import { PlaylistsTable } from "@/components/overview/playlists-table";
 import { RecentAlbums } from "@/components/overview/recent-albums";
-import { ScanCard } from "@/components/overview/scan-card";
 import { UsagePanel } from "@/components/overview/usage-panel";
 import {
   Empty,
@@ -18,9 +18,13 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty";
+import { Separator } from "@/components/ui/separator";
 import { meQuery } from "@/lib/api";
 import { libraryQuery, liveQuery, usageQuery } from "@/lib/overview";
 import { can } from "@/lib/roles";
+
+/** A row of two sections, and their gap when one column stacks them without a separator. */
+const GRID = "grid gap-10";
 
 export const Route = createFileRoute("/_shell/")({
   component: Overview,
@@ -72,31 +76,67 @@ function Overview() {
     );
   }
 
-  return (
-    <>
-      {canReadLibrary ? (
+  // The page's sections, row by row, with a separator between each row shown
+  // and the next (#125). A row of two sections is one column on a narrow
+  // screen.
+  const rows: { key: string; shown: boolean; row: ReactNode }[] = [
+    {
+      key: "totals",
+      shown: canReadLibrary,
+      row: (
         <>
           {library.isError ? <ErrorAlert error={library.error} /> : null}
-          <LibraryCards counts={library.data?.counts} />
+          <LibraryTotals counts={library.data?.counts} />
+        </>
+      ),
+    },
+    {
+      key: "live",
+      shown: canReadLibrary,
+      row: (
+        <>
           {live.isError ? <ErrorAlert error={live.error} /> : null}
-          <div className={showNowPlaying ? "grid gap-4 lg:grid-cols-2" : "grid gap-4"}>
-            <ScanCard scan={live.data?.scan} canScan={can(me, "library:scan")} now={now} />
+          <div className={showNowPlaying ? `${GRID} lg:grid-cols-2` : GRID}>
+            <LibraryScan scan={live.data?.scan} canScan={can(me, "library:scan")} now={now} />
             {showNowPlaying ? (
               <NowPlaying entries={nowPlaying} receivedAt={live.data?.receivedAt ?? now} />
             ) : null}
           </div>
         </>
-      ) : null}
-      {showUsage ? <UsagePanel usage={configuredUsage} error={usage.error} now={now} /> : null}
-      {canReadLibrary ? (
-        <>
-          <div className="grid gap-4 xl:grid-cols-2">
-            <GenreChart genres={library.data?.genres} />
-            <RecentAlbums albums={library.data?.recentAlbums} now={now} />
-          </div>
-          <PlaylistsTable playlists={library.data?.playlists} now={now} />
-        </>
-      ) : null}
-    </>
+      ),
+    },
+    {
+      key: "usage",
+      shown: showUsage,
+      row: <UsagePanel usage={configuredUsage} error={usage.error} now={now} />,
+    },
+    {
+      key: "library",
+      shown: canReadLibrary,
+      row: (
+        <div className={`${GRID} xl:grid-cols-2`}>
+          <GenreChart genres={library.data?.genres} />
+          <RecentAlbums albums={library.data?.recentAlbums} now={now} />
+        </div>
+      ),
+    },
+    {
+      key: "playlists",
+      shown: canReadLibrary,
+      row: <PlaylistsTable playlists={library.data?.playlists} now={now} />,
+    },
+  ];
+
+  return (
+    <div className="flex flex-col gap-6">
+      {rows
+        .filter(({ shown }) => shown)
+        .map(({ key, row }, index) => (
+          <Fragment key={key}>
+            {index > 0 ? <Separator /> : null}
+            {row}
+          </Fragment>
+        ))}
+    </div>
   );
 }
