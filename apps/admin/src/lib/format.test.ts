@@ -52,6 +52,12 @@ describe("the Overview's numbers", () => {
     expect(formatBytes(123_456_789)).toBe("123 MB");
   });
 
+  it("writes a limit's size as the round number it is", () => {
+    expect(formatBytes(10_000_000_000, 0)).toBe("10 GB");
+    expect(formatBytes(8_120_000_000, 0)).toBe("8 GB");
+    expect(formatBytes(8_120_000_000, 2)).toBe("8.12 GB");
+  });
+
   it("writes a share of a limit", () => {
     expect(formatPercent(1_234, 100_000)).toBe("1.2%");
     expect(formatPercent(52_345, 100_000)).toBe("52%");
@@ -66,6 +72,17 @@ describe("the Overview's numbers", () => {
     expect(formatRelative("2026-10-01T11:55:00Z", now)).toBe("5 minutes ago");
     expect(formatRelative("2026-10-01T09:00:00Z", now)).toBe("3 hours ago");
     expect(formatRelative("2026-09-30T12:00:00Z", now)).toBe("yesterday");
+    expect(formatRelative("2026-09-01T12:00:00Z", now)).toBe("last month");
+    expect(formatRelative("2024-10-01T12:00:00Z", now)).toBe("2 years ago");
     expect(formatRelative("not a date", now)).toBe("");
+  });
+
+  it("says just now of an instant up to a few minutes ahead of this browser's clock", () => {
+    const now = Date.parse("2026-10-01T12:00:00Z");
+    expect(formatRelative("2026-10-01T12:00:03Z", now)).toBe("just now");
+    expect(formatRelative("2026-10-01T12:05:00Z", now)).toBe("just now");
+    // Further ahead is no clock skew, and is written as it is.
+    expect(formatRelative("2026-10-01T12:06:00Z", now)).toBe("in 6 minutes");
+    expect(formatRelative("2026-10-01T14:00:00Z", now)).toBe("in 2 hours");
   });
 });

@@ -79,7 +79,13 @@ export function GenreChart({ genres }: { genres: GenreCount[] | undefined }) {
             />
             <XAxis dataKey="songCount" type="number" hide />
             <ChartTooltip cursor={false} content={<ChartTooltipContent />} />
-            <Bar dataKey="songCount" fill="var(--color-songCount)" radius={4}>
+            {/* The bars render still: the console adds no motion of its own (#128). */}
+            <Bar
+              dataKey="songCount"
+              fill="var(--color-songCount)"
+              radius={4}
+              isAnimationActive={false}
+            >
               <LabelList
                 dataKey="songCount"
                 position="right"

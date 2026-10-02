@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 
 import { Section } from "@/components/section";
 import { Badge } from "@/components/ui/badge";
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { NowPlayingEntry } from "@/lib/api";
@@ -41,12 +40,9 @@ export function NowPlaying({
       {entries === undefined ? (
         <Skeleton className="h-16 w-full" />
       ) : entries.length === 0 ? (
-        <Empty className="p-4">
-          <EmptyHeader>
-            <EmptyTitle>Nobody is listening</EmptyTitle>
-            <EmptyDescription>What a Subsonic client plays shows here.</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
+        // A small section with nothing in it is one muted line (#128); the
+        // Empty is for an empty table, list or page.
+        <p className="text-sm text-muted-foreground">Nobody is listening right now.</p>
       ) : (
         <ul className="flex flex-col gap-4">
           {entries.map((entry) => (

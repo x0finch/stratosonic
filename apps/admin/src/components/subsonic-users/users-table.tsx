@@ -1,5 +1,6 @@
 import { EllipsisIcon, KeyRoundIcon, PencilIcon, Trash2Icon } from "lucide-react";
 
+import { RelativeTime } from "@/components/relative-time";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,7 +19,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { SubsonicUser } from "@/lib/api";
-import { formatDay, formatLastAccess } from "@/lib/subsonic-users";
+import { formatDay } from "@/lib/subsonic-users";
 
 /** What a row's menu can open, for one user. */
 export type UserAction = "edit" | "password" | "delete";
@@ -26,15 +27,19 @@ export type UserAction = "edit" | "password" | "delete";
 /**
  * The Subsonic users, in the server's order (case-insensitive by name), each
  * with a **Subsonic admin** badge if they are one, when they were created
- * and when a client last signed in as them. `onAction` is absent for a role
- * that may not change them, and so is each row's menu. On a narrow screen
- * the dates give way, and the name and the role stay.
+ * and when a client last signed in as them, as a relative time from `now`
+ * ("2 minutes ago", or "Never"), as the Overview writes its recent events
+ * (#128). `onAction` is absent for a role that may not change them, and so
+ * is each row's menu. On a narrow screen the dates give way, and the name
+ * and the role stay.
  */
 export function UsersTable({
   users,
+  now,
   onAction,
 }: {
   users: readonly SubsonicUser[];
+  now: number;
   onAction?: (action: UserAction, user: SubsonicUser) => void;
 }) {
   return (
@@ -67,7 +72,11 @@ export function UsersTable({
               {formatDay(user.createdAt)}
             </TableCell>
             <TableCell className="hidden text-muted-foreground sm:table-cell">
-              {formatLastAccess(user.lastAccessAt)}
+              {user.lastAccessAt === null ? (
+                "Never"
+              ) : (
+                <RelativeTime iso={user.lastAccessAt} now={now} />
+              )}
             </TableCell>
             {onAction && (
               <TableCell className="text-right">

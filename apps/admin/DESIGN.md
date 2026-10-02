@@ -53,6 +53,13 @@ it.
 - **Inside the shell, a block is a `Section`** (`src/components/section.tsx`):
   an h2, a short muted description, an optional action at the heading's
   end, and the content. Follow the shadcn Tasks and Settings examples.
+- **A page with a single block has no section heading,** as Subsonic users
+  and Account. The header's h1 names the page, so the `Section` gets no
+  `title`: it renders no h2, is no named region, and shows its
+  description, any action and its content.
+- **A section's action is `size="sm"`.** The page's main action keeps the
+  default variant ("Add user"); a secondary action is `outline` ("Scan
+  now").
 - **`Card` belongs to full-screen pages outside the shell:** sign-in, setup
   and the error screen, as in the `login-01` block.
 - **Overlays carry their own surface:** dialogs, alert dialogs, menus,
@@ -77,7 +84,7 @@ it.
   | Sub-heading | h3 inside a section | `text-sm font-medium` |
   | Body and table text | p, td | `text-sm` |
   | Description and labels | p, dt, helper text | `text-sm text-muted-foreground` |
-  | Metadata | a meter's label and value, or a secondary line under an item | `text-xs`, muted except the value |
+  | Metadata | a secondary line under an item, such as a listener's player and position, or a usage row's note | `text-xs text-muted-foreground` |
   | Key figure | dd of a stat | `text-2xl font-semibold tabular-nums` |
 
 - **Peers share one role.** Equivalent items use the same size, weight and
@@ -91,6 +98,9 @@ it.
   phrase ("Tracks by genre") does not. In sentences, use commas, colons or
   parentheses in place of em dashes, and write labels in sentence case
   rather than all caps.
+- **Recent events are relative times** ("2 minutes ago", "yesterday", or
+  "Never" for none), as `src/components/relative-time.tsx` writes them: a
+  `<time dateTime>` with the absolute time in its `title`.
 - **Readable prose:** keep body text at `text-sm` (the metadata role is for
   short secondary lines, never for paragraphs), and keep
   explanatory paragraphs to a comfortable measure (about `max-w-prose`).
@@ -111,8 +121,9 @@ it.
   shifted by one border and one gutter (`-mt-px -ml-4`) inside an
   `overflow-hidden` box, so dividers fall only between items.
 - **The shell's column** (`mx-auto max-w-7xl` in `src/routes/_shell.tsx`)
-  holds every page. A focused form, such as Account, uses a narrow centered
-  column (`m-auto max-w-md`).
+  holds every page, from its top. A focused form, such as Account, uses a
+  narrow column, centered across and aligned to the top like every other
+  page (`mx-auto w-full max-w-md`).
 - **Align to shared edges.** Peer columns line up, and the first column of a
   row lines up with the sections around it. A table keeps the `Table`
   component's own cell padding, so its first column sits that padding inside
@@ -129,6 +140,9 @@ it.
   width, with its introduction above it.
 - Text columns and their headers align left. Numeric columns and their
   headers align right (`text-right`) and use `tabular-nums`.
+- Text columns come first and numeric columns sit at the right end, so a
+  right-aligned number never runs into a left-aligned text column
+  ("Album, Added, Year, Tracks").
 - Body cells align to the first text line. Keep peer units and precision
   consistent.
 - A missing value is one em dash (`—`), the only place an em dash appears.
@@ -143,6 +157,8 @@ it.
 - Label values directly on the marks. A legend is for several series only.
 - Every chart sets Recharts' `accessibilityLayer` and labels its values, so
   its data is readable without the picture.
+- Charts render without animation: every series sets
+  `isAnimationActive={false}`.
 - A page's key figures are one row (`dl`) with thin dividers, as in
   `LibraryTotals`, rather than a grid of boxes. Small label and value pairs
   inside a section are a plain `dl` grid.
@@ -164,7 +180,10 @@ it.
 - A state that is the whole page is an **inline `Alert`** on the page
   (`src/components/error-alert.tsx`).
 - Loading states use `Skeleton` or the official `Spinner`, sized like the
-  content they replace. An empty list uses the official `Empty`.
+  content they replace.
+- An empty table, list or page uses the official `Empty`. An empty small
+  section, such as Now playing with nobody listening, is one left-aligned
+  muted line (`text-sm text-muted-foreground`).
 
 The details are in README.md, "Signing in".
 
@@ -176,6 +195,11 @@ The details are in README.md, "Signing in".
   running scan.
 - Our own markup adds no animation. Where it must, the animation is wrapped
   in `motion-safe:` so `prefers-reduced-motion` turns it off.
+
+## Navigation
+
+- The sidebar lists only pages that exist. A page's entry is added with the
+  page, in the phase that ships it, never as a disabled placeholder.
 
 ## Themes
 
@@ -189,8 +213,10 @@ The details are in README.md, "Signing in".
 ## Accessibility
 
 - Use landmarks, one h1, ordered headings, and a `section` named by its h2
-  (`aria-labelledby`). A block with no visible heading, such as the key
-  figures row, is a `section` named by `aria-label`.
+  (`aria-labelledby`). On a page of several blocks, a block with no visible
+  heading, such as the Overview's key figures row, is a `section` named by
+  `aria-label`. A page's single block is named by the page's h1 and is no
+  region: a plain `div`, with no h2 and no `aria-label`.
 - Every control has a visible label or an `aria-label`. Focus stays visible
   through the components' own `ring`.
 - Contrast meets WCAG AA in both themes. Color is never the only cue.
@@ -201,6 +227,9 @@ The details are in README.md, "Signing in".
   the inset, and the header and sidebar stay put.
 - Reflow before shrinking. Columns stack, secondary table columns hide, and
   actions wrap under their heading.
+- A layout whose lanes need a given width, such as the usage list, follows
+  its own width with a container query (`@container`, then a standard size
+  such as `@5xl:`), not the screen's, which the sidebar shares.
 
 ## Checking a UI change
 

@@ -19,7 +19,6 @@ import {
   afterUserWrite,
   deleteConsequences,
   formatDay,
-  formatLastAccess,
   USER_FIELDS_BY_CODE,
   userChanges,
   userNamesMatch,
@@ -234,12 +233,9 @@ describe("deleteConsequences", () => {
 });
 
 describe("the table's dates", () => {
-  it("shows the day a user was created, and when a client last signed in", () => {
+  // The last access is a relative time, as the Overview's (lib/format.ts).
+  it("shows the day a user was created", () => {
     expect(formatDay("2026-09-30T23:30:00.000Z", "en-US", "UTC")).toBe("Sep 30, 2026");
-    expect(formatLastAccess("2026-09-30T23:30:00.000Z", "en-US", "UTC")).toMatch(
-      /^Sep 30, 2026, 11:30\sPM$/,
-    );
-    expect(formatLastAccess(null)).toBe("Never");
   });
 });
 

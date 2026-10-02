@@ -1,6 +1,8 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ScanSearchIcon } from "lucide-react";
+import type { ReactNode } from "react";
 
+import { RelativeTime } from "@/components/relative-time";
 import { Section } from "@/components/section";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -8,13 +10,15 @@ import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { requestScan, type ScanStatus } from "@/lib/api";
-import { formatCount, formatDateTime, formatDuration, formatRelative } from "@/lib/format";
+import { formatCount, formatDuration } from "@/lib/format";
 import { afterScanRequest } from "@/lib/overview";
 import { toastError, toastSuccess } from "@/lib/toasts";
 
 /**
  * The scan: whether a pass is in flight and how far it has got, the last
- * completed pass, and **Scan now** for a role that may start one.
+ * completed pass, and **Scan now** for a role that may start one. Each fact
+ * is said once (#128): the description says when the last pass finished
+ * and how long it took, and its counts sit below.
  *
  * The bar is determinate while the last pass's track count is known, the
  * best denominator there is: R2's listing gives no total (#82). Before any
@@ -38,24 +42,33 @@ export function LibraryScan({
     >
       {scan === undefined ? (
         <Skeleton className="h-16 w-full" />
+      ) : scan.running ? (
+        <ScanProgress scan={scan} />
       ) : (
-        <>
-          {scan.running ? <ScanProgress scan={scan} /> : null}
-          <LastPass scan={scan} canScan={canScan} now={now} />
-        </>
+        <LastPass scan={scan} canScan={canScan} />
       )}
     </Section>
   );
 }
 
-function describeScan(scan: ScanStatus, now: number): string {
+function describeScan(scan: ScanStatus, now: number): ReactNode {
   if (scan.running) {
     return scan.phase === "playlists" ? "Importing playlists" : "A scan is running.";
   }
   if (scan.last) {
-    return `Last scan finished ${formatRelative(scan.last.finishedAt, now)}.`;
+    return (
+      <>
+        Last scan finished <RelativeTime iso={scan.last.finishedAt} now={now} /> and took{" "}
+        {formatDuration(passSeconds(scan.last))}.
+      </>
+    );
   }
   return "No scan has finished yet.";
+}
+
+/** How long a pass took, in seconds. */
+function passSeconds(pass: NonNullable<ScanStatus["last"]>): number {
+  return (Date.parse(pass.finishedAt) - Date.parse(pass.startedAt)) / 1_000;
 }
 
 function ScanNowButton() {
@@ -120,35 +133,35 @@ function ScanProgress({ scan }: { scan: ScanStatus }) {
   );
 }
 
-function LastPass({ scan, canScan, now }: { scan: ScanStatus; canScan: boolean; now: number }) {
+/**
+ * The last completed pass's counts, under the description that says when
+ * it finished and how long it took. While a pass runs, its progress takes
+ * their place.
+ */
+function LastPass({ scan, canScan }: { scan: ScanStatus; canScan: boolean }) {
   const { last } = scan;
   if (last === null) {
-    return scan.running ? null : (
+    return (
       <p className="text-sm text-muted-foreground">
         The library is scanned on a schedule.
         {canScan ? " Scan now to index an upload at once." : null}
       </p>
     );
   }
-  const took = (Date.parse(last.finishedAt) - Date.parse(last.startedAt)) / 1_000;
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2 text-sm">
-        <span className="font-medium">Last pass</span>
-        <span className="text-muted-foreground" title={formatDateTime(last.finishedAt)}>
-          {formatRelative(last.finishedAt, now)}, in {formatDuration(took)}
-        </span>
-        {last.counts.broken > 0 ? (
-          <Badge variant="destructive">{formatCount(last.counts.broken)} unreadable</Badge>
-        ) : null}
-      </div>
+    <div className="flex flex-col gap-3">
       <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm sm:grid-cols-4">
         <Stat label="Tracks" value={last.counts.indexed + last.counts.unchanged} />
         <Stat label="Added" value={last.counts.added} />
         <Stat label="Updated" value={last.counts.updated} />
         <Stat label="Removed" value={last.counts.removed} />
       </dl>
+      {last.counts.broken > 0 ? (
+        <div className="flex">
+          <Badge variant="destructive">{formatCount(last.counts.broken)} unreadable</Badge>
+        </div>
+      ) : null}
     </div>
   );
 }

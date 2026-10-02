@@ -82,9 +82,10 @@ Add components with the CLI rather than by hand:
 pnpm exec shadcn add <component>   # in apps/admin
 ```
 
-The shell layout (`app-sidebar.tsx`, `nav-main.tsx`, `nav-secondary.tsx`,
-`nav-user.tsx`, `site-header.tsx`) is adapted from the `sidebar-08` block,
-with every page in one centered column (`src/routes/_shell.tsx`);
+The shell layout (`app-sidebar.tsx`, `nav-main.tsx`, `nav-user.tsx`,
+`site-header.tsx`) is adapted from the `sidebar-08` block, with every page in
+one centered column (`src/routes/_shell.tsx`) and only the pages that exist
+in the sidebar (each later phase adds its entry with its page);
 the sign-in, setup and account forms (`login-form.tsx`, `setup-form.tsx`,
 `change-password-form.tsx`) and their full-screen page (`auth-layout.tsx`)
 from the `login-01` block; and `mode-toggle.tsx` is the one from shadcn/ui's
@@ -94,7 +95,9 @@ The inset is the page's card already, so nothing inside the shell is a
 `Card` (#125): each block of a page is a section (`src/components/section.tsx`),
 an h2 under the header's h1 with a one-line description, as in shadcn/ui's
 Tasks and Settings examples, and the Overview's rows are divided by a
-`Separator`. Only the full-screen sign-in, setup and error screens, on the
+`Separator`. A page of a single block, such as Subsonic users or Account,
+has no h2: the header's h1 names it, and the block shows its description,
+its action and its content. Only the full-screen sign-in, setup and error screens, on the
 plain page background, keep the `login-01` block's card.
 
 ## Signing in
@@ -143,7 +146,9 @@ The Overview (`/`, `src/routes/_shell/index.tsx`, its panels in
 `src/components/overview/`) shows the library's totals and genres (the
 shadcn/ui chart, Recharts), the scan with **Scan now**, who is listening,
 the albums added last, the playlists, and the free-tier usage of the whole
-Cloudflare account. Each panel needs its permission (`library:read`,
+Cloudflare account: one list of each metric against its limit, grouped by
+service, whose description names the metric closest to its limit
+(`src/lib/usage.ts`). Each panel needs its permission (`library:read`,
 `activity:read`, `usage:read`, and `library:scan` for the button), and the
 usage panel shows only once `GET /api/usage` says the Worker has an
 analytics token: without one there is no panel and no error.

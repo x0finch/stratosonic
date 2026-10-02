@@ -19,12 +19,11 @@ export const Route = createFileRoute("/_shell/account")({
 function Account() {
   const { data: me } = useQuery(meQuery);
 
-  // A page of one form: the form keeps its own width, centered on both axes
-  // in the shell's column, as the overview's empty state is (#113). Auto
-  // margins, not justify-center: a form taller than the column then starts
-  // at its top, and the inset scrolls to its bottom, instead of losing its top.
+  // A page of one form: the form keeps its own narrow width, centered across
+  // the shell's column and aligned to its top, as every other page is
+  // (#128).
   return (
-    <div className="m-auto w-full max-w-md">
+    <div className="mx-auto w-full max-w-md">
       {can(me, "account:change-password") ? (
         <ChangePasswordForm username={me?.username ?? ""} />
       ) : (

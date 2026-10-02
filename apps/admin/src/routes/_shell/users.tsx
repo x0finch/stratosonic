@@ -20,6 +20,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useClock } from "@/hooks/use-clock";
 import { meQuery, type SubsonicUser, subsonicUsersQuery } from "@/lib/api";
 import { can } from "@/lib/roles";
 import { adminRequired } from "@/lib/subsonic-users";
@@ -47,10 +48,14 @@ function SubsonicUsers() {
   const writable = can(me, "subsonic-users:write");
   const users = useQuery({ ...subsonicUsersQuery, enabled: readable });
   const [dialog, setDialog] = useState<DialogState>({ open: null, user: null });
+  // What "2 minutes ago" is measured from: this browser's clock, which moves
+  // on once a minute without reading the list again (it is never polled), or
+  // the latest read of the list, should that be later.
+  const now = Math.max(useClock(), users.dataUpdatedAt);
 
   if (!readable) {
     return (
-      <div className="m-auto w-full max-w-md">
+      <div className="mx-auto w-full max-w-md">
         <Alert>
           <InfoIcon />
           <AlertTitle>Nothing to see here</AlertTitle>
@@ -73,14 +78,15 @@ function SubsonicUsers() {
 
   return (
     <>
-      {/* The Tasks example's layout: a header row, and the table beneath it. */}
+      {/* The Tasks example's layout: a header row, and the table beneath it.
+          The page is this one block, which the header's h1 names, so it has
+          no heading of its own (#128). */}
       <Section
-        title="Subsonic users"
         description="The accounts Subsonic clients, such as Substreamer, sign in with. They never sign in to this console."
         action={
           writable && users.isSuccess ? (
-            <Button onClick={() => openFor("create", null)}>
-              <PlusIcon />
+            <Button size="sm" onClick={() => openFor("create", null)}>
+              <PlusIcon data-icon="inline-start" />
               Add user
             </Button>
           ) : null
@@ -110,7 +116,7 @@ function SubsonicUsers() {
             </EmptyHeader>
           </Empty>
         ) : (
-          <UsersTable users={list} onAction={writable ? openFor : undefined} />
+          <UsersTable users={list} now={now} onAction={writable ? openFor : undefined} />
         )}
       </Section>
       {writable && (

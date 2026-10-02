@@ -1,5 +1,5 @@
 import { useMutation } from "@tanstack/react-query";
-import { type ComponentProps, type FormEvent, useState } from "react";
+import { type ComponentPropsWithoutRef, type FormEvent, useState } from "react";
 
 import { Section } from "@/components/section";
 import { Button } from "@/components/ui/button";
@@ -24,13 +24,14 @@ const FIELDS_BY_CODE = { wrong_password: "current-password" };
  * The login-01 block's form with the change-password fields (#81): the
  * current password, then the new one twice. The server keeps this session
  * and signs the console user's others out. It sits inside the shell's inset,
- * so it is a section under its heading, as in the shadcn/ui Settings
- * example, not a card (#125).
+ * so it is a section, as in the shadcn/ui Settings example, not a card
+ * (#125). It is the Account page's one block, which the header's h1 names,
+ * so it has no heading of its own (#128).
  */
 export function ChangePasswordForm({
   username,
   ...props
-}: Omit<ComponentProps<"section">, "title"> & { username: string }) {
+}: Omit<ComponentPropsWithoutRef<"section">, "title"> & { username: string }) {
   const [mismatch, setMismatch] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>(NO_FIELD_ERRORS);
 
@@ -86,7 +87,6 @@ export function ChangePasswordForm({
 
   return (
     <Section
-      title="Change password"
       description="The password of your console account. Subsonic passwords do not change."
       {...props}
     >
