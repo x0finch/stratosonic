@@ -30,6 +30,12 @@ import { pokeScanDriver } from "../scanner/status";
  * merge, delete them and import #130's instead; `recordLibraryChange` and
  * every route stay as they are.
  *
+ * The tests are swap-ready too: the Files tests use an inert driver unless
+ * they opt in to the real one (test/files-support.ts), empty it afterwards
+ * with `resetDriver` rather than waiting for idle, and the library test runs
+ * its pass with an explicit poke, so they pass against this stand-in and
+ * against #130's debounced `touch` alike.
+ *
  * Until then, the stand-in `markLibraryChanged` pokes the driver as **Scan
  * now** does, so a change starts a pass at once rather than after the quiet
  * window, and a change during a pass queues no follow-up (the next cron pass
@@ -45,21 +51,30 @@ export type ScanSchedule =
   /** A pass starts at about this time, once the library has stayed quiet. */
   | { readonly scheduledAt: string; readonly afterCurrentPass: false }
   /** A pass is running, and one more follows it for the change. */
-  | { readonly scheduledAt: null; readonly afterCurrentPass: true };
+  | { readonly scheduledAt: null; readonly afterCurrentPass: true }
+  /**
+   * The pass in flight began after the change and covers it: no other pass
+   * is needed. The stand-in below never answers this, since a poke cannot
+   * tell; #130's `touch` does.
+   */
+  | { readonly scheduledAt: null; readonly afterCurrentPass: false };
 
 /**
  * STUB (#130, `scanner/status.ts`): writes `LibraryChangedAt` (throws on a
- * D1 failure), then tells the driver (logs, and answers null, on a failure).
- * Stands in for the debounced `touch` by poking the driver now.
+ * D1 failure), then tells the driver (logs, and answers null, on a failure,
+ * which is the only meaning of null). An `at` in the future is taken as now,
+ * so a wrong clock cannot hold the pass off. Stands in for the debounced
+ * `touch` by poking the driver now.
  */
 async function markLibraryChanged(env: Env, at: number): Promise<ScanSchedule | null> {
-  await writeLibraryChangedAt(env, at);
+  const changedAt = Math.min(at, Date.now());
+  await writeLibraryChangedAt(env, changedAt);
 
   try {
-    const outcome = await pokeScanDriver(env, at);
+    const outcome = await pokeScanDriver(env, changedAt);
     return outcome === "running"
       ? { scheduledAt: null, afterCurrentPass: true }
-      : { scheduledAt: new Date(at).toISOString(), afterCurrentPass: false };
+      : { scheduledAt: new Date(changedAt).toISOString(), afterCurrentPass: false };
   } catch (error) {
     console.error(
       "scan driver: marking the library changed failed; the next cron pass indexes the change",

@@ -23,7 +23,8 @@ import { BASE } from "./support";
  */
 
 const ORIGIN = "https://files-library.stratosonic.test";
-const harness = filesHarness(ORIGIN);
+// The real driver: this test is about the pass the change leads to.
+const harness = filesHarness(ORIGIN, { scanDriver: "real" });
 const QUIET_ALBUM = [
   "Silent Artist/Quiet Album/01 Silent Track.mp3",
   "Silent Artist/Quiet Album/02 Hushed Interlude.flac",
@@ -65,8 +66,14 @@ describe("deleting an album's tracks", () => {
       expect.arrayContaining(QUIET_ALBUM),
     );
     expect((await storedAlbums()).map((album) => album.name)).toContain("Quiet Album");
+    // The driver holds the change: a pass, or a pending change waiting out
+    // its quiet window.
     expect(await driverIsIdle()).toBe(false);
 
+    // The pass, run now rather than after the quiet window: a poke stamped
+    // after the change starts it (or finds it running) and absorbs the
+    // pending change, so no follow-up pass waits behind it.
+    await poke(new Date(Date.now() + 1_000));
     await driveUntilIdle();
 
     const tracks = (await storedTracks()).map((track) => track.r2Key);

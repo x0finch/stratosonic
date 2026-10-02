@@ -8,13 +8,14 @@ import { database } from "../src/db";
 import { ALLOWED, MAX_KEY_BYTES, MAX_SEGMENT_BYTES } from "../src/files/keys";
 import { RESCAN_QUIET_MS } from "../src/files/library-change";
 import { type CookieJar, GUEST_ROLE, seedConsoleUser, signIn } from "./console-auth-support";
-import { driverIsIdle, driveUntilIdle, poke } from "./driver-support";
+import { driverIsIdle, poke } from "./driver-support";
 import {
   allKeys,
   expectRefusal,
   type FilesHarness,
   filesHarness,
   inertDriver,
+  resetDriver,
   rows,
   seedObjects,
   unreachableDriver,
@@ -29,11 +30,13 @@ import { BASE, seedPlaylist, testEnv } from "./support";
  * recorded by the harness (test/files-support.ts).
  *
  * D1, R2 and the driver are shared by the tests of this file, so each test
- * starts from an empty library and bucket and leaves the driver idle.
+ * starts from an empty library and bucket and leaves the driver empty.
  */
 
 const ORIGIN = "https://files.stratosonic.test";
+// The scan driver is inert unless a test is about what the driver does.
 const harness = filesHarness(ORIGIN);
+const real = filesHarness(ORIGIN, { scanDriver: "real" });
 
 let owner: CookieJar;
 let guest: CookieJar;
@@ -51,12 +54,15 @@ beforeEach(async () => {
   await resetLibrary();
   harness.r2Calls.length = 0;
   harness.driverCalls.length = 0;
+  real.r2Calls.length = 0;
+  real.driverCalls.length = 0;
 });
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  // A delete pokes the driver; its pass must not leak into the next test.
-  await driveUntilIdle();
+  // What a test told the real driver, a pass or a pending change, must not
+  // leak into the next test.
+  await resetDriver();
 });
 
 /** A `FILE_WRITES = "off"` deployment, as preview is. */
@@ -395,21 +401,21 @@ describe("POST /api/files/delete", () => {
 
   it("records the change and tells the driver, which then holds the pending pass", async () => {
     const before = Date.now();
-    const response = await harness.call(owner, "POST", "/files/delete", { keys: KEYS });
+    const response = await real.call(owner, "POST", "/files/delete", { keys: KEYS });
     const after = Date.now();
 
     expect(response.status).toBe(200);
     const changedAt = await libraryChangedAt();
     expect(changedAt).toBeGreaterThanOrEqual(before);
     expect(changedAt).toBeLessThanOrEqual(after);
-    expect(harness.driverCalls).toHaveLength(1);
+    expect(real.driverCalls).toHaveLength(1);
     expect(await driverIsIdle()).toBe(false);
   });
 
   it("answers that a pass follows the one running, when one is", async () => {
     await poke(new Date());
 
-    const response = await harness.call(owner, "POST", "/files/delete", { keys: KEYS });
+    const response = await real.call(owner, "POST", "/files/delete", { keys: KEYS });
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ deleted: 2, scan: AFTER_CURRENT_PASS });
@@ -667,7 +673,7 @@ describe("POST /api/files/delete-folder", () => {
     const id = await seedPlaylistFile("Mixes/road.m3u");
     await seedObjects(["Mixes/road.lrc"]);
 
-    const response = await harness.call(owner, "POST", "/files/delete-folder", {
+    const response = await real.call(owner, "POST", "/files/delete-folder", {
       prefix: "Mixes/",
     });
 
@@ -682,7 +688,7 @@ describe("POST /api/files/delete-folder", () => {
     await seedObjects(["Mixes/a.lrc"]);
     await poke(new Date());
 
-    const response = await harness.call(owner, "POST", "/files/delete-folder", {
+    const response = await real.call(owner, "POST", "/files/delete-folder", {
       prefix: "Mixes/",
     });
 
@@ -858,7 +864,6 @@ describe("with FILE_WRITES unset", () => {
     expect((await unset.call(owner, "POST", "/files/delete", { keys: ["A/1.mp3"] })).status).toBe(
       200,
     );
-    await driveUntilIdle();
     expect((await unset.call(owner, "POST", "/files/delete-folder", { prefix: "B/" })).status).toBe(
       200,
     );

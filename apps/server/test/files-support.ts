@@ -1,11 +1,13 @@
+import { runInDurableObject } from "cloudflare:test";
 import { playlist, playlistTrack, property, track } from "@stratosonic/db";
 import { asc } from "drizzle-orm";
 import { expect } from "vitest";
 import { createApp } from "../src/app";
 import { database } from "../src/db";
 import type { Env } from "../src/env";
+import type { ScanDriver } from "../src/scanner/driver";
 import { type CookieJar, consoleRequest, cost, countingD1 } from "./console-auth-support";
-import { driverIsIdle } from "./driver-support";
+import { driver, driverIsIdle } from "./driver-support";
 import { testEnv } from "./support";
 
 /**
@@ -24,8 +26,13 @@ export interface R2Call {
 export interface FilesHarnessOptions {
   /** Caps every listing's `limit`, as a smaller R2 page would. */
   readonly listLimit?: number;
-  /** Replaces the scan driver's binding, to make it fail. */
-  readonly scanDriver?: Env["SCAN_DRIVER"];
+  /**
+   * The scan driver binding: `inertDriver()` unless given, so no test starts
+   * a pass or arms a debounce alarm by accident. `"real"` is the pool's own
+   * Durable Object, for the tests about what the driver does; they leave it
+   * to `resetDriver`.
+   */
+  readonly scanDriver?: Env["SCAN_DRIVER"] | "real";
   /** `FILE_WRITES`: `""` (unset, writes on) unless given; `undefined` leaves it out. */
   readonly fileWrites?: string;
   /** Makes every write of a `property` row fail, as a D1 outage would. */
@@ -58,6 +65,19 @@ export function inertDriver(): Env["SCAN_DRIVER"] {
         },
       ),
   } as unknown as Env["SCAN_DRIVER"];
+}
+
+/**
+ * Empties the real scan driver: its alarm and its storage, a pass's state or
+ * a pending change alike. A test that let the real driver be told about a
+ * change ends with this rather than with `driveUntilIdle`, which cannot
+ * reach idle while a debounced pass waits out its quiet window.
+ */
+export async function resetDriver(): Promise<void> {
+  await runInDurableObject(driver(), async (_instance: ScanDriver, state) => {
+    await state.storage.deleteAlarm();
+    await state.storage.deleteAll();
+  });
 }
 
 /** A scan driver binding whose every call fails, as an unreachable Durable Object would. */
@@ -125,7 +145,8 @@ export function filesHarness(origin: string, options: FilesHarnessOptions = {}):
     },
   });
 
-  const namespace = options.scanDriver ?? testEnv.SCAN_DRIVER;
+  const namespace =
+    options.scanDriver === "real" ? testEnv.SCAN_DRIVER : (options.scanDriver ?? inertDriver());
   const scanDriver = new Proxy(namespace, {
     get(target, name) {
       if (name === "get") {

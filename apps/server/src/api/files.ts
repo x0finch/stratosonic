@@ -73,6 +73,8 @@ import { requireSameOrigin } from "./same-origin";
  *   starts at about that time, once the library has stayed quiet;
  * - `{"scheduledAt": null, "afterCurrentPass": true}`: a pass is running,
  *   and one more follows it for the change;
+ * - `{"scheduledAt": null, "afterCurrentPass": false}`: the pass in flight
+ *   began after the change and covers it, so no other pass is needed;
  * - `null`: the change is recorded, but the driver could not be told. The
  *   next cron pass (at most 15 minutes away) indexes it.
  *
