@@ -127,6 +127,7 @@ async function exchange<T>(
   method: Method,
   path: string,
   body?: unknown,
+  options: { keepalive?: boolean } = {},
 ): Promise<{ payload: T; date: string | null }> {
   const write = method !== "GET";
   let response: Response;
@@ -134,6 +135,7 @@ async function exchange<T>(
     response = await fetch(path, {
       method,
       credentials: "same-origin",
+      ...(options.keepalive ? { keepalive: true } : {}),
       headers: write
         ? { Accept: "application/json", "Content-Type": "application/json" }
         : { Accept: "application/json" },
@@ -520,16 +522,28 @@ function withClock<T>({ payload, date }: { payload: T; date: string | null }): T
 /** The kinds of file the server reads, and `other` for the rest (#83). */
 export type FileKind = "audio" | "lyrics" | "playlist" | "image" | "other";
 
+/** The kinds of file an upload may be: the ones the server reads. */
+export type UploadKind = Exclude<FileKind, "other">;
+
 /**
  * `GET /api/files/config` (#83, "API: configuration"), read once a session.
- * `bucket` and `uploads` come with the upload routes (ticket C), so a
- * server without them leaves both out.
+ * `uploads` says whether the Worker can presign uploads; `missing` names the
+ * values it lacks, never their contents. `allowed` is the allow-list the
+ * console mirrors to refuse a file before any request (lib/uploads.ts), and
+ * `limits.signBatch` is the most files one sign request takes (#83
+ * amendments: 10), which the console reads rather than assumes.
  */
 export interface FilesConfig {
-  bucket?: string | null;
-  uploads?: { configured: true } | { configured: false; missing: string[] };
-  allowed: Record<Exclude<FileKind, "other">, { suffixes: string[]; maxBytes: number }>;
-  limits: { maxKeyBytes: number; maxSegmentBytes: number; deleteBatch: number };
+  /** `R2_BUCKET_NAME`, or null when it is unset. */
+  bucket: string | null;
+  uploads: { configured: true } | { configured: false; missing: string[] };
+  allowed: Record<UploadKind, { suffixes: string[]; maxBytes: number }>;
+  limits: {
+    maxKeyBytes: number;
+    maxSegmentBytes: number;
+    signBatch: number;
+    deleteBatch: number;
+  };
   rescanQuietSeconds: number;
   /** False where `FILE_WRITES` is `"off"` (the preview): the page is read-only. */
   writes: { enabled: boolean };
@@ -608,5 +622,90 @@ export async function deleteFolderRound(prefix: string): Promise<DeleteFolderRes
     await exchange<Omit<DeleteFolderResult, "clock">>("POST", "/api/files/delete-folder", {
       prefix,
     }),
+  );
+}
+
+/** One file to sign: its key in the folder `prefix`, its exact size, and whether it replaces. */
+export interface UploadToSign {
+  key: string;
+  size: number;
+  overwrite: boolean;
+}
+
+/** A presigned `PUT`: send exactly `headers` with the file's bytes, before `expiresAt`. */
+export interface PresignedUpload {
+  url: string;
+  method: "PUT";
+  headers: Record<string, string>;
+  /** When the URL stops working, on the server's clock. */
+  expiresAt: string;
+}
+
+/**
+ * Why the server would not sign one file (apps/server README, "File
+ * uploads"). `replace_unavailable`: a Replace whose stored spelling it could
+ * not find for certain; replace that file with rclone.
+ */
+export type UploadRefusalCode =
+  | "invalid_path"
+  | "path_too_long"
+  | "reserved_path"
+  | "type_not_allowed"
+  | "too_large"
+  | "empty_file"
+  | "replace_unavailable";
+
+/**
+ * One file's answer, in the order asked. `key` is the key to write: the one
+ * asked for with the part after `prefix` in NFC, or on Replace the key
+ * exactly as R2 stores it.
+ */
+export type SignedResult =
+  | ({ key: string } & PresignedUpload)
+  | { key: string; error: "exists"; existing: { size: number; uploadedAt: string } }
+  | { key: string; error: UploadRefusalCode };
+
+/** `POST /api/files/uploads`, with the server's clock the expiries are counted on. */
+export interface SignUploadsResult {
+  uploads: SignedResult[];
+  clock: ServerClock;
+}
+
+/**
+ * Presigns 1–`limits.signBatch` uploads into the folder `prefix`, exactly as
+ * browse listed it: the server keeps it as it is and normalises only the
+ * part of each key after it, so a folder stored in NFD gets no NFC twin.
+ */
+export async function signUploads(
+  prefix: string,
+  files: readonly UploadToSign[],
+): Promise<SignUploadsResult> {
+  return withClock(
+    await exchange<Omit<SignUploadsResult, "clock">>("POST", "/api/files/uploads", {
+      prefix,
+      files,
+    }),
+  );
+}
+
+/** What `POST /api/files/uploads/complete` said the scan will do. */
+export interface CompleteUploadsResult {
+  scan: ScanSchedule | null;
+  clock: ServerClock;
+}
+
+/**
+ * Reports 1–`limits.signBatch` keys whose `PUT` R2 accepted, so the server
+ * schedules its debounced scan. It goes with `keepalive`, so a tab closed
+ * right after the last upload still reports it.
+ */
+export async function completeUploads(keys: readonly string[]): Promise<CompleteUploadsResult> {
+  return withClock(
+    await exchange<Omit<CompleteUploadsResult, "clock">>(
+      "POST",
+      "/api/files/uploads/complete",
+      { keys },
+      { keepalive: true },
+    ),
   );
 }

@@ -127,6 +127,11 @@ const MESSAGES: Record<string, ErrorMessage> = {
     title: "The file already exists",
     description: "Replace it, or skip it.",
   },
+  replace_unavailable: {
+    title: "The file cannot be replaced from here",
+    description:
+      "The server could not tell for certain how the bucket spells its name. Replace it with rclone, which writes the name as you give it.",
+  },
   path_too_long: {
     title: "The path is too long",
     description: "A path is at most 1,024 bytes, and each name in it at most 255.",

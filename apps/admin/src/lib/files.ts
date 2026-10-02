@@ -38,7 +38,7 @@ import { aboutMinutes, type LiveRead, scheduleState } from "@/lib/overview";
 /** How long a folder's listing stays fresh: only the console, a pass's covers and rclone change it. */
 export const FOLDER_STALE_MS = 30_000;
 
-/** The bucket's name when the server does not say it (`bucket` comes with ticket C). */
+/** The bucket's name when the server does not know it (`R2_BUCKET_NAME` unset). */
 export const BUCKET_FALLBACK = "Bucket";
 
 export const filesConfigQuery = queryOptions({
@@ -182,11 +182,12 @@ export function describeListing(folders: number, files: number, more: boolean): 
   return `${parts.join(" and ")}${more ? " so far" : ""}`;
 }
 
+/** The characters no new key's segment may hold: controls, and a Windows path's backslash. */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point.
-const FORBIDDEN_CHARACTERS = /[\u0000-\u001f\u007f\\]/;
+export const FORBIDDEN_CHARACTERS = /[\u0000-\u001f\u007f\\]/;
 
 /** The length of a string in bytes of UTF-8, as R2 counts a key. */
-function utf8Length(value: string): number {
+export function utf8Length(value: string): number {
   return new TextEncoder().encode(value).length;
 }
 
