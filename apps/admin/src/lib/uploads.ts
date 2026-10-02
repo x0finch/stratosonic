@@ -227,15 +227,24 @@ export function planUploads(
   config: Pick<FilesConfig, "allowed" | "limits">,
   lookup: FolderLookup,
 ): PlannedUpload[] {
-  return files.flatMap((file) => {
-    const path = file.webkitRelativePath || file.name;
-    if (file.webkitRelativePath && path.split("/").some((segment) => segment.startsWith("."))) {
-      return [];
-    }
-    const { prefix, key } = uploadTarget(current, path, lookup);
-    return [{ file, prefix, key, refusal: checkUpload(key, file.size, config) }];
-  });
+  return files
+    .flatMap((file) => {
+      const path = file.webkitRelativePath || file.name;
+      if (file.webkitRelativePath && path.split("/").some((segment) => segment.startsWith("."))) {
+        return [];
+      }
+      const { prefix, key } = uploadTarget(current, path, lookup);
+      return [{ file, prefix, key, refusal: checkUpload(key, file.size, config) }];
+    })
+    .sort((a, b) => PATH_ORDER.compare(a.key, b.key));
 }
+
+/**
+ * The order files go in: by path, numbers by their value, so an album
+ * uploads from its first track (a browser hands a folder's files over in no
+ * set order).
+ */
+const PATH_ORDER = new Intl.Collator("en", { numeric: true });
 
 /* --------------------------------------------------------------- queue -- */
 

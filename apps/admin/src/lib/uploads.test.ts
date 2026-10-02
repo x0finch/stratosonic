@@ -256,6 +256,26 @@ describe("the key a picked file takes", () => {
     expect(uploadTarget("", "Å/01.flac", lookup)).toEqual({ prefix: "", key: "Å/01.flac" });
   });
 
+  it("goes by path, numbers by their value, whatever order the browser gave", () => {
+    const planned = planUploads(
+      [
+        picked("10 Ten.flac", 10, "Album/CD2/10 Ten.flac"),
+        picked("2 Two.flac", 10, "Album/CD1/2 Two.flac"),
+        picked("10 Ten.flac", 10, "Album/CD1/10 Ten.flac"),
+        picked("cover.jpg", 10, "Album/cover.jpg"),
+      ],
+      "",
+      CONFIG,
+      noFolders,
+    );
+    expect(planned.map(({ key }) => key)).toEqual([
+      "Album/CD1/2 Two.flac",
+      "Album/CD1/10 Ten.flac",
+      "Album/CD2/10 Ten.flac",
+      "Album/cover.jpg",
+    ]);
+  });
+
   it("leaves a folder pick's hidden files out, and refuses one picked by name", () => {
     const planned = planUploads(
       [
@@ -269,8 +289,8 @@ describe("the key a picked file takes", () => {
       noFolders,
     );
     expect(planned.map(({ key, refusal }) => [key, refusal])).toEqual([
-      ["Album/01.flac", null],
       [".hidden.flac", "invalid_path"],
+      ["Album/01.flac", null],
     ]);
   });
 });
@@ -678,7 +698,7 @@ describe("the upload queue", () => {
       h.queue.add(plan("", "1.flac", "2.flac"), 10);
       h.queue.cancel(h.item("1.flac").id);
       await h.signAll(0);
-      expect(h.puts.map((call) => call.upload.url)).toEqual([url("2.flac").url]);
+      expect(h.puts.map((call) => call.upload)).toEqual([url("2.flac")]);
       await h.putDone(0);
       expect(h.completes.map((call) => call.keys)).toEqual([["2.flac"]]);
     });
