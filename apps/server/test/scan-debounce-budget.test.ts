@@ -54,6 +54,16 @@ function countingR2(inner: R2Bucket, r2: string[]): R2Bucket {
  * then the handler runs) with its storage, D1 and R2 counted.
  */
 function countedAlarm(): Promise<AlarmCost> {
+  return counted(async (instance, state) => {
+    await state.storage.deleteAlarm();
+    await instance.alarm();
+  });
+}
+
+/** One request of the driver, with its storage, D1 and R2 counted. */
+function counted(
+  request: (instance: ScanDriver, state: DurableObjectState) => Promise<unknown>,
+): Promise<AlarmCost> {
   return runInDurableObject(driver(), async (instance: ScanDriver, state) => {
     let storageRowsRead = 0;
     let storageRowsWritten = 0;
@@ -92,11 +102,10 @@ function countedAlarm(): Promise<AlarmCost> {
 
     const self = instance as unknown as { ctx: DurableObjectState; env: Env };
     const original = { ctx: self.ctx, env: self.env };
-    await state.storage.deleteAlarm();
     self.ctx = ctx;
     self.env = { ...original.env, DB: d1.binding, MUSIC: countingR2(original.env.MUSIC, r2) };
     try {
-      await instance.alarm();
+      await request(instance, state);
     } finally {
       self.ctx = original.ctx;
       self.env = original.env;
@@ -151,6 +160,28 @@ beforeAll(async () => {
   // unchanged library the budget table's row is written for.
   await poke(new Date());
   await countedPass();
+});
+
+describe("a change", () => {
+  it("touches the driver with no pass in flight: two rows read, two written", async () => {
+    const touched = await counted((instance) => instance.touch(Date.now(), slowTuning));
+
+    // `pending` and `driver` read; `pending` put and the alarm set.
+    expect(touched).toEqual({ storageRowsRead: 2, storageRowsWritten: 2, d1: [], r2: [] });
+  });
+
+  it("touches the driver during a pass: two rows read, one written", async () => {
+    await poke(new Date());
+    const touched = await counted((instance) => instance.touch(Date.now(), slowTuning));
+
+    // The step chain keeps its alarm.
+    expect(touched).toEqual({ storageRowsRead: 2, storageRowsWritten: 1, d1: [], r2: [] });
+
+    await runInDurableObject(driver(), async (_instance: ScanDriver, state) => {
+      await state.storage.deleteAlarm();
+      await state.storage.deleteAll();
+    });
+  });
 });
 
 describe("the debounce alarm", () => {
