@@ -47,6 +47,7 @@ interface LiveOverview {
     progress: unknown;
     estimatedTotal: number | null;
     last: unknown;
+    scheduled: unknown;
   };
   nowPlaying:
     | {
@@ -105,7 +106,14 @@ describe("GET /api/overview/live before any scan or listener", () => {
     const body = await liveOf(owner);
 
     expect(body).toEqual({
-      scan: { running: false, phase: null, progress: null, estimatedTotal: null, last: null },
+      scan: {
+        running: false,
+        phase: null,
+        progress: null,
+        estimatedTotal: null,
+        last: null,
+        scheduled: null,
+      },
       nowPlaying: [],
       serverTime: expect.any(String),
     });

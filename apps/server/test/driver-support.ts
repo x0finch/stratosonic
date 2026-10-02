@@ -1,5 +1,10 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import type { PokeOutcome, ScanDriver, ScanDriverTuning } from "../src/scanner/driver";
+import type {
+  PokeOutcome,
+  ScanDriver,
+  ScanDriverTuning,
+  ScanSchedule,
+} from "../src/scanner/driver";
 import { SCAN_DRIVER_INSTANCE } from "../src/scanner/driver";
 import { testEnv } from "./support";
 
@@ -68,6 +73,46 @@ export function pokeDuringAStep(
 
     return outcome;
   });
+}
+
+/**
+ * Marks the library changed at `changedAt`, as `markLibraryChanged` does,
+ * with the tuning a test needs: `quietMs` is the debounce window, and the
+ * delays of the pass it starts default to `slowTuning`'s.
+ */
+export function touch(changedAt: number, tuning: ScanDriverTuning): Promise<ScanSchedule> {
+  return driver().touch(changedAt, { ...slowTuning, ...tuning });
+}
+
+/**
+ * Marks the library changed in the middle of a step, the race `pokeDuringAStep`
+ * reaches for a poke: the touch is delivered while the step waits on R2 and D1.
+ */
+export function touchDuringAStep(
+  changedAt: number,
+  tuning: ScanDriverTuning,
+): Promise<ScanSchedule> {
+  return runInDurableObject(driver(), async (instance: ScanDriver, state) => {
+    await state.storage.deleteAlarm();
+
+    const step = instance.alarm();
+    const schedule = await instance.touch(changedAt, { ...slowTuning, ...tuning });
+    await step;
+
+    return schedule;
+  });
+}
+
+/**
+ * The keys the driver keeps: `driver` while a pass is in flight, `pending`
+ * while a file change waits for a pass.
+ */
+export async function storedKeys(): Promise<string[]> {
+  const stored = await runInDurableObject(driver(), (_instance: ScanDriver, state) =>
+    state.storage.list(),
+  );
+
+  return [...stored.keys()].sort();
 }
 
 /** When the next alarm is due, or null when the driver has scheduled none. */
