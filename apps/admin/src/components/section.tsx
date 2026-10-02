@@ -20,6 +20,7 @@ export function Section({
   action,
   className,
   children,
+  "aria-label": ariaLabel,
   ...props
 }: Omit<ComponentPropsWithoutRef<"section">, "title"> & {
   title?: ReactNode;
@@ -27,7 +28,8 @@ export function Section({
   action?: ReactNode;
 }) {
   const id = useId();
-  const titled = title !== undefined && title !== null;
+  // An empty title is no title: a heading with no words names nothing.
+  const titled = title !== undefined && title !== null && title !== false && title !== "";
   const Root = titled ? "section" : "div";
   const header =
     titled || description || action ? (
@@ -47,8 +49,10 @@ export function Section({
     ) : null;
 
   return (
+    // A plain div is no region, so it takes no region's name either.
     <Root
       aria-labelledby={titled ? id : undefined}
+      aria-label={titled ? ariaLabel : undefined}
       className={cn("flex min-w-0 flex-col gap-4 text-sm", className)}
       {...props}
     >

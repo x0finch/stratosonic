@@ -17,11 +17,11 @@ export interface UsageMetric {
   subject: string;
   value: UsageFigure;
   limit: number;
-  /** How the value is written: `1,834,567`, `8.1 GB`. */
+  /** How the value is written, with its unit if it has one: `1,834,567`, `8.1 GB`, `410 GB-s`. */
   format: (value: number) => string;
   /**
-   * How the limit is written, a round figure with the unit the value's
-   * figure leaves to it: `5,000,000`, `10 GB`, `13,000 GB-s`.
+   * How the limit is written, a round figure in the value's unit:
+   * `5,000,000`, `10 GB`, `13,000 GB-s`.
    */
   formatLimit: (value: number) => string;
   /** A figure the row's metadata line adds, which no limit applies to. */
@@ -37,6 +37,8 @@ export interface UsageGroup {
 const wholeCount = (value: number) => formatCount(Math.round(value));
 /** A byte limit is a round number of units: `10 GB`, not `10.0 GB`. */
 const wholeBytes = (value: number) => formatBytes(value, 0);
+/** Durable Object duration, in its unit on both sides: `410 GB-s of 13,000 GB-s`. */
+const gbSeconds = (value: number) => `${wholeCount(value)} GB-s`;
 
 /** A figure in words, or the dash for one Cloudflare's answer left out. */
 export function formatFigure(
@@ -107,8 +109,8 @@ export function usageGroups(usage: ConfiguredUsage): UsageGroup[] {
           subject: "Durable Object duration is",
           value: usage.durableObjects.durationGbSeconds,
           limit: usage.durableObjects.limit.durationGbSeconds,
-          format: wholeCount,
-          formatLimit: (value) => `${wholeCount(value)} GB-s`,
+          format: gbSeconds,
+          formatLimit: gbSeconds,
           note: `CPU time ${formatFigure(usage.durableObjects.cpuTimeMs)} ms, not limited`,
         },
       ],
@@ -159,11 +161,12 @@ export function shareOf(metric: Pick<UsageMetric, "value" | "limit">): number | 
 
 /**
  * The metric with the largest share of its limit, the first of those that
- * tie; `null` when no metric has a figure.
+ * tie; `null` when no metric has a figure, or none has used any of its
+ * limit, so that no metric is closer than another.
  */
 export function closestToLimit(groups: readonly UsageGroup[]): UsageMetric | null {
   let closest: UsageMetric | null = null;
-  let largest = -1;
+  let largest = 0;
   for (const metric of groups.flatMap((group) => group.metrics)) {
     const share = shareOf(metric);
     if (share !== null && share > largest) {
@@ -176,8 +179,8 @@ export function closestToLimit(groups: readonly UsageGroup[]): UsageMetric | nul
 
 /**
  * The description's sentence on the metric closest to its limit, in plain
- * words: `R2 storage is at 81% of the free 10 GB.` Empty when no metric has
- * a figure.
+ * words: `R2 storage is at 81% of the free 10 GB.` Empty when there is none
+ * (`closestToLimit`).
  */
 export function describeClosest(groups: readonly UsageGroup[]): string {
   const metric = closestToLimit(groups);

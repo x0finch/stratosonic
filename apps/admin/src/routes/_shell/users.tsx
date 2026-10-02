@@ -20,6 +20,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useClock } from "@/hooks/use-clock";
 import { meQuery, type SubsonicUser, subsonicUsersQuery } from "@/lib/api";
 import { can } from "@/lib/roles";
 import { adminRequired } from "@/lib/subsonic-users";
@@ -47,14 +48,14 @@ function SubsonicUsers() {
   const writable = can(me, "subsonic-users:write");
   const users = useQuery({ ...subsonicUsersQuery, enabled: readable });
   const [dialog, setDialog] = useState<DialogState>({ open: null, user: null });
-  // What "2 minutes ago" is measured from: the latest read of the list, or
-  // the page's first render before any, as on the Overview.
-  const [openedAt] = useState(() => Date.now());
-  const now = Math.max(openedAt, users.dataUpdatedAt);
+  // What "2 minutes ago" is measured from: this browser's clock, which moves
+  // on once a minute without reading the list again (it is never polled), or
+  // the latest read of the list, should that be later.
+  const now = Math.max(useClock(), users.dataUpdatedAt);
 
   if (!readable) {
     return (
-      <div className="m-auto w-full max-w-md">
+      <div className="mx-auto w-full max-w-md">
         <Alert>
           <InfoIcon />
           <AlertTitle>Nothing to see here</AlertTitle>

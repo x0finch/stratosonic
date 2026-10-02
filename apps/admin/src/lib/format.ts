@@ -96,17 +96,22 @@ const RELATIVE_STEPS: [Intl.RelativeTimeFormatUnit, number][] = [
   ["year", Number.POSITIVE_INFINITY],
 ];
 
+/** How far ahead of this browser's clock a server's instant may be and still read as `just now`. */
+const CLOCK_SKEW_MS = 5 * 60_000;
+
 /**
  * How long ago an instant was, from `now`: `5 minutes ago`, `yesterday`. The
- * instants are past events the server stamped, so one a little ahead of this
- * browser's clock is `just now`, not `in 3 seconds`.
+ * instants are past events the server stamped, so one up to a few minutes
+ * ahead of this browser's clock, the skew between the two, is `just now`,
+ * not `in 3 seconds`. One further ahead is written as it is (`in 2 hours`).
  */
 export function formatRelative(iso: string, now: number): string {
   const at = Date.parse(iso);
   if (!Number.isFinite(at)) {
     return "";
   }
-  let value = Math.round((Math.min(at, now) - now) / 1_000);
+  const skewed = at > now && at - now <= CLOCK_SKEW_MS;
+  let value = Math.round(((skewed ? now : at) - now) / 1_000);
   for (const [unit, size] of RELATIVE_STEPS) {
     if (Math.abs(value) < size) {
       return value === 0 && unit === "second" ? "just now" : RELATIVE.format(value, unit);

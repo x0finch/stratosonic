@@ -77,9 +77,12 @@ describe("the Overview's numbers", () => {
     expect(formatRelative("not a date", now)).toBe("");
   });
 
-  it("says just now of an instant a little ahead of this browser's clock", () => {
+  it("says just now of an instant up to a few minutes ahead of this browser's clock", () => {
     const now = Date.parse("2026-10-01T12:00:00Z");
     expect(formatRelative("2026-10-01T12:00:03Z", now)).toBe("just now");
-    expect(formatRelative("2026-10-01T13:00:00Z", now)).toBe("just now");
+    expect(formatRelative("2026-10-01T12:05:00Z", now)).toBe("just now");
+    // Further ahead is no clock skew, and is written as it is.
+    expect(formatRelative("2026-10-01T12:06:00Z", now)).toBe("in 6 minutes");
+    expect(formatRelative("2026-10-01T14:00:00Z", now)).toBe("in 2 hours");
   });
 });

@@ -72,7 +72,7 @@ describe("the usage list", () => {
       "1,834,567 of 5,000,000",
       "5,400 of 100,000",
       "2,100 of 100,000",
-      "410 of 13,000 GB-s",
+      "410 GB-s of 13,000 GB-s",
       "3,200 of 1,000,000",
       "241,000 of 10,000,000",
       "8.1 GB of 10 GB",
@@ -163,5 +163,14 @@ describe("the metric closest to its limit", () => {
     );
     expect(closestToLimit(withoutFigures(quiet))).toBeNull();
     expect(describeClosest(withoutFigures(quiet))).toBe("");
+  });
+
+  it("is nothing when no metric has used any of its limit", () => {
+    const untouched = usageGroups(usage()).map((group) => ({
+      ...group,
+      metrics: group.metrics.map((metric) => ({ ...metric, value: 0 })),
+    }));
+    expect(closestToLimit(untouched)).toBeNull();
+    expect(describeClosest(untouched)).toBe("");
   });
 });

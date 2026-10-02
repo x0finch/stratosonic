@@ -62,15 +62,19 @@ export function UsagePanel({
     >
       {error ? <ErrorAlert error={error} /> : null}
       {groups ? (
-        // One set of columns, shared down to each row (subgrid), so every
-        // lane lines up across the services: twelve on a wide screen, where
-        // the service is a lane too, and four on a narrow one, where a row
-        // takes two lines (the metric and its value, then the bar beside its
-        // share) under its service's name.
-        <div className="grid grid-cols-4 gap-x-3 gap-y-6 md:grid-cols-12 md:gap-x-4">
-          {groups.map((group) => (
-            <Group key={group.service} group={group} />
-          ))}
+        // The layout follows the list's own width (a container query), not
+        // the screen's, which the sidebar shares. Until the list is wide
+        // enough for every lane (`@5xl`), a row takes two lines under its
+        // service's name: the metric and its value, then the bar beside its
+        // share. From there, twelve columns are shared down to each row
+        // (subgrid), with the service as a lane too, so every lane lines up
+        // across the services.
+        <div className="@container">
+          <div className="grid gap-y-6 @5xl:grid-cols-12 @5xl:gap-x-4">
+            {groups.map((group) => (
+              <Group key={group.service} group={group} />
+            ))}
+          </div>
         </div>
       ) : null}
     </Section>
@@ -83,12 +87,18 @@ function Group({ group }: { group: UsageGroup }) {
   return (
     <section
       aria-labelledby={id}
-      className="col-span-full grid grid-cols-subgrid items-baseline gap-y-3"
+      className="grid gap-y-3 @5xl:col-span-full @5xl:grid-cols-subgrid @5xl:items-baseline"
     >
-      <h3 id={id} className="col-span-full text-sm font-medium md:col-span-2">
+      <h3 id={id} className="text-sm font-medium @5xl:col-span-2">
         {group.service}
       </h3>
-      <ul className="col-span-full grid grid-cols-subgrid gap-y-4 md:col-span-10 md:gap-y-3">
+      <ul
+        // A list styled without bullets, laid out as a flex or grid, loses
+        // its semantics in Safari and VoiceOver unless its role is said again.
+        // biome-ignore lint/a11y/noRedundantRoles: Safari drops a styled list's role.
+        role="list"
+        className="flex flex-col gap-y-4 @5xl:col-span-10 @5xl:grid @5xl:grid-cols-subgrid @5xl:gap-y-3"
+      >
         {group.metrics.map((metric) => (
           <Meter key={metric.label} metric={metric} />
         ))}
@@ -111,27 +121,32 @@ function Meter({ metric }: { metric: UsageMetric }) {
 
   // The label, the value and the share are each in their own lane, so the
   // bar alone is the progress bar, named in full and read out with its
-  // figures. On a narrow screen the bar and its share are one line, the bar
-  // taking what the share's narrow lane leaves, the same in every row; on a
-  // wide one that line dissolves (`contents`) into the shared lanes.
+  // figures. On a narrow list each line is a flex row: the metric beside
+  // its value, which never wraps, then the bar taking what the share's
+  // narrow lane leaves, the same in every row. On a wide one both lines
+  // dissolve (`contents`) into the shared lanes.
   return (
-    <li className="col-span-full grid grid-cols-subgrid items-center gap-y-1.5">
-      <span className="col-span-2 min-w-0 md:col-span-3">{metric.label}</span>
-      <span className="col-span-2 text-right whitespace-nowrap tabular-nums">{text}</span>
-      <div className="col-span-full flex items-center gap-3 md:contents">
+    <li className="flex flex-col gap-1.5 @5xl:col-span-full @5xl:grid @5xl:grid-cols-subgrid @5xl:items-center">
+      <div className="flex items-baseline justify-between gap-3 @5xl:contents">
+        <span className="min-w-0 @5xl:col-span-3">{metric.label}</span>
+        <span className="shrink-0 text-right whitespace-nowrap tabular-nums @5xl:col-span-3">
+          {text}
+        </span>
+      </div>
+      <div className="flex items-center gap-3 @5xl:contents">
         <Progress
           aria-label={metric.name}
           value={value === null ? null : Math.min(value, limit)}
           max={limit}
           getAriaValueText={() => (value === null ? "unknown" : `${text}, ${share}`)}
-          className="min-w-0 flex-1 md:col-span-4"
+          className="min-w-0 flex-1 @5xl:col-span-3"
         />
-        <span className="w-12 shrink-0 text-right text-muted-foreground tabular-nums md:w-auto">
+        <span className="w-12 shrink-0 text-right text-muted-foreground tabular-nums @5xl:w-auto">
           {share}
         </span>
       </div>
       {metric.note ? (
-        <p className="col-span-full text-xs text-muted-foreground">{metric.note}</p>
+        <p className="text-xs text-muted-foreground @5xl:col-span-full">{metric.note}</p>
       ) : null}
     </li>
   );

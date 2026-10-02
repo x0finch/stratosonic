@@ -84,7 +84,7 @@ it.
   | Sub-heading | h3 inside a section | `text-sm font-medium` |
   | Body and table text | p, td | `text-sm` |
   | Description and labels | p, dt, helper text | `text-sm text-muted-foreground` |
-  | Metadata | a meter's label and value, or a secondary line under an item | `text-xs`, muted except the value |
+  | Metadata | a secondary line under an item, such as a listener's player and position, or a usage row's note | `text-xs text-muted-foreground` |
   | Key figure | dd of a stat | `text-2xl font-semibold tabular-nums` |
 
 - **Peers share one role.** Equivalent items use the same size, weight and
@@ -213,8 +213,10 @@ The details are in README.md, "Signing in".
 ## Accessibility
 
 - Use landmarks, one h1, ordered headings, and a `section` named by its h2
-  (`aria-labelledby`). A block with no visible heading, such as the key
-  figures row, is a `section` named by `aria-label`.
+  (`aria-labelledby`). On a page of several blocks, a block with no visible
+  heading, such as the Overview's key figures row, is a `section` named by
+  `aria-label`. A page's single block is named by the page's h1 and is no
+  region: a plain `div`, with no h2 and no `aria-label`.
 - Every control has a visible label or an `aria-label`. Focus stays visible
   through the components' own `ring`.
 - Contrast meets WCAG AA in both themes. Color is never the only cue.
@@ -225,6 +227,9 @@ The details are in README.md, "Signing in".
   the inset, and the header and sidebar stay put.
 - Reflow before shrinking. Columns stack, secondary table columns hide, and
   actions wrap under their heading.
+- A layout whose lanes need a given width, such as the usage list, follows
+  its own width with a container query (`@container`, then a standard size
+  such as `@5xl:`), not the screen's, which the sidebar shares.
 
 ## Checking a UI change
 
