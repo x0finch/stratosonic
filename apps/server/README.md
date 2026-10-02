@@ -244,9 +244,9 @@ network error. The console signs just before each upload and signs again if
 needed. After a successful `PUT`, the console reports the file
 (`POST /api/files/uploads/complete`), and the debounced scan picks it up. A
 report that never arrives is covered by the next cron pass. So one file
-costs its share of one sign request and of one complete request (the
-console signs 1–3 files at a time and reports them together), which are
-Worker requests, and one `OPTIONS` and one `PUT` to R2, which are not.
+costs its share of one sign request (the console signs 1–3 files at a
+time) and of one complete request (it reports up to 10 landed files
+together), which are Worker requests, and one `OPTIONS` and one `PUT` to R2, which are not.
 
 ### Rotating the token
 

@@ -314,15 +314,19 @@ credentials, **Upload**.
   progress) to R2 with exactly the headers signed. A URL within 30 s of its
   expiry (on the server's clock) is signed again, and a `PUT` that fails
   with a network error or a `403` (an expired URL reads as a network error)
-  is signed again and tried once more before it fails. Once every file of
-  a sign request is done, the uploaded ones are reported in one
-  `POST /api/files/uploads/complete` with `keepalive`, and on `pagehide`
-  any that are waiting for the rest of their request are reported at once.
+  is signed again and tried once more before it fails. Landed keys are
+  held and reported together in one `POST /api/files/uploads/complete`
+  with `keepalive`: once 10 (`limits.signBatch`) wait, or once 2 s pass
+  with nothing new landing. On `pagehide` the held keys are reported at
+  once. The server's scan waits 2 minutes anyway, so the hold delays no
+  pass, and it cuts the complete requests, with their D1 and Durable
+  Object writes, up to tenfold.
   Two uploads to one key never run together. The queue lasts for the
   session, so uploads go on in other folders and on other pages, and
   closing the tab while a file waits or is sent asks first
   (`beforeunload`). Signing out, or a session that ends, cancels what is
-  still to go and clears the queue. A file whose earlier `PUT` lost its
+  still to go and clears the queue; an answer still on its way then starts
+  nothing, and nothing held is reported. A file whose earlier `PUT` lost its
   answer and then shows as Already exists is reported even when skipped,
   since what exists may be that upload.
 - **Already exists** (the server's `exists`, or R2's `412`) offers
@@ -339,10 +343,15 @@ credentials, **Upload**.
   **Cancel upload** while it is still to go. A pick of thousands stays
   light: the section draws the files in flight, every failure and
   conflict, the next 50 waiting and the latest 50 finished, and counts the
-  rest ("and 1,940 more uploaded"); a row redraws only when it changes, and
-  the queue tells the page of progress at most ten times a second. When a
-  row's buttons go, focus moves to the next row with buttons, or to the
-  heading. The section shows only for a role with `files:write`. Each run
+  rest: the older finished files above the rows ("1,950 more uploaded
+  earlier"), the waiting ones below ("and 300 more waiting"). A row
+  redraws only when it changes, and the queue tells the page of progress
+  at most ten times a second. A pick of more than 100 files is prepared in
+  slices, with the page drawn between them, while **Upload** shows a
+  spinner and "Preparing 2,000 files…". When a row's buttons go, focus
+  moves to the next row with buttons, or to the heading; when Clear
+  finished empties the queue, to the folder's **Upload** (or the page's
+  h1). The section shows only for a role with `files:write`. Each run
   ends in a toast:
   "Uploaded 12 files" ("The next scheduled scan will index them." when the
   server could not schedule the scan), and "2 files were not uploaded".
@@ -367,8 +376,8 @@ scheduled or running, with `library:read`, at the Overview's pace (every
 30 s, every 10 s while a pass runs). Nothing else is polled, a return to
 the tab reads nothing, and a hidden tab reads nothing. An upload costs its
 share of one sign request (1–3 files), one `PUT` straight to R2 (no Worker
-request), and its share of one complete request (the files of its sign
-request that landed). Each `PUT` also has its own CORS preflight, to R2
+request), and its share of one complete request (up to 10 landed
+files). Each `PUT` also has its own CORS preflight, to R2
 and not the Worker: a browser caches a preflight by its full URL, and no
 two presigned URLs are alike, so the CORS rule's `maxAgeSeconds` saves
 none.
