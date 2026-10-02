@@ -28,6 +28,8 @@ export const PINNED_ENV = {
   // calls Cloudflare's API.
   CF_ANALYTICS_TOKEN: "",
   CF_ACCOUNT_ID: "",
+  // Unset, as in production: file writes are on.
+  FILE_WRITES: "",
 } as const satisfies Record<StringEnvKey, string>;
 
 /**

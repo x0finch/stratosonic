@@ -42,4 +42,13 @@ export interface Env extends Cloudflare.Env {
    * rather than a var, so that wrangler.jsonc stays account-agnostic.
    */
   readonly CF_ACCOUNT_ID?: string;
+  /**
+   * `"off"` makes the console's Files page read-only (#83, owner decision 2):
+   * its write routes answer `403 {"error":"file_writes_disabled"}` and
+   * `GET /api/files/config` reports `writes.enabled: false`
+   * (files/config.ts). A plain var, set in wrangler.jsonc's `env.preview`,
+   * which binds the production bucket; production leaves it unset, and any
+   * other value means writes are on.
+   */
+  readonly FILE_WRITES?: string;
 }
