@@ -65,7 +65,7 @@ export function UsagePanel({
         // One set of columns, shared down to each row (subgrid), so every
         // lane lines up across the services: twelve on a wide screen, where
         // the service is a lane too, and four on a narrow one, where a row
-        // takes two lines (the metric and its value, then the bar and its
+        // takes two lines (the metric and its value, then the bar beside its
         // share) under its service's name.
         <div className="grid grid-cols-4 gap-x-3 gap-y-6 md:grid-cols-12 md:gap-x-4">
           {groups.map((group) => (
@@ -111,19 +111,25 @@ function Meter({ metric }: { metric: UsageMetric }) {
 
   // The label, the value and the share are each in their own lane, so the
   // bar alone is the progress bar, named in full and read out with its
-  // figures.
+  // figures. On a narrow screen the bar and its share are one line, the bar
+  // taking what the share's narrow lane leaves, the same in every row; on a
+  // wide one that line dissolves (`contents`) into the shared lanes.
   return (
     <li className="col-span-full grid grid-cols-subgrid items-center gap-y-1.5">
       <span className="col-span-2 min-w-0 md:col-span-3">{metric.label}</span>
       <span className="col-span-2 text-right whitespace-nowrap tabular-nums">{text}</span>
-      <Progress
-        aria-label={metric.name}
-        value={value === null ? null : Math.min(value, limit)}
-        max={limit}
-        getAriaValueText={() => (value === null ? "unknown" : `${text}, ${share}`)}
-        className="col-span-3 md:col-span-4"
-      />
-      <span className="text-right text-muted-foreground tabular-nums">{share}</span>
+      <div className="col-span-full flex items-center gap-3 md:contents">
+        <Progress
+          aria-label={metric.name}
+          value={value === null ? null : Math.min(value, limit)}
+          max={limit}
+          getAriaValueText={() => (value === null ? "unknown" : `${text}, ${share}`)}
+          className="min-w-0 flex-1 md:col-span-4"
+        />
+        <span className="w-12 shrink-0 text-right text-muted-foreground tabular-nums md:w-auto">
+          {share}
+        </span>
+      </div>
       {metric.note ? (
         <p className="col-span-full text-xs text-muted-foreground">{metric.note}</p>
       ) : null}
