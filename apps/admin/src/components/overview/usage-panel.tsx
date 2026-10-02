@@ -66,11 +66,12 @@ export function UsagePanel({
         // the screen's, which the sidebar shares. Until the list is wide
         // enough for every lane (`@5xl`), a row takes two lines under its
         // service's name: the metric and its value, then the bar beside its
-        // share. From there, twelve columns are shared down to each row
+        // share, with two services side by side once there is room (`@3xl`),
+        // so a metric never sits far from its value. From there, twelve columns are shared down to each row
         // (subgrid), with the service as a lane too, so every lane lines up
         // across the services.
         <div className="@container">
-          <div className="grid gap-y-6 @5xl:grid-cols-12 @5xl:gap-x-4">
+          <div className="grid gap-y-6 @3xl:grid-cols-2 @3xl:gap-x-10 @5xl:grid-cols-12 @5xl:gap-x-4">
             {groups.map((group) => (
               <Group key={group.service} group={group} />
             ))}
@@ -87,7 +88,7 @@ function Group({ group }: { group: UsageGroup }) {
   return (
     <section
       aria-labelledby={id}
-      className="grid gap-y-3 @5xl:col-span-full @5xl:grid-cols-subgrid @5xl:items-baseline"
+      className="grid content-start gap-y-3 @5xl:col-span-full @5xl:grid-cols-subgrid @5xl:items-baseline"
     >
       <h3 id={id} className="text-sm font-medium @5xl:col-span-2">
         {group.service}
@@ -126,7 +127,7 @@ function Meter({ metric }: { metric: UsageMetric }) {
   // narrow lane leaves, the same in every row. On a wide one both lines
   // dissolve (`contents`) into the shared lanes.
   return (
-    <li className="flex flex-col gap-1.5 @5xl:col-span-full @5xl:grid @5xl:grid-cols-subgrid @5xl:items-center">
+    <li className="flex flex-col gap-y-1.5 @5xl:col-span-full @5xl:grid @5xl:grid-cols-subgrid @5xl:items-center">
       <div className="flex items-baseline justify-between gap-3 @5xl:contents">
         <span className="min-w-0 @5xl:col-span-3">{metric.label}</span>
         <span className="shrink-0 text-right whitespace-nowrap tabular-nums @5xl:col-span-3">
