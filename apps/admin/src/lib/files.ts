@@ -91,6 +91,49 @@ export function afterFilesChange(queryClient: QueryClient): Promise<void> {
 }
 
 /**
+ * After uploads landed (lib/uploads.ts, at most once every 5 s): only the
+ * folders the keys change are read again, each cut back to its first page.
+ * A folder is changed by a key directly in it, or by one under a subfolder
+ * its loaded pages do not list yet (which the upload made). Every other
+ * folder, the one on screen included, keeps its pages, Load more and all.
+ */
+export function afterUploadsLanded(
+  queryClient: QueryClient,
+  keys: readonly string[],
+): Promise<void> {
+  const changed = queryClient
+    .getQueriesData<InfiniteData<FolderListing, string | null>>({ queryKey: FOLDERS_KEY })
+    .filter(([queryKey, data]) => {
+      const prefix = queryKey[FOLDERS_KEY.length];
+      return typeof prefix === "string" && keys.some((key) => changesFolder(prefix, key, data));
+    });
+  return Promise.all(
+    changed.map(([queryKey]) => {
+      queryClient.setQueryData(queryKey, firstPage);
+      return queryClient.invalidateQueries({ queryKey, exact: true });
+    }),
+  ).then(() => undefined);
+}
+
+/** Whether a key that landed changes the listing of the folder `prefix`. */
+function changesFolder(
+  prefix: string,
+  key: string,
+  data: InfiniteData<FolderListing, string | null> | undefined,
+): boolean {
+  if (!key.startsWith(prefix)) {
+    return false;
+  }
+  const rest = key.slice(prefix.length);
+  const slash = rest.indexOf("/");
+  if (slash === -1) {
+    return true;
+  }
+  const folder = `${prefix}${rest.slice(0, slash + 1)}`;
+  return !(data?.pages ?? []).some((page) => page.folders.some((f) => f.prefix === folder));
+}
+
+/**
  * A cursor R2 refused (`invalid_cursor`): the folder is opened again from its
  * first page.
  */

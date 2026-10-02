@@ -14,6 +14,7 @@ import {
 import { describeError } from "@/lib/errors";
 import {
   afterFilesChange,
+  afterUploadsLanded,
   checkFolderName,
   countOf,
   type DeleteTarget,
@@ -621,6 +622,50 @@ describe("the Files queries", () => {
         folderQuery("B/").queryKey,
       )?.pages,
     ).toHaveLength(1);
+    unsubscribe();
+  });
+
+  it("after uploads, reads again only the folders the landed keys change", async () => {
+    const { queryClient, fetch, observer, unsubscribe } = await twoPagesOnScreen();
+    queryClient.setQueryData<InfiniteData<FolderListing, string | null>>(folderQuery("").queryKey, {
+      pages: [
+        {
+          prefix: "",
+          folders: [
+            { name: "A", prefix: "A/" },
+            { name: "B", prefix: "B/" },
+          ],
+          files: [],
+          cursor: null,
+        },
+      ],
+      pageParams: [null],
+    });
+    const pagesOf = (prefix: string) =>
+      queryClient.getQueryData<InfiniteData<FolderListing, string | null>>(
+        folderQuery(prefix).queryKey,
+      )?.pages.length;
+
+    // Into B/, which the root lists already: only B/ changes.
+    await afterUploadsLanded(queryClient, ["B/01.flac"]);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(observer.getCurrentResult().data?.pages).toHaveLength(2);
+    expect(pagesOf("B/")).toBe(1);
+    expect(queryClient.getQueryState(folderQuery("B/").queryKey)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(folderQuery("").queryKey)?.isInvalidated).toBe(false);
+
+    // A new folder at the root changes the root only.
+    await afterUploadsLanded(queryClient, ["New/01.flac"]);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(queryClient.getQueryState(folderQuery("").queryKey)?.isInvalidated).toBe(true);
+    expect(observer.getCurrentResult().data?.pages).toHaveLength(2);
+
+    // Into a new subfolder of A/, the folder on screen: read again, from its
+    // first page, since its listing gains the folder.
+    await afterUploadsLanded(queryClient, ["A/Sub/02.flac"]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith("/api/files?prefix=A%2F", expect.anything());
+    expect(observer.getCurrentResult().data?.pages).toHaveLength(1);
     unsubscribe();
   });
 
