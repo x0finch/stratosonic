@@ -29,12 +29,14 @@ import {
 
 /**
  * The Uploads section (#83, "Layout", item 6), while the queue holds a file:
- * "4 of 12 uploaded", then one row a file, its key in mono over a `Progress`
- * whose label is its state ("Waiting", "Uploading" with its percent,
- * "Uploaded", "Already exists" with **Replace** and **Skip**, or "Failed:"
- * and why, in `destructive` with an icon). A file still to go has a cancel
- * button. Several conflicts get **Replace all**, which asks first, and
- * **Skip all**.
+ * "4 of 12 uploaded", then one row a file, its key in mono over its state.
+ * While the file is sent, the state is a `Progress` labelled "Uploading"
+ * with its percent; otherwise it is a line of text ("Waiting", "Uploaded",
+ * "Already exists" with **Replace** and **Skip**, "Failed:" and why in
+ * `destructive` with an icon, "Skipped", "Canceled"), with no empty track
+ * to read as a divider (DESIGN.md: no decorative lines). A file still to go
+ * has a cancel button. Several conflicts get **Replace all**, which asks
+ * first, and **Skip all**.
  */
 export function UploadsSection({
   items,
@@ -105,7 +107,7 @@ export function UploadsSection({
   );
 }
 
-/** A row's state, as its `ProgressLabel` says it. */
+/** A row's state, in words. */
 function stateLabel(item: UploadView): string {
   switch (item.state) {
     case "waiting":
@@ -140,7 +142,6 @@ function UploadRow({
   const active = item.state === "waiting" || item.state === "signing" || item.state === "uploading";
   const sending = item.state === "signing" || item.state === "uploading";
   const failed = item.state === "failed" && item.failure !== undefined;
-  const percent = item.state === "uploaded" ? 100 : sending ? percentOf(item) : 0;
 
   return (
     <li className="flex flex-col gap-2">
@@ -166,20 +167,25 @@ function UploadRow({
           </div>
         ) : null}
       </div>
-      <Progress value={percent}>
-        <ProgressLabel
-          className={failed ? "flex min-w-0 items-start gap-1.5 text-destructive" : "min-w-0"}
-        >
-          {failed && item.failure ? (
-            <>
-              <CircleAlertIcon className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-              <span className="min-w-0">
-                Failed: {describeFailure(item.failure, item.key, allowed)}
-              </span>
-            </>
-          ) : (
-            stateLabel(item)
-          )}
+      {sending ? (
+        <Progress value={percentOf(item)}>
+          <ProgressLabel className="min-w-0">
+            {stateLabel(item)}
+            {/* The bar's name says which file it is. */}
+            <span className="sr-only">, {item.key}</span>
+          </ProgressLabel>
+          <ProgressValue />
+        </Progress>
+      ) : failed && item.failure ? (
+        <p className="flex min-w-0 items-start gap-1.5 font-medium text-destructive">
+          <CircleAlertIcon className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <span className="min-w-0">
+            Failed: {describeFailure(item.failure, item.key, allowed)}
+          </span>
+        </p>
+      ) : (
+        <p className="min-w-0 font-medium">
+          {stateLabel(item)}
           {item.state === "exists" && item.existing ? (
             <span className="font-normal text-muted-foreground">
               {" "}
@@ -187,11 +193,8 @@ function UploadRow({
               <RelativeTime iso={item.existing.uploadedAt} now={now} />)
             </span>
           ) : null}
-          {/* The bar's name says which file it is. */}
-          <span className="sr-only">, {item.key}</span>
-        </ProgressLabel>
-        {sending || item.state === "uploaded" ? <ProgressValue /> : null}
-      </Progress>
+        </p>
+      )}
     </li>
   );
 }

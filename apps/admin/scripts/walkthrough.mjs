@@ -1222,9 +1222,10 @@ async function main() {
         await markToasts(page);
         await pick(page, "Folder…", join(uploads.dir, "walkthrough upload"));
         await page.getByRole("heading", { level: 2, name: "Uploads" }).waitFor();
+        // One row a file; a progress bar shows only while a file is sent.
         check(
-          (await page.getByRole("progressbar").count()) === 5,
-          "the Uploads section does not show one progress row a file",
+          (await page.getByRole("region", { name: "Uploads" }).getByRole("listitem").count()) === 5,
+          "the Uploads section does not show one row a file",
         );
         await expectToast(page, "Uploaded 5 files");
         await page.getByText("5 of 5 uploaded").waitFor();

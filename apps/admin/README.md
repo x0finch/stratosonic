@@ -330,9 +330,10 @@ credentials, **Upload**.
   "replace it with rclone".
 - **The Uploads section**, while the queue holds a file: "4 of 12
   uploaded", **Cancel all**, **Clear finished**, and one row a file, its
-  key over a progress bar with its state (Waiting, Uploading with its
-  percent, Uploaded, Already exists, Failed and why, Skipped, Canceled)
-  and **Cancel upload** while it is still to go. Each run ends in a toast:
+  key over its state: a progress bar with its percent while it is sent,
+  otherwise a line of text (Waiting, Uploaded, Already exists, Failed and
+  why, Skipped, Canceled), so no empty track reads as a divider; and
+  **Cancel upload** while it is still to go. Each run ends in a toast:
   "Uploaded 12 files" ("The next scheduled scan will index them." when the
   server could not schedule the scan), and "2 files were not uploaded".
 - **The scan line**, under the path, shows only while a pass is scheduled or
