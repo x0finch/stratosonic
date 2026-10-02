@@ -575,7 +575,9 @@ describe("POST /api/files/delete-folder", () => {
     });
     expect(await third.json()).toEqual({ deleted: 0, done: true, scan: null });
     expect(harness.driverCalls).toHaveLength(driverCalls);
-  });
+    // Seeding 2,505 objects in miniflare takes most of Vitest's default 5 s
+    // on a busy machine.
+  }, 30_000);
 
   it("answers done once a listing comes back complete, with smaller pages", async () => {
     const paged = filesHarness(ORIGIN, { listLimit: 2 });
