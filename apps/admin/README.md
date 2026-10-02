@@ -321,7 +321,10 @@ credentials, **Upload**.
   Two uploads to one key never run together. The queue lasts for the
   session, so uploads go on in other folders and on other pages, and
   closing the tab while a file waits or is sent asks first
-  (`beforeunload`).
+  (`beforeunload`). Signing out, or a session that ends, cancels what is
+  still to go and clears the queue. A file whose earlier `PUT` lost its
+  answer and then shows as Already exists is reported even when skipped,
+  since what exists may be that upload.
 - **Already exists** (the server's `exists`, or R2's `412`) offers
   **Replace** and **Skip**; several get **Replace all**, which asks first
   ("Replace 3 files?"), and **Skip all**. Replace is never automatic: it
@@ -333,7 +336,14 @@ credentials, **Upload**.
   key over its state: a progress bar with its percent while it is sent,
   otherwise a line of text (Waiting, Uploaded, Already exists, Failed and
   why, Skipped, Canceled), so no empty track reads as a divider; and
-  **Cancel upload** while it is still to go. Each run ends in a toast:
+  **Cancel upload** while it is still to go. A pick of thousands stays
+  light: the section draws the files in flight, every failure and
+  conflict, the next 50 waiting and the latest 50 finished, and counts the
+  rest ("and 1,940 more uploaded"); a row redraws only when it changes, and
+  the queue tells the page of progress at most ten times a second. When a
+  row's buttons go, focus moves to the next row with buttons, or to the
+  heading. The section shows only for a role with `files:write`. Each run
+  ends in a toast:
   "Uploaded 12 files" ("The next scheduled scan will index them." when the
   server could not schedule the scan), and "2 files were not uploaded".
 - **The scan line**, under the path, shows only while a pass is scheduled or
@@ -341,14 +351,16 @@ credentials, **Upload**.
   scan is running. Another follows it for your recent changes." or "A scan is
   running." It counts down on the server's clock from the schedule the last
   delete or upload completion returned (the answer's `Date` header standing
-  for `serverTime`), or from the live route's, whichever answered last. The rescan itself is the
-  server's (ADR-0008); the page only shows it.
+  for `serverTime`), or from the live route's, whichever answered last.
+  The rescan itself is the server's (ADR-0008); the page only shows it.
 
 What it reads, for the free-tier budget: `GET /api/files/config` once a
 session; `GET /api/files` on opening a folder (fresh for 30 s), on **Load
-more**, once after a delete, and as uploads land, at most once every 5 s
-while the queue runs and once after the last (only the first page,
-whatever was loaded). A folder the page leaves is cut back to its first
+more**, and once after a delete (only the first page, whatever was
+loaded). As uploads land, at most once every 5 s while the queue runs and
+once after the last, only the folders the landed keys change are read
+again: one a key landed in, or one that gains a subfolder. Each is read
+from its first page, and every other folder keeps its pages. A folder the page leaves is cut back to its first
 page, so a return to it once stale reads one page too, and its selection
 is dropped. `GET /api/overview/live` is read only while a pass is
 scheduled or running, with `library:read`, at the Overview's pace (every
