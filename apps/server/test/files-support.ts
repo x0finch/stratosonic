@@ -9,11 +9,28 @@ import { driverIsIdle } from "./driver-support";
 import { testEnv } from "./support";
 
 /**
- * The Files API under test (#83, #131): the Worker's app over a D1 binding
- * that records every statement, an R2 binding that records every call it is
- * asked for and can be given a smaller listing page, and a scan driver
- * binding that records every call it is asked for.
+ * The Files API under test (#83, #131, #132): the Worker's app over a D1
+ * binding that records every statement, an R2 binding that records every call
+ * it is asked for (and how many were in flight at once) and can be given a
+ * smaller listing page, and a scan driver binding that records every call it
+ * is asked for.
+ *
+ * The R2 binding's `head()` treats Unicode-equivalent keys as one object, as
+ * R2 does ("Unicode interoperability") and miniflare's simulation does not:
+ * a key stored in NFD is found by its NFC spelling, and answered with the
+ * stored one.
  */
+
+/**
+ * A complete, made-up upload configuration: the token's two values, the
+ * account id and the bucket's name. Nothing signed with it reaches R2.
+ */
+export const UPLOADS_ENV = {
+  R2_ACCESS_KEY_ID: "test-access-key-id",
+  R2_SECRET_ACCESS_KEY: "test-secret-access-key-not-real",
+  CF_ACCOUNT_ID: "0123456789abcdef0123456789abcdef",
+  R2_BUCKET_NAME: "navidrome",
+} as const;
 
 /** One call to the bucket's binding: its method and first argument. */
 export interface R2Call {
@@ -30,6 +47,11 @@ export interface FilesHarnessOptions {
   readonly fileWrites?: string;
   /** Makes every write of a `property` row fail, as a D1 outage would. */
   readonly failPropertyWrite?: boolean;
+  /**
+   * The upload settings, over the pinned ones (where the token is unset):
+   * `UPLOADS_ENV` configures uploads.
+   */
+  readonly uploads?: Partial<Pick<Env, keyof typeof UPLOADS_ENV>>;
 }
 
 export interface FilesHarness {
@@ -37,6 +59,8 @@ export interface FilesHarness {
   readonly d1: ReturnType<typeof countingD1>;
   /** Every call to `MUSIC` the app made, in order. */
   readonly r2Calls: R2Call[];
+  /** The most calls to `MUSIC` in flight at once, since the last reset. */
+  readonly r2Peak: { inFlight: number; peak: number };
   /** Every method called on the scan driver's stub, in order. */
   readonly driverCalls: string[];
   /** Calls a route as the console would, signed in with `jar`. */
@@ -51,6 +75,7 @@ export interface FilesHarness {
 
 export function filesHarness(origin: string, options: FilesHarnessOptions = {}): FilesHarness {
   const r2Calls: R2Call[] = [];
+  const r2Peak = { inFlight: 0, peak: 0 };
   const driverCalls: string[] = [];
 
   const music = new Proxy(testEnv.MUSIC, {
@@ -59,16 +84,28 @@ export function filesHarness(origin: string, options: FilesHarnessOptions = {}):
       if (typeof value !== "function") {
         return value;
       }
-      return (argument: unknown, ...rest: unknown[]) => {
+      return async (argument: unknown, ...rest: unknown[]) => {
         r2Calls.push({ method: String(name), argument });
-        if (name === "list" && options.listLimit !== undefined) {
-          const listing = (argument ?? {}) as R2ListOptions;
-          return target.list({
-            ...listing,
-            limit: Math.min(listing.limit ?? 1000, options.listLimit),
-          });
+        r2Peak.inFlight++;
+        r2Peak.peak = Math.max(r2Peak.peak, r2Peak.inFlight);
+        try {
+          if (name === "list" && options.listLimit !== undefined) {
+            const listing = (argument ?? {}) as R2ListOptions;
+            return await target.list({
+              ...listing,
+              limit: Math.min(listing.limit ?? 1000, options.listLimit),
+            });
+          }
+          if (name === "head" && typeof argument === "string") {
+            return await headAnySpelling(target, argument);
+          }
+          return await (value as (...args: unknown[]) => unknown).apply(target, [
+            argument,
+            ...rest,
+          ]);
+        } finally {
+          r2Peak.inFlight--;
         }
-        return (value as (...args: unknown[]) => unknown).apply(target, [argument, ...rest]);
       };
     },
   });
@@ -128,6 +165,7 @@ export function filesHarness(origin: string, options: FilesHarnessOptions = {}):
     MUSIC: music,
     SCAN_DRIVER: scanDriver,
     FILE_WRITES: options.fileWrites ?? "",
+    ...options.uploads,
   };
   const app = createApp();
   const send = (request: Request) => app.request(request, undefined, env);
@@ -136,6 +174,7 @@ export function filesHarness(origin: string, options: FilesHarnessOptions = {}):
     send,
     d1,
     r2Calls,
+    r2Peak,
     driverCalls,
     call: async (jar, method, path, body, headers = {}) => {
       const request = consoleRequest(origin, `/api${path}`, { method, body, jar });
@@ -146,6 +185,20 @@ export function filesHarness(origin: string, options: FilesHarnessOptions = {}):
       return send(request);
     },
   };
+}
+
+/**
+ * `head()` as R2 answers it: the object under the key, or under its NFC or
+ * NFD spelling, with the key it is stored under.
+ */
+async function headAnySpelling(bucket: R2Bucket, key: string): Promise<R2Object | null> {
+  for (const spelling of new Set([key, key.normalize("NFC"), key.normalize("NFD")])) {
+    const object = await bucket.head(spelling);
+    if (object !== null) {
+      return object;
+    }
+  }
+  return null;
 }
 
 /** Every key in the bucket, sorted, past R2's 1,000-a-page listing. */
