@@ -17,6 +17,7 @@ import {
   filesHarness,
   seedObjects,
   UPLOADS_ENV,
+  unreachableDriver,
 } from "./files-support";
 import { resetLibrary } from "./scan-support";
 import { canonicalObjectPath } from "./sigv4-oracle";
@@ -78,16 +79,23 @@ function readOnly(): FilesHarness {
   return filesHarness(ORIGIN, { fileWrites: "off", uploads: UPLOADS_ENV });
 }
 
-/** A scan driver whose every call fails, as an unreachable Durable Object would. */
-function unreachableDriver(): Env["SCAN_DRIVER"] {
-  return {
-    idFromName: (name: string) => testEnv.SCAN_DRIVER.idFromName(name),
-    get: () =>
-      new Proxy(
-        {},
-        { get: () => () => Promise.reject(new Error("the scan driver is unreachable")) },
-      ),
-  } as unknown as Env["SCAN_DRIVER"];
+/**
+ * Whether `scan` is one of the driver's answers (`ScanSchedule`): a pass at
+ * a time; one more after the pass running; or none needed, the running pass
+ * covering the change. `null` (the driver unreachable) is not one.
+ */
+function isScanSchedule(scan: unknown): boolean {
+  if (typeof scan !== "object" || scan === null) {
+    return false;
+  }
+  const { scheduledAt, afterCurrentPass, ...rest } = scan as Record<string, unknown>;
+  if (Object.keys(rest).length > 0) {
+    return false;
+  }
+  if (typeof scheduledAt === "string") {
+    return afterCurrentPass === false && !Number.isNaN(Date.parse(scheduledAt));
+  }
+  return scheduledAt === null && typeof afterCurrentPass === "boolean";
 }
 
 async function libraryChangedAt(): Promise<number | null> {
@@ -572,13 +580,54 @@ describe("POST /api/files/uploads/complete", () => {
     const changedAt = await libraryChangedAt();
     expect(changedAt).toBeGreaterThanOrEqual(before);
     expect(changedAt).toBeLessThanOrEqual(after);
-    // The driver's schedule, as the delete routes answer it.
-    expect(await response.json()).toEqual({
-      scan: expect.objectContaining({ scheduledAt: expect.any(String) }),
-    });
+    // The driver's schedule, as the delete routes answer it: with no pass
+    // running, a pass at a time.
+    const { scan } = (await response.json()) as { scan: { scheduledAt: unknown } };
+    expect(isScanSchedule(scan)).toBe(true);
+    expect(scan.scheduledAt).toEqual(expect.any(String));
     expect(harness.r2Calls).toEqual([]);
     expect(harness.driverCalls).toHaveLength(1);
     expect(await driverIsIdle()).toBe(false);
+  });
+
+  it("answers the driver's schedule as it is, during a pass too", async () => {
+    // A driver with a pass running: `start` (the stand-in until #130 merges)
+    // and `touch` (#130) both say so.
+    const busy = {
+      idFromName: (name: string) => testEnv.SCAN_DRIVER.idFromName(name),
+      get: () =>
+        new Proxy(
+          {},
+          {
+            get: (_, method) => async () =>
+              method === "start" ? "running" : { scheduledAt: null, afterCurrentPass: true },
+          },
+        ),
+    } as unknown as Env["SCAN_DRIVER"];
+    const during = filesHarness(ORIGIN, { scanDriver: busy, uploads: UPLOADS_ENV });
+
+    const response = await during.call(owner, "POST", "/files/uploads/complete", {
+      keys: ["A/b.flac"],
+    });
+
+    expect(response.status).toBe(200);
+    const { scan } = (await response.json()) as { scan: unknown };
+    expect(isScanSchedule(scan)).toBe(true);
+    expect(scan).toEqual({ scheduledAt: null, afterCurrentPass: true });
+  });
+
+  it("knows every shape of the driver's schedule", () => {
+    expect(
+      isScanSchedule({ scheduledAt: "2026-10-02T12:00:00.000Z", afterCurrentPass: false }),
+    ).toBe(true);
+    expect(isScanSchedule({ scheduledAt: null, afterCurrentPass: true })).toBe(true);
+    // #137: the running pass already covers the change.
+    expect(isScanSchedule({ scheduledAt: null, afterCurrentPass: false })).toBe(true);
+    expect(isScanSchedule(null)).toBe(false);
+    expect(isScanSchedule({ scheduledAt: "soon", afterCurrentPass: false })).toBe(false);
+    expect(
+      isScanSchedule({ scheduledAt: "2026-10-02T12:00:00.000Z", afterCurrentPass: true }),
+    ).toBe(false);
   });
 
   it("takes a Replace's stored spelling, which may be NFD", async () => {
