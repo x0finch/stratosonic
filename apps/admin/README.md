@@ -250,7 +250,9 @@ the sidebar's Files entry; one with `files:write` also gets the checkboxes,
 each row's menu, **Delete** and **New folder**.
 
 - A folder is `?prefix=Artist/Album/`, so it is a deep link and the
-  browser's back button walks up (`?prefix=2024` opens `2024/`). The path
+  browser's back button walks up (`?prefix=2024` opens `2024/`; the router
+  parses a search value as JSON first, so a hand-typed `?prefix=1.50`
+  opens `1.5/`). The path
   above the folder links each folder from the bucket down, and its current
   page names the folder: the folder is the page's one block, so it has no
   h2 (DESIGN.md). In a narrow column the folders in between collapse into
@@ -286,8 +288,9 @@ each row's menu, **Delete** and **New folder**.
 What it reads, for the free-tier budget: `GET /api/files/config` once a
 session; `GET /api/files` on opening a folder (fresh for 30 s), on **Load
 more**, and once after a delete (only the first page, whatever was
-loaded); a folder the page leaves is cut back to its first page, so a
-return to it once stale reads one page too; `GET /api/overview/live` only while a pass is scheduled or running,
-with `library:read`, at the Overview's pace (every 30 s, every 10 s while a
-pass runs). Nothing else is polled, a return to the tab reads nothing, and
-a hidden tab reads nothing.
+loaded). A folder the page leaves is cut back to its first page, so a
+return to it once stale reads one page too, and its selection is dropped.
+`GET /api/overview/live` is read only while a pass is scheduled or
+running, with `library:read`, at the Overview's pace (every 30 s, every
+10 s while a pass runs). Nothing else is polled, a return to the tab reads
+nothing, and a hidden tab reads nothing.

@@ -31,12 +31,15 @@ import {
   folderQuery,
   latestView,
   leaveFolder,
+  NO_SELECTION,
   reopenFolder,
   type ScanView,
+  type Selection,
   scanActive,
+  selectedIn,
   selectionWhere,
   shownIds,
-  targetId,
+  toggleSelected,
   validateFilesSearch,
   viewOfLive,
   viewOfWrite,
@@ -76,19 +79,11 @@ function Files() {
   return <FilesPage me={me ?? null} />;
 }
 
-/** The selected rows, for the folder they were chosen in. */
-interface Selection {
-  prefix: string;
-  targets: ReadonlyMap<string, DeleteTarget>;
-}
-
 /** Which dialog is open; the delete's targets stay while it closes. */
 interface DialogState {
   open: "delete" | "new-folder" | null;
   targets: readonly DeleteTarget[];
 }
-
-const NO_SELECTION: ReadonlyMap<string, DeleteTarget> = new Map();
 
 function FilesPage({ me }: { me: Me | null }) {
   const { prefix = "" } = Route.useSearch();
@@ -97,9 +92,18 @@ function FilesPage({ me }: { me: Me | null }) {
 
   const config = useQuery(filesConfigQuery);
   const folder = useInfiniteQuery(folderQuery(prefix));
+  const [selection, setSelection] = useState<Selection>(NO_SELECTION);
   // Leaving a folder cuts its listing back to its first page, so that a
-  // return to it once stale reads one page, not every page loaded.
-  useEffect(() => () => leaveFolder(queryClient, prefix), [queryClient, prefix]);
+  // return to it once stale reads one page, not every page loaded, and
+  // drops the selection with it: rows chosen on a later page are not shown
+  // on return, and must not be deleted unseen.
+  useEffect(
+    () => () => {
+      leaveFolder(queryClient, prefix);
+      setSelection(NO_SELECTION);
+    },
+    [queryClient, prefix],
+  );
 
   // The write controls: for a role with `files:write`, where the server
   // takes file writes (owner decision 2: not in the preview).
@@ -121,8 +125,6 @@ function FilesPage({ me }: { me: Me | null }) {
   });
   const view = latestView(written, live.data && viewOfLive(live.data));
 
-  const [selection, setSelection] = useState<Selection>({ prefix, targets: NO_SELECTION });
-  const selected = selection.prefix === prefix ? selection.targets : NO_SELECTION;
   const [dialog, setDialog] = useState<DialogState>({ open: null, targets: [] });
   // The folders made with New folder, which exist only once a file lands.
   const [made, setMade] = useState<ReadonlySet<string>>(new Set());
@@ -133,19 +135,13 @@ function FilesPage({ me }: { me: Me | null }) {
   const folders = pages.flatMap((page) => page.folders);
   const files = pages.flatMap((page) => page.files);
   const empty = folder.data !== undefined && folders.length === 0 && files.length === 0;
+  // Only rows on screen count as selected, whatever the state holds: the
+  // header's box, the Delete button's count and the delete itself all read
+  // this (deletes are permanent).
+  const selected = selectedIn(selection, prefix, shownIds(folder.data));
 
   function select(targets: readonly DeleteTarget[], checked: boolean) {
-    setSelection((current) => {
-      const next = new Map(current.prefix === prefix ? current.targets : NO_SELECTION);
-      for (const target of targets) {
-        if (checked) {
-          next.set(targetId(target), target);
-        } else {
-          next.delete(targetId(target));
-        }
-      }
-      return { prefix, targets: next };
-    });
+    setSelection((current) => toggleSelected(current, prefix, targets, checked));
   }
 
   function loadMore() {

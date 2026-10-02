@@ -28,13 +28,16 @@ import {
   latestView,
   leaveFolder,
   listedNames,
+  NO_SELECTION,
   planDelete,
   reopenFolder,
   runDelete,
   scanActive,
   scanLine,
+  selectedIn,
   selectionWhere,
   shownIds,
+  toggleSelected,
   validateFilesSearch,
   viewOfLive,
   viewOfWrite,
@@ -301,6 +304,40 @@ describe("running a delete", () => {
 });
 
 describe("the selection", () => {
+  /** A folder of 306 files, 300 on its first page and 6 on the next. */
+  const keys = Array.from({ length: 306 }, (_, index) => `A/${index}.flac`);
+  const firstPage = new Set(keys.slice(0, 300));
+  const bothPages = new Set(keys);
+
+  it("counts, checks and deletes only the rows on screen", () => {
+    // Every row of both pages selected, then the folder cut back to page 1
+    // (left and returned to, after a delete, or after a refused cursor).
+    const selection = toggleSelected(NO_SELECTION, "A/", keys.map(file), true);
+    expect(selectedIn(selection, "A/", bothPages).size).toBe(306);
+
+    const onScreen = selectedIn(selection, "A/", firstPage);
+    expect(onScreen.size).toBe(300);
+    expect([...onScreen.keys()].some((id) => !firstPage.has(id))).toBe(false);
+    // What a delete would take: the plan has only rows on screen.
+    expect(planDelete([...onScreen.values()], 250).fileBatches.flat()).toEqual(keys.slice(0, 300));
+  });
+
+  it("is its folder's alone, and starts afresh in another", () => {
+    const inA = toggleSelected(NO_SELECTION, "A/", [file("A/0.flac")], true);
+    expect(selectedIn(inA, "B/", bothPages).size).toBe(0);
+
+    const inB = toggleSelected(inA, "B/", [file("B/x.flac")], true);
+    expect([...inB.targets.keys()]).toEqual(["B/x.flac"]);
+    expect(toggleSelected(inB, "B/", [file("B/x.flac")], false).targets.size).toBe(0);
+  });
+
+  it("holds nothing once the page has left its folder", () => {
+    // The page sets NO_SELECTION when it leaves a folder: a return finds
+    // nothing selected, even rows that are shown again.
+    expect(selectedIn(NO_SELECTION, "A/", bothPages).size).toBe(0);
+    expect(NO_SELECTION.prefix).toBeNull();
+  });
+
   it("keeps only the ids a test lets through", () => {
     const selection = new Map([
       ["A/", folder("A/")],
