@@ -39,6 +39,13 @@ export const PERMISSIONS = [
   "library:scan",
   // See the Cloudflare account's free-tier usage (`GET /api/usage`, #82).
   "usage:read",
+  // Browse the bucket and read the Files page's configuration
+  // (`GET /api/files`, `GET /api/files/config`; Phase 2, #83).
+  "files:read",
+  // Change the bucket: delete files and folders, and sign and report uploads
+  // (Phase 2, #83). It does not need `library:scan`: the pass a change
+  // schedules is a consequence of the change, not a request for a scan.
+  "files:write",
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
