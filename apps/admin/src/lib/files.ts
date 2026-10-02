@@ -130,12 +130,64 @@ export function selectionWhere<T>(
 }
 
 /**
+ * The rows chosen for a delete, by `targetId`, with the folder they were
+ * chosen in. The page clears it when it leaves the folder (whose listing
+ * `leaveFolder` cuts back to its first page), so nothing chosen on a later
+ * page survives a return.
+ */
+export interface Selection {
+  prefix: string | null;
+  targets: ReadonlyMap<string, DeleteTarget>;
+}
+
+/** Nothing selected, in no folder: the page's state at first and after it leaves a folder. */
+export const NO_SELECTION: Selection = { prefix: null, targets: new Map() };
+
+/** `selection` with `targets` checked or unchecked in the folder `prefix`, starting afresh in another. */
+export function toggleSelected(
+  selection: Selection,
+  prefix: string,
+  targets: readonly DeleteTarget[],
+  checked: boolean,
+): Selection {
+  const next = new Map(selection.prefix === prefix ? selection.targets : NO_SELECTION.targets);
+  for (const target of targets) {
+    if (checked) {
+      next.set(targetId(target), target);
+    } else {
+      next.delete(targetId(target));
+    }
+  }
+  return { prefix, targets: next };
+}
+
+/**
+ * What a delete of the selection would take: the selected rows of the
+ * folder `prefix` that the page shows now (`shownIds`), and nothing else.
+ * Deletes are permanent, so a row that is not on screen (another folder's,
+ * or one of a page no longer loaded) is never counted, checked or deleted,
+ * whatever the state still holds.
+ */
+export function selectedIn(
+  selection: Selection,
+  prefix: string,
+  shown: ReadonlySet<string>,
+): ReadonlyMap<string, DeleteTarget> {
+  return selection.prefix === prefix
+    ? selectionWhere(selection.targets, (id) => shown.has(id))
+    : NO_SELECTION.targets;
+}
+
+/**
  * The `?prefix=` search parameter of `/files`: a folder's prefix, ending in
  * `/`, or absent for the root. A deep link that names a folder without its
  * final slash gets it. The router parses each search value as JSON first,
  * so `?prefix=2024` arrives as the number 2024, and `?prefix=true` as a
- * boolean: both are taken back as the folder names they were typed as.
- * Anything else that is not a string opens the root.
+ * boolean: both are taken back as folder names. A hand-typed number that
+ * JSON writes another way does not survive that parse (`?prefix=1.50`
+ * opens `1.5/`); the page's own links always end in `/`, which no JSON
+ * parse accepts, so they arrive as typed. Anything else that is not a
+ * string opens the root.
  */
 export function validateFilesSearch(search: Record<string, unknown>): { prefix?: string } {
   const raw = search.prefix;

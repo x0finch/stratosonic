@@ -265,7 +265,9 @@ each row's menu, **Delete**, **New folder** and, where the server has R2 API
 credentials, **Upload**.
 
 - A folder is `?prefix=Artist/Album/`, so it is a deep link and the
-  browser's back button walks up (`?prefix=2024` opens `2024/`). The path
+  browser's back button walks up (`?prefix=2024` opens `2024/`; the router
+  parses a search value as JSON first, so a hand-typed `?prefix=1.50`
+  opens `1.5/`). The path
   above the folder links each folder from the bucket down, and its current
   page names the folder, which has no h2. While the folder is the page's
   one block it is no region either (DESIGN.md); once the Uploads section
@@ -337,19 +339,21 @@ credentials, **Upload**.
   running: "Library scan in about 2 minutes.", "Library scan starting.", "A
   scan is running. Another follows it for your recent changes." or "A scan is
   running." It counts down on the server's clock from the schedule the last
-  delete or upload completion returned (the answer's `Date` header standing for `serverTime`), or
-  from the live route's, whichever answered last. The rescan itself is the
+  delete or upload completion returned (the answer's `Date` header standing
+  for `serverTime`), or from the live route's, whichever answered last. The rescan itself is the
   server's (ADR-0008); the page only shows it.
 
 What it reads, for the free-tier budget: `GET /api/files/config` once a
 session; `GET /api/files` on opening a folder (fresh for 30 s), on **Load
 more**, once after a delete, and as uploads land, at most once every 5 s
 while the queue runs and once after the last (only the first page,
-whatever was loaded); a folder the page leaves is cut back to its first page, so a
-return to it once stale reads one page too; `GET /api/overview/live` only while a pass is scheduled or running,
-with `library:read`, at the Overview's pace (every 30 s, every 10 s while a
-pass runs). Nothing else is polled, a return to the tab reads nothing, and
-a hidden tab reads nothing. An upload costs its share of one sign request
-(1–3 files), one `PUT` straight to R2 (no Worker request), and its share of
-one complete request (the files of its sign request that landed); the
-bucket's CORS rule lets the browser keep one preflight for an hour.
+whatever was loaded). A folder the page leaves is cut back to its first
+page, so a return to it once stale reads one page too, and its selection
+is dropped. `GET /api/overview/live` is read only while a pass is
+scheduled or running, with `library:read`, at the Overview's pace (every
+30 s, every 10 s while a pass runs). Nothing else is polled, a return to
+the tab reads nothing, and a hidden tab reads nothing. An upload costs its
+share of one sign request (1–3 files), one `PUT` straight to R2 (no Worker
+request), and its share of one complete request (the files of its sign
+request that landed); the bucket's CORS rule lets the browser keep one
+preflight for an hour.
