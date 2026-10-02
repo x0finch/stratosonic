@@ -337,15 +337,6 @@ describe("POST /api/files/uploads", () => {
       { key: "Artist/empty.lrc", size: 0 },
       { key: "Taken/01.mp3", size: 10 },
       { key: "Fine/01.mp3", size: 10 },
-      { key: "/absolute.flac", size: 10 },
-      { key: "Folder/", size: 10 },
-      { key: "a//b.flac", size: 10 },
-      { key: "./a.flac", size: 10 },
-      { key: ".hidden/a.flac", size: 10 },
-      { key: "Win\\dows.flac", size: 10 },
-      { key: "Tab\there.flac", size: 10 },
-      { key: "", size: 10 },
-      { key: `${"一".repeat(341)}/x.flac`, size: 10 },
       { key: "Fine/02.FLAC", size: ALLOWED.audio.maxBytes },
     ]);
 
@@ -359,6 +350,31 @@ describe("POST /api/files/uploads", () => {
       "empty_file",
       "exists",
       "signed",
+      "signed",
+    ]);
+    expect(uploads[3]).toEqual({ key: "Artist/notes.pdf", error: "type_not_allowed" });
+    expect(harness.r2Calls).toEqual([
+      { method: "head", argument: "Taken/01.mp3" },
+      { method: "head", argument: "Fine/01.mp3" },
+      { method: "head", argument: "Fine/02.FLAC" },
+    ]);
+  });
+
+  it("refuses every malformed key with invalid_path or path_too_long, and heads none", async () => {
+    const { status, uploads } = await sign([
+      { key: "/absolute.flac", size: 10 },
+      { key: "Folder/", size: 10 },
+      { key: "a//b.flac", size: 10 },
+      { key: "./a.flac", size: 10 },
+      { key: ".hidden/a.flac", size: 10 },
+      { key: "Win\\dows.flac", size: 10 },
+      { key: "Tab\there.flac", size: 10 },
+      { key: "", size: 10 },
+      { key: `${"一".repeat(341)}/x.flac`, size: 10 },
+    ]);
+
+    expect(status).toBe(200);
+    expect(uploads.map((upload) => ("error" in upload ? upload.error : "signed"))).toEqual([
       "invalid_path",
       "invalid_path",
       "invalid_path",
@@ -368,14 +384,8 @@ describe("POST /api/files/uploads", () => {
       "invalid_path",
       "invalid_path",
       "path_too_long",
-      "signed",
     ]);
-    expect(uploads[3]).toEqual({ key: "Artist/notes.pdf", error: "type_not_allowed" });
-    expect(harness.r2Calls).toEqual([
-      { method: "head", argument: "Taken/01.mp3" },
-      { method: "head", argument: "Fine/01.mp3" },
-      { method: "head", argument: "Fine/02.FLAC" },
-    ]);
+    expect(harness.r2Calls).toEqual([]);
   });
 
   it.each([
