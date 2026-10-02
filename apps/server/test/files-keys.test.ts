@@ -4,6 +4,7 @@ import {
   checkBrowsePrefix,
   checkFolderPrefix,
   checkUploadKey,
+  checkUploadPrefix,
   checkUploadSize,
   contentTypeOf,
   hasOneSpelling,
@@ -11,6 +12,7 @@ import {
   kindOf,
   MAX_KEY_BYTES,
   MAX_SEGMENT_BYTES,
+  newKeySpelling,
   oneSpellingPrefix,
 } from "../src/files/keys";
 import { AUDIO_CONTENT_TYPES, AUDIO_SUFFIXES } from "../src/library/audio-formats";
@@ -253,5 +255,45 @@ describe("a segment's spellings", () => {
     expect(isAscii("Artist/01.flac")).toBe(true);
     expect(isAscii("Bj\u00f6rk")).toBe(false);
     expect(isAscii("")).toBe(true);
+  });
+});
+
+describe("a new key in a listed folder", () => {
+  // A folder named on macOS, stored in NFD, as browse lists it.
+  const FOLDER = "Björk/Homogenic/";
+
+  it("keeps the folder's spelling and normalises only the rest to NFC", () => {
+    const raw = `${FOLDER}01 Jóga.flac`;
+
+    const checked = checkUploadKey(raw, FOLDER);
+
+    expect(checked).toMatchObject({ key: `${FOLDER}01 Jóga.flac`, kind: "audio" });
+    expect(newKeySpelling(raw, FOLDER)).toBe(`${FOLDER}01 Jóga.flac`);
+    // Without the folder, the whole key is NFC: another folder.
+    expect(checkUploadKey(raw)).toMatchObject({ key: raw.normalize("NFC") });
+  });
+
+  it("refuses a key outside the folder as invalid_path", () => {
+    expect(checkUploadKey("Björk/Homogenic/01.flac", FOLDER)).toEqual({
+      error: "invalid_path",
+    });
+    expect(checkUploadKey("Other/01.flac", FOLDER)).toEqual({ error: "invalid_path" });
+  });
+
+  it("still applies every rule to the whole key", () => {
+    expect(checkUploadKey(`${FOLDER}.hidden.flac`, FOLDER)).toEqual({ error: "invalid_path" });
+    expect(checkUploadKey(`${FOLDER}notes.pdf`, FOLDER)).toEqual({ error: "type_not_allowed" });
+    expect(checkUploadKey("_covers/a.png", "_covers/")).toEqual({ error: "reserved_path" });
+  });
+
+  it.each([
+    ["the root", "", null],
+    ["a folder in NFD, taken as it is", FOLDER, null],
+    ["a prefix that is not a folder", "Björk", "invalid_path"],
+    ["a prefix over 1,024 bytes", `${"a".repeat(1024)}/`, "invalid_path"],
+    ["a lone surrogate", "A\ud800/", "invalid_path"],
+    ["the cover prefix", "_covers/", "reserved_path"],
+  ])("checks the folder as browse does: %s", (_, prefix, refusal) => {
+    expect(checkUploadPrefix(prefix)).toBe(refusal);
   });
 });

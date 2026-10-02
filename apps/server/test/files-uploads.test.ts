@@ -428,6 +428,73 @@ describe("POST /api/files/uploads", () => {
     });
   });
 
+  describe("into a listed folder (prefix)", () => {
+    // A folder named on macOS, stored in NFD, as browse lists it.
+    const FOLDER = "Björk/Homogenic/";
+
+    async function signInto(prefix: unknown, files: unknown[], on: FilesHarness = harness) {
+      const response = await on.call(owner, "POST", "/files/uploads", { prefix, files });
+      return { status: response.status, body: (await response.json()) as { uploads: Result[] } };
+    }
+
+    it("keeps the folder's NFD bytes and normalises only the new name", async () => {
+      await seedObjects([`${FOLDER}01 Hunter.flac`]);
+      const key = `${FOLDER}02 Jóga.flac`;
+
+      const { status, body } = await signInto(FOLDER, [{ key, size: 10 }]);
+
+      expect(status).toBe(200);
+      const created = signed(body.uploads[0]);
+      expect(created.key).toBe(`${FOLDER}02 Jóga.flac`);
+      expect(created.key.startsWith(FOLDER)).toBe(true);
+      expect(new URL(created.url).pathname).toBe(
+        canonicalObjectPath("navidrome", `${FOLDER}02 Jóga.flac`),
+      );
+      expect(created.headers).toEqual({ "Content-Type": "audio/flac", "If-None-Match": "*" });
+      expect(harness.r2Calls).toEqual([{ method: "head", argument: `${FOLDER}02 Jóga.flac` }]);
+    });
+
+    it("refuses a key outside the folder for that file only", async () => {
+      const { status, body } = await signInto(FOLDER, [
+        { key: "Björk/Homogenic/03.flac", size: 10 },
+        { key: `${FOLDER}04.flac`, size: 10 },
+      ]);
+
+      expect(status).toBe(200);
+      expect(body.uploads[0]).toEqual({ key: "Björk/Homogenic/03.flac", error: "invalid_path" });
+      expect(signed(body.uploads[1]).key).toBe(`${FOLDER}04.flac`);
+    });
+
+    it("replaces a file in it under the stored spelling", async () => {
+      await seedObjects([`${FOLDER}01 Hunter.flac`, `${FOLDER}05 Jóga.flac`.normalize("NFD")]);
+
+      const { body } = await signInto(FOLDER, [
+        { key: `${FOLDER}05 Jóga.flac`, size: 10, overwrite: true },
+      ]);
+
+      expect(signed(body.uploads[0]).key).toBe(`${FOLDER}05 Jóga.flac`.normalize("NFD"));
+    });
+
+    it.each([
+      ["a prefix that is not a folder", "Björk", 400, "invalid_path"],
+      ["a prefix over 1,024 bytes", `${"a".repeat(1024)}/`, 400, "invalid_path"],
+      ["the cover prefix", "_covers/", 403, "reserved_path"],
+      ["a prefix that is not a string", 7, 400, "invalid_request"],
+    ])("answers %s for the request, signing nothing", async (_, prefix, status, error) => {
+      await expectRefusal(
+        harness,
+        () =>
+          harness.call(owner, "POST", "/files/uploads", {
+            prefix,
+            files: [{ key: "Björk/01.flac", size: 10 }],
+          }),
+        status,
+        error,
+      );
+      expect(harness.r2Calls).toEqual([]);
+    });
+  });
+
   it("signs a new key in NFC, whatever spelling it was asked in", async () => {
     const nfd = "Sigur Rós/()/01.flac";
 

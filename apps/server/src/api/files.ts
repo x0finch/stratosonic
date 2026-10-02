@@ -14,12 +14,14 @@ import {
   checkBrowsePrefix,
   checkFolderPrefix,
   checkUploadKey,
+  checkUploadPrefix,
   checkUploadSize,
   hasOneSpelling,
   isAscii,
   isReservedKey,
   MAX_KEY_BYTES,
   MAX_SEGMENT_BYTES,
+  newKeySpelling,
   oneSpellingPrefix,
   type PathRefusal,
   utf8Length,
@@ -62,12 +64,16 @@ import { requireSameOrigin } from "./same-origin";
  *   `200 {deleted, done, scan}`, called again until `done`, or
  *   `200 {deleted: 0, done: true}`, with no `scan`, when there was nothing
  *   left to delete; `400 invalid_path`, `403 reserved_path`.
- * - `POST /api/files/uploads`, `{files: [{key, size, overwrite?}]}`, 1–10
- *   files: `200 {uploads}`, one result per file, in order, each a presigned
+ * - `POST /api/files/uploads`, `{prefix?, files: [{key, size, overwrite?}]}`,
+ *   1–10 files: `200 {uploads}`, one result per file, in order, each a presigned
  *   `PUT` or a per-file `error` (`invalid_path`, `path_too_long`,
  *   `reserved_path`, `type_not_allowed`, `too_large`, `empty_file`,
  *   `exists`, or `replace_unavailable`: replace that file with rclone);
- *   `400 invalid_request`, `503 uploads_not_configured`.
+ *   `400 invalid_request`, `503 uploads_not_configured`. `prefix` is the
+ *   folder uploaded into, exactly as browse listed it: it is kept as it is,
+ *   and only the part of each key after it is normalised to NFC; a key
+ *   outside it answers `invalid_path` for that file, and a bad prefix
+ *   `400 invalid_path` or `403 reserved_path` for the request.
  * - `POST /api/files/uploads/complete`, `{keys}`, 1–10 keys whose `PUT`
  *   succeeded: `200 {scan}`; `400 invalid_request`, `403 reserved_path`.
  * - Any write, where `FILE_WRITES` is `"off"`: `403 file_writes_disabled`.
@@ -321,8 +327,9 @@ export function registerFileRoutes(api: ApiApp): void {
   });
 
   /**
-   * `POST /api/files/uploads` with `{files}`: 1–10 files to sign, each
-   * `{key, size, overwrite?}`. A refused file does not fail the others: the
+   * `POST /api/files/uploads` with `{prefix?, files}`: 1–10 files to sign,
+   * each `{key, size, overwrite?}`, in the folder `prefix` (as listed, never
+   * normalised) when given. A refused file does not fail the others: the
    * request answers 200 with one result per file, in order.
    */
   api.post("/files/uploads", requireSameOrigin, limitJsonBody, ...write, async (c) => {
@@ -331,16 +338,20 @@ export function registerFileRoutes(api: ApiApp): void {
       return c.json({ error: "uploads_not_configured" }, 503);
     }
 
-    const { files } = (await readJsonObject(c)) ?? {};
+    const { prefix = "", files } = (await readJsonObject(c)) ?? {};
     const requested = readUploadRequests(files);
-    if (requested === null) {
+    if (requested === null || typeof prefix !== "string") {
       return invalidRequest(c);
+    }
+    const prefixRefusal = checkUploadPrefix(prefix);
+    if (prefixRefusal !== null) {
+      return refused(c, prefixRefusal);
     }
 
     // One instant for the whole batch: every URL expires together.
     const now = Date.now();
     const uploads = await mapInFlight(requested, HEADS_IN_FLIGHT, (file) =>
-      signUpload(c.env, status.config, file, now),
+      signUpload(c.env, status.config, prefix, file, now),
     );
 
     return c.json({ uploads });
@@ -356,7 +367,9 @@ export function registerFileRoutes(api: ApiApp): void {
     if (!isCompletedKeyList(keys)) {
       return invalidRequest(c);
     }
-    const refusals = keys.map(checkUploadKey).flatMap((key) => ("error" in key ? [key.error] : []));
+    const refusals = keys
+      .map((key) => checkUploadKey(key))
+      .flatMap((key) => ("error" in key ? [key.error] : []));
     if (refusals.includes("reserved_path")) {
       return refused(c, "reserved_path");
     }
@@ -442,12 +455,13 @@ function readUploadRequests(files: unknown): UploadRequest[] | null {
 async function signUpload(
   env: Env,
   config: UploadsConfig,
+  prefix: string,
   file: UploadRequest,
   now: number,
 ): Promise<UploadResult> {
-  const checked = checkUploadKey(file.key);
+  const checked = checkUploadKey(file.key, prefix);
   if ("error" in checked) {
-    return { key: file.key.normalize("NFC"), error: checked.error };
+    return { key: newKeySpelling(file.key, prefix), error: checked.error };
   }
   const sizeRefusal = checkUploadSize(checked.kind, file.size);
   if (sizeRefusal !== null) {
@@ -465,7 +479,9 @@ async function signUpload(
     };
   }
 
-  const key = stored === null ? checked.key : await storedSpelling(env, checked.key);
+  // The lookup compares in NFC, whatever spelling the prefix kept.
+  const key =
+    stored === null ? checked.key : await storedSpelling(env, checked.key.normalize("NFC"));
   if (key === null) {
     return { key: checked.key, error: "replace_unavailable" };
   }

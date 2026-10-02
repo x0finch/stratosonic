@@ -152,8 +152,13 @@ function isAcceptableSegment(segment: string): boolean {
 
 /**
  * Checks a key a new upload would take, after normalising it to NFC, and
- * answers it with its kind and content type, or why it is refused:
+ * answers it with its kind and content type, or why it is refused. With a
+ * folder `prefix` (as a listing gave it, `checkUploadPrefix`), the key must
+ * start with it, and only the part after it is normalised: the folder keeps
+ * the spelling it is stored under, so an upload into a folder stored in NFD
+ * (named on macOS) lands in that folder, not in an NFC twin of it.
  *
+ * - `invalid_path`: outside `prefix`;
  * - `invalid_path`: not well-formed UTF-16 (a lone surrogate, which no
  *   UTF-8 key can hold and which no URL can encode), empty, absolute (a
  *   leading `/`), a folder (a trailing `/`), an empty segment (`a//b`), a
@@ -164,11 +169,14 @@ function isAcceptableSegment(segment: string): boolean {
  * - `reserved_path`: under `_covers/`;
  * - `type_not_allowed`: a suffix outside the allow-list.
  */
-export function checkUploadKey(raw: string): UploadKey | { readonly error: PathRefusal } {
-  if (!isWellFormed(raw)) {
+export function checkUploadKey(
+  raw: string,
+  prefix = "",
+): UploadKey | { readonly error: PathRefusal } {
+  if (!isWellFormed(raw) || !raw.startsWith(prefix)) {
     return { error: "invalid_path" };
   }
-  const key = raw.normalize("NFC");
+  const key = newKeySpelling(raw, prefix);
   const segments = key.split("/");
   if (!segments.every(isAcceptableSegment)) {
     return { error: "invalid_path" };
@@ -190,6 +198,26 @@ export function checkUploadKey(raw: string): UploadKey | { readonly error: PathR
   }
 
   return { key, kind, suffix, contentType: contentTypeOf(kind, suffix) };
+}
+
+/**
+ * The spelling a new key takes: in NFC after `prefix`, which it keeps as it
+ * is. A key outside `prefix` is normalised whole.
+ */
+export function newKeySpelling(raw: string, prefix = ""): string {
+  return raw.startsWith(prefix)
+    ? prefix + raw.slice(prefix.length).normalize("NFC")
+    : raw.normalize("NFC");
+}
+
+/**
+ * Checks the folder prefix an upload request names, as a listing gave it:
+ * as browse takes a prefix (`""` for the root, or ending in `/`, at most
+ * `MAX_KEY_BYTES`, not under `_covers/`), and well-formed. It is never
+ * normalised.
+ */
+export function checkUploadPrefix(prefix: string): "invalid_path" | "reserved_path" | null {
+  return isWellFormed(prefix) ? checkBrowsePrefix(prefix) : "invalid_path";
 }
 
 /**
