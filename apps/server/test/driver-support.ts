@@ -80,7 +80,7 @@ export function pokeDuringAStep(
  * with the tuning a test needs: `quietMs` is the debounce window, and the
  * delays of the pass it starts default to `slowTuning`'s.
  */
-export function touch(changedAt: number, tuning: ScanDriverTuning): Promise<ScanSchedule> {
+export function touch(changedAt: number, tuning: ScanDriverTuning): Promise<ScanSchedule | null> {
   return driver().touch(changedAt, { ...slowTuning, ...tuning });
 }
 
@@ -91,7 +91,7 @@ export function touch(changedAt: number, tuning: ScanDriverTuning): Promise<Scan
 export function touchDuringAStep(
   changedAt: number,
   tuning: ScanDriverTuning,
-): Promise<ScanSchedule> {
+): Promise<ScanSchedule | null> {
   return runInDurableObject(driver(), async (instance: ScanDriver, state) => {
     await state.storage.deleteAlarm();
 

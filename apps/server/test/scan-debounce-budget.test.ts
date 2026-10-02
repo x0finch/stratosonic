@@ -4,7 +4,7 @@ import type { Env } from "../src/env";
 import type { ScanDriver } from "../src/scanner/driver";
 import { bootstrapAdmin } from "./browsing-support";
 import { cost, countingD1, type RecordedStatement, shape } from "./console-auth-support";
-import { driver, driverIsIdle, poke, slowTuning } from "./driver-support";
+import { driver, driverIsIdle, poke, slowTuning, storedKeys } from "./driver-support";
 import { seedFixtureFiles } from "./scan-support";
 import { testEnv } from "./support";
 
@@ -199,14 +199,14 @@ describe("the debounce alarm", () => {
     });
   });
 
-  it("starts the pass at the deadline: two rows read, three written, no D1 or R2", async () => {
+  it("starts the pass at the deadline: two rows read, two written, no D1 or R2", async () => {
     await quietChange(Date.now() - 1_000, 500);
 
     const alarm = await countedAlarm();
 
-    // `driver` and `pending` read; `pending` deleted, the pass's state put
-    // and its first step's alarm set.
-    expect(alarm).toEqual({ storageRowsRead: 2, storageRowsWritten: 3, d1: [], r2: [] });
+    // `driver` and `pending` read; the pass's state put and its first step's
+    // alarm set. The change stays until the pass's end.
+    expect(alarm).toEqual({ storageRowsRead: 2, storageRowsWritten: 2, d1: [], r2: [] });
   });
 });
 
@@ -228,5 +228,31 @@ describe("the pass it starts", () => {
     expect(debounced.r2Read).toBe(1);
     // D1 as a cron pass, in the same statements.
     expect(debounced.d1).toEqual({ statements: 15, roundTrips: 7, rowsRead: 50, rowsWritten: 4 });
+  });
+});
+
+describe("the end of a pass with a change pending", () => {
+  it("queues the follow-up for one row read and two written beyond the step", async () => {
+    // A cron pass from a minute ago: run its scan step, then land a change
+    // it does not cover, so its last step queues the follow-up.
+    await poke(new Date(Date.now() - 60_000));
+    const scanStep = await countedAlarm();
+    await runInDurableObject(driver(), (instance: ScanDriver) =>
+      instance.touch(Date.now(), { ...slowTuning, quietMs: 600_000 }),
+    );
+
+    const lastStep = await countedAlarm();
+
+    // A step reads the pass's state and writes the next one and its alarm.
+    expect(scanStep).toMatchObject({ storageRowsRead: 1, storageRowsWritten: 2 });
+    // The last step reads the state, then `pending` after the step; it
+    // deletes the state and sets the debounce alarm.
+    expect(lastStep).toMatchObject({ storageRowsRead: 2, storageRowsWritten: 2 });
+    expect(await storedKeys()).toEqual(["pending"]);
+
+    await runInDurableObject(driver(), async (_instance: ScanDriver, state) => {
+      await state.storage.deleteAlarm();
+      await state.storage.deleteAll();
+    });
   });
 });

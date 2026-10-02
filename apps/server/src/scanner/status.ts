@@ -66,16 +66,22 @@ export function pokeScanDriver(env: Env, pokedAt: number = Date.now()): Promise<
  *    changed, the route answers 500, and the cron catches up.
  * 2. It touches the driver, which starts one pass after the library has
  *    been quiet for `RESCAN_QUIET_MS`, or one more after the pass in
- *    flight. A failed touch is logged and answers null: the change stands,
- *    and the next cron pass, at most a quarter of an hour away, indexes it.
+ *    flight.
+ *
+ * It answers null in two cases, and in both the change is indexed without
+ * the caller doing more: the pass in flight began after the change and
+ * covers it, or the touch failed, which is logged, and the next cron pass,
+ * at most a quarter of an hour away, indexes it. An `at` in the future is
+ * taken as now, so a wrong clock cannot hold the pass off.
  *
  * One D1 statement and one Durable Object request.
  */
 export async function markLibraryChanged(env: Env, at: number): Promise<ScanSchedule | null> {
-  await writeLibraryChangedAtStatement(database(env), at);
+  const changedAt = Math.min(at, Date.now());
+  await writeLibraryChangedAtStatement(database(env), changedAt);
 
   try {
-    return await scanDriver(env).touch(at);
+    return await scanDriver(env).touch(changedAt);
   } catch (error) {
     console.error(
       "scan driver: marking the library changed failed; the next cron pass indexes the change",

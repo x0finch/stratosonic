@@ -203,9 +203,34 @@ describe("markLibraryChanged", () => {
     expect(await nextAlarmAt()).toBe(at + RESCAN_QUIET_MS);
   });
 
+  it("takes an instant in the future as now, in the row and in the touch", async () => {
+    let touchedWith = 0;
+    const recording = {
+      ...testEnv,
+      SCAN_DRIVER: {
+        idFromName: (name: string) => testEnv.SCAN_DRIVER.idFromName(name),
+        get: () => ({
+          touch: async (at: number) => {
+            touchedWith = at;
+            return null;
+          },
+        }),
+      },
+    } as unknown as Env;
+
+    const before = Date.now();
+    await markLibraryChanged(recording, before + 3_600_000);
+    const after = Date.now();
+
+    const stored = (await readScanReport(database(testEnv))).lastChangedAt ?? 0;
+    expect(stored).toBeGreaterThanOrEqual(before);
+    expect(stored).toBeLessThanOrEqual(after);
+    expect(touchedWith).toBe(stored);
+  });
+
   it("answers null when the driver cannot be reached, and the change stands", async () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
-    const at = Date.now() + 5_000;
+    const at = Date.now();
     const unreachable = {
       ...testEnv,
       SCAN_DRIVER: {

@@ -1,6 +1,7 @@
+import { runInDurableObject } from "cloudflare:test";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { database } from "../src/db";
-import { RESCAN_QUIET_MS } from "../src/scanner/driver";
+import { RESCAN_QUIET_MS, type ScanDriver } from "../src/scanner/driver";
 import { readLastScanSummary, readScanProgress } from "../src/scanner/state";
 import { bootstrapAdmin } from "./browsing-support";
 import {
@@ -25,19 +26,16 @@ import { testEnv } from "./support";
  * **Scan now** and the cron stay immediate.
  *
  * The driver is the real Durable Object, driven as test/scan-driver.test.ts
- * drives it. Every pass runs with `slowTuning`'s step delay, so no step runs
- * unless the test fires it and every pass that completes is seen
- * (`stepped`). The window is either long (`LONG`), so its alarm never fires
- * by itself, or short (`SHORT`) where a test needs the deadline to pass, in
- * which case it waits that long on the real clock: the debounce alarm decides
- * by the time it runs at, not by who fired it.
+ * drives it. Every pass runs with `slowTuning`'s step delay and every change
+ * with a window (`QUIET`) no test outlives, so no alarm fires unless the test
+ * fires it, and every pass that completes is seen (`stepped`). Where a test
+ * needs the window to have passed, it moves the pending change back by the
+ * window (`elapse`), which is what the debounce alarm sees when that much
+ * time has gone by.
  */
 
-/** A window no test outlives: only the test's own calls fire its alarm. */
-const LONG = 600_000;
-
-/** A window a test waits out on the real clock. */
-const SHORT = 3_000;
+/** The window every change in this file waits with. */
+const QUIET = 600_000;
 
 /** The `startedAt` of every pass that completed, in order, as `stepped` saw them. */
 let completed: number[] = [];
@@ -76,12 +74,27 @@ async function settle(limit = 60): Promise<void> {
   throw new Error(`the driver was still busy after ${limit} alarms`);
 }
 
-/** Waits on the real clock until `instant` has passed. */
-async function waitUntil(instant: number): Promise<void> {
-  const wait = instant - Date.now() + 50;
-  if (wait > 0) {
-    await new Promise((resolve) => setTimeout(resolve, wait));
-  }
+/**
+ * Lets `ms` go by for the pending change: it is moved back by that much, as
+ * the debounce alarm would find it had the time passed.
+ */
+async function elapse(ms: number): Promise<void> {
+  await runInDurableObject(driver(), async (_instance: ScanDriver, state) => {
+    const pending = await state.storage.get<{ changedAt: number }>("pending");
+    if (pending === undefined) {
+      throw new Error("no change is pending");
+    }
+    await state.storage.put("pending", { ...pending, changedAt: pending.changedAt - ms });
+  });
+}
+
+/** When the pending change was made, as the driver keeps it. */
+function pendingChangedAt(): Promise<number | undefined> {
+  return runInDurableObject(
+    driver(),
+    async (_instance: ScanDriver, state) =>
+      (await state.storage.get<{ changedAt: number }>("pending"))?.changedAt,
+  );
 }
 
 function iso(instant: number): string {
@@ -93,6 +106,8 @@ async function freshLibrary(): Promise<void> {
   await seedFixtureFiles();
   completed = [];
 }
+
+const afterCurrentPass = { scheduledAt: null, afterCurrentPass: true };
 
 beforeAll(async () => {
   // The playlist import, the second half of every pass, needs its owner.
@@ -119,38 +134,50 @@ describe("changes while no pass is in flight", () => {
   beforeAll(async () => {
     await freshLibrary();
 
-    firstSchedule = await touch(first, { quietMs: LONG });
+    firstSchedule = await touch(first, { quietMs: QUIET });
     firstAlarm = await nextAlarmAt();
     firstKeys = await storedKeys();
 
-    secondSchedule = await touch(second, { quietMs: LONG });
+    secondSchedule = await touch(second, { quietMs: QUIET });
     secondAlarm = await nextAlarmAt();
   });
 
   it("sets the alarm at changedAt + quiet and starts no pass", async () => {
-    expect(firstSchedule).toEqual({ scheduledAt: iso(first + LONG), afterCurrentPass: false });
-    expect(firstAlarm).toBe(first + LONG);
+    expect(firstSchedule).toEqual({ scheduledAt: iso(first + QUIET), afterCurrentPass: false });
+    expect(firstAlarm).toBe(first + QUIET);
     expect(firstKeys).toEqual(["pending"]);
     expect(await readScanProgress(database(testEnv))).toBeNull();
   });
 
   it("moves the alarm on a second change", () => {
-    expect(secondSchedule).toEqual({ scheduledAt: iso(second + LONG), afterCurrentPass: false });
-    expect(secondAlarm).toBe(second + LONG);
+    expect(secondSchedule).toEqual({ scheduledAt: iso(second + QUIET), afterCurrentPass: false });
+    expect(secondAlarm).toBe(second + QUIET);
   });
 
   it("keeps the later change when an earlier one arrives after it", async () => {
-    expect(await touch(first + 10_000, { quietMs: LONG })).toEqual(secondSchedule);
-    expect(await nextAlarmAt()).toBe(second + LONG);
+    expect(await touch(first + 10_000, { quietMs: QUIET })).toEqual(secondSchedule);
+    expect(await nextAlarmAt()).toBe(second + QUIET);
+  });
+
+  it("takes a change stamped in the future as made now", async () => {
+    const before = Date.now();
+    const schedule = await touch(before + 3_600_000, { quietMs: QUIET });
+    const after = Date.now();
+
+    const changedAt = (await pendingChangedAt()) ?? 0;
+    expect(changedAt).toBeGreaterThanOrEqual(before);
+    expect(changedAt).toBeLessThanOrEqual(after);
+    expect(schedule).toEqual({ scheduledAt: iso(changedAt + QUIET), afterCurrentPass: false });
+    expect(await nextAlarmAt()).toBe(changedAt + QUIET);
   });
 
   it("re-arms an alarm that fires before the moved deadline, and runs nothing", async () => {
-    // The alarm the first change set would have fired at `first + LONG`, which
-    // the second change moved: an alarm that fires early finds the library
-    // not yet quiet.
+    const changedAt = (await pendingChangedAt()) ?? 0;
+
+    // An alarm that fires early finds the library not yet quiet.
     await stepped();
 
-    expect(await nextAlarmAt()).toBe(second + LONG);
+    expect(await nextAlarmAt()).toBe(changedAt + QUIET);
     expect(await storedKeys()).toEqual(["pending"]);
     expect(await readScanProgress(database(testEnv))).toBeNull();
     expect(completed).toEqual([]);
@@ -158,10 +185,11 @@ describe("changes while no pass is in flight", () => {
 
   it("is absorbed by Scan now: one pass at once, and no follow-up", async () => {
     // Scan now pokes with the wall clock (`pokeScanDriver`), which is after
-    // every change so far.
+    // every change so far. The change stays until the pass's end, which
+    // finds it covered.
     const pressed = Date.now();
     expect(await driver().start(pressed, slowTuning)).toBe("started");
-    expect(await storedKeys()).toEqual(["driver"]);
+    expect(await storedKeys()).toEqual(["driver", "pending"]);
 
     await settle();
 
@@ -174,40 +202,45 @@ describe("changes while no pass is in flight", () => {
 /* ============================================ the deadline == */
 
 describe("a change whose quiet window has passed", () => {
-  let changedAt = 0;
-
-  beforeAll(async () => {
+  it("starts one pass at the deadline, stamped then, and no follow-up", async () => {
     await freshLibrary();
 
-    changedAt = Date.now();
-    await touch(changedAt, { quietMs: SHORT });
-    await waitUntil(changedAt + SHORT);
-  });
+    const changedAt = Date.now();
+    await touch(changedAt, { quietMs: QUIET });
+    await elapse(QUIET);
 
-  it("starts a pass at the deadline, stamped then, and the change is no longer pending", async () => {
-    // Whoever fires it - this call, or miniflare on its own once it is due -
-    // the debounce alarm starts the pass, whose first step waits a slow step
-    // delay for this test to fire it.
+    const firedAt = Date.now();
     await stepped();
 
-    const keys = await storedKeys();
-    expect(keys).not.toContain("pending");
-    expect(keys).toEqual(["driver"]);
+    // The pass is armed; the change waits for its end to be found covered.
+    expect(await storedKeys()).toEqual(["driver", "pending"]);
+    expect(await readScanProgress(database(testEnv))).toBeNull();
 
     await settle();
     expect(completed).toHaveLength(1);
-    expect(completed[0]).toBeGreaterThanOrEqual(changedAt + SHORT);
-  });
-
-  it("leaves the driver idle, its storage empty", async () => {
+    expect(completed[0]).toBeGreaterThanOrEqual(firedAt);
     expect(await nextAlarmAt()).toBeNull();
     expect(await driverIsIdle()).toBe(true);
+  });
+
+  it("starts the pass for an alarm a moment early, rather than re-arming", async () => {
+    await freshLibrary();
+
+    await touch(Date.now(), { quietMs: QUIET });
+    // Half a second before the deadline: within the tolerance.
+    await elapse(QUIET - 500);
+    await stepped();
+
+    expect(await storedKeys()).toEqual(["driver", "pending"]);
+
+    await settle();
+    expect(completed).toHaveLength(1);
   });
 });
 
 /* =================================== changes during a pass == */
 
-describe("changes while a pass is in flight", () => {
+describe("five changes while a pass is in flight", () => {
   /** A pass a cron poke started a minute ago. */
   const poked = Date.now() - 60_000;
   const touches: unknown[] = [];
@@ -225,53 +258,114 @@ describe("changes while a pass is in flight", () => {
 
     // Five changes: four between steps, one in the middle of a step.
     for (let change = 0; change < 4; change++) {
-      lastChange = Date.now();
-      touches.push(await touch(lastChange, { quietMs: SHORT }));
+      touches.push(await touch(Date.now(), { quietMs: QUIET }));
     }
     alarmDuringPass = await nextAlarmAt();
-    lastChange = Date.now();
-    touches.push(await touchDuringAStep(lastChange, { quietMs: SHORT }));
+    touches.push(await touchDuringAStep(Date.now(), { quietMs: QUIET }));
+    lastChange = (await pendingChangedAt()) ?? 0;
 
     await finishThePass();
   });
 
   it("leaves the pass alone, and says one more follows it", () => {
-    expect(touches).toEqual(
-      Array.from({ length: 5 }, () => ({ scheduledAt: null, afterCurrentPass: true })),
-    );
+    expect(touches).toEqual(Array.from({ length: 5 }, () => afterCurrentPass));
     expect(alarmDuringPass).toBe(alarmBeforeTouches);
   });
 
   it("finishes the pass under its own stamp, with one follow-up queued", async () => {
     expect(completed).toEqual([poked]);
     expect(await storedKeys()).toEqual(["pending"]);
+    expect(await nextAlarmAt()).toBeGreaterThanOrEqual(lastChange + QUIET);
   });
 
   it("debounces the follow-up from the last change", async () => {
     // Fired at once, the queued alarm finds the window since the last
-    // change still open, and waits for the rest of it. (A slow machine may
-    // have let the window close already, and then the follow-up starts.)
-    const firedAt = Date.now();
+    // change still open, and waits for the rest of it.
     await stepped();
-    if (firedAt + 100 < lastChange + SHORT) {
-      const keys = await storedKeys();
-      if (!keys.includes("driver")) {
-        expect(keys).toEqual(["pending"]);
-        expect(await nextAlarmAt()).toBe(lastChange + SHORT);
-      }
-    }
 
-    await waitUntil(lastChange + SHORT);
+    expect(await storedKeys()).toEqual(["pending"]);
+    expect(await nextAlarmAt()).toBe(lastChange + QUIET);
+    expect(completed).toEqual([poked]);
+  });
+
+  it("runs exactly one follow-up for the five changes once the window passes, then stops", async () => {
+    await elapse(QUIET);
     await settle();
 
     expect(completed).toHaveLength(2);
-    expect(completed[1]).toBeGreaterThanOrEqual(lastChange + SHORT);
-  });
-
-  it("runs exactly one follow-up for the five changes, then stops", async () => {
-    expect(completed).toHaveLength(2);
+    expect(completed[1]).toBeGreaterThan(lastChange);
     expect(await nextAlarmAt()).toBeNull();
     expect(await driverIsIdle()).toBe(true);
+  });
+});
+
+describe("a change during the final step only", () => {
+  it("is seen at the pass's end, which queues the follow-up", async () => {
+    await freshLibrary();
+
+    const poked = Date.now() - 60_000;
+    await poke(new Date(poked));
+    // The fixtures fit one scan step; the import's is the pass's last.
+    await stepped();
+    expect(await storedKeys()).toEqual(["driver"]);
+
+    // The touch lands while the last step waits on R2 and D1, after the
+    // alarm read its state: only a read of `pending` after the step sees it.
+    expect(await touchDuringAStep(Date.now(), { quietMs: QUIET })).toEqual(afterCurrentPass);
+
+    expect(completed).toEqual([poked]);
+    expect(await storedKeys()).toEqual(["pending"]);
+
+    await elapse(QUIET);
+    await settle();
+    expect(completed).toHaveLength(2);
+    expect(await driverIsIdle()).toBe(true);
+  });
+});
+
+describe("the boundary of the rule: a change at the pass's own stamp", () => {
+  it("is not covered by a pass a touch finds in flight with that stamp", async () => {
+    await freshLibrary();
+
+    const poked = Date.now() - 60_000;
+    await poke(new Date(poked));
+    expect(await touch(poked, { quietMs: QUIET })).toEqual(afterCurrentPass);
+
+    await finishThePass();
+    expect(completed).toEqual([poked]);
+    expect(await storedKeys()).toEqual(["pending"]);
+
+    await elapse(QUIET);
+    await settle();
+    expect(completed).toHaveLength(2);
+  });
+
+  it("is not covered by a pass a cron poke stamped with it starts", async () => {
+    await freshLibrary();
+
+    const changedAt = Date.now() - 60_000;
+    await touch(changedAt, { quietMs: QUIET });
+    expect(await poke(new Date(changedAt))).toBe("started");
+
+    await finishThePass();
+    expect(completed).toEqual([changedAt]);
+    expect(await storedKeys()).toEqual(["pending"]);
+
+    await elapse(QUIET);
+    await settle();
+    expect(completed).toHaveLength(2);
+  });
+
+  it("one millisecond earlier, is covered: the touch says so, and no follow-up runs", async () => {
+    await freshLibrary();
+
+    const poked = Date.now() - 60_000;
+    await poke(new Date(poked));
+    expect(await touch(poked - 1, { quietMs: QUIET })).toBeNull();
+
+    await settle();
+    expect(completed).toEqual([poked]);
+    expect(await nextAlarmAt()).toBeNull();
   });
 });
 
@@ -282,7 +376,7 @@ describe("a cron poke while a change is pending", () => {
     await freshLibrary();
 
     const changedAt = Date.now();
-    await touch(changedAt, { quietMs: SHORT });
+    await touch(changedAt, { quietMs: QUIET });
     // The cron's scheduled time precedes the change: its pass may have listed
     // the bucket before the change landed.
     const scheduled = changedAt - 1_000;
@@ -293,11 +387,11 @@ describe("a cron poke while a change is pending", () => {
     expect(completed).toEqual([scheduled]);
     expect(await storedKeys()).toEqual(["pending"]);
 
-    await waitUntil(changedAt + SHORT);
+    await elapse(QUIET);
     await settle();
 
     expect(completed).toHaveLength(2);
-    expect(completed[1]).toBeGreaterThanOrEqual(changedAt + SHORT);
+    expect(completed[1]).toBeGreaterThan(changedAt);
     expect(await driverIsIdle()).toBe(true);
   });
 
@@ -305,10 +399,9 @@ describe("a cron poke while a change is pending", () => {
     await freshLibrary();
 
     const changedAt = Date.now();
-    await touch(changedAt, { quietMs: LONG });
+    await touch(changedAt, { quietMs: QUIET });
     const scheduled = changedAt + 1;
     expect(await poke(new Date(scheduled))).toBe("started");
-    expect(await storedKeys()).toEqual(["driver"]);
 
     await settle();
 
@@ -321,14 +414,23 @@ describe("a cron poke while a change is pending", () => {
 /* =========================================== giving up == */
 
 describe("a pass given up with a change pending", () => {
-  it("clears the change too, leaving the storage empty", async () => {
+  const poked = Date.now() - 60_000;
+  let changedAt = 0;
+
+  beforeAll(async () => {
     await freshLibrary();
 
-    await poke(new Date(Date.now() - 60_000), { ...slowTuning, maxFailures: 2 });
-    expect(await touch(Date.now(), { quietMs: SHORT })).toEqual({
-      scheduledAt: null,
-      afterCurrentPass: true,
+    // One track a step, so the pass leaves a resumable cursor in D1.
+    await poke(new Date(poked), {
+      ...slowTuning,
+      maxFailures: 2,
+      scanLimits: { extractionsPerRun: 1 },
     });
+    await stepped();
+    expect((await readScanProgress(database(testEnv)))?.startedAt).toBe(poked);
+
+    changedAt = Date.now();
+    expect(await touch(changedAt, { quietMs: QUIET })).toEqual(afterCurrentPass);
 
     await testEnv.DB.exec("ALTER TABLE property RENAME TO property_taken_away");
     try {
@@ -337,8 +439,25 @@ describe("a pass given up with a change pending", () => {
     } finally {
       await testEnv.DB.exec("ALTER TABLE property_taken_away RENAME TO property");
     }
+  });
 
+  it("stops the pass and keeps the change", async () => {
     expect(await nextAlarmAt()).toBeNull();
+    expect(await storedKeys()).toEqual(["pending"]);
+  });
+
+  it("follows the pass the next cron poke resumes with one more", async () => {
+    // The poke's pass resumes the cursor, and with it the old stamp, so it
+    // may not list the changed key: its end queues the follow-up.
+    expect(await poke(new Date())).toBe("started");
+    await finishThePass();
+    expect(completed).toEqual([poked]);
+    expect(await storedKeys()).toEqual(["pending"]);
+
+    await elapse(QUIET);
+    await settle();
+    expect(completed).toHaveLength(2);
+    expect(completed[1]).toBeGreaterThan(changedAt);
     expect(await driverIsIdle()).toBe(true);
   });
 });

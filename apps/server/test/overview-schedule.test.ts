@@ -134,7 +134,7 @@ describe("scan.scheduled through a change, a pass and Scan now", () => {
       outcome: "started",
       scan: { running: true, scheduled: null },
     });
-    expect(await storedKeys()).toEqual(["driver"]);
+    expect(await storedKeys()).toEqual(["driver", "pending"]);
 
     await driveUntilIdle();
 
