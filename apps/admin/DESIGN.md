@@ -96,7 +96,10 @@ it.
   - between sections: `gap-6` to `gap-10`, with a `Separator` where the
     page changes subject.
 - **Each gap has one owner.** The parent sets it with `gap-*` on a flex or
-  grid. Children carry no outer margins.
+  grid. Children carry no outer margins. The one exception is a divided
+  grid that clips its outer borders, as in `LibraryTotals`: the grid is
+  shifted by one border and one gutter (`-mt-px -ml-4`) inside an
+  `overflow-hidden` box, so dividers fall only between items.
 - **The shell's column** (`mx-auto max-w-7xl` in `src/routes/_shell.tsx`)
   holds every page. A focused form, such as Account, uses a narrow centered
   column (`m-auto max-w-md`).
@@ -116,6 +119,7 @@ it.
   headers align right (`text-right`) and use `tabular-nums`.
 - Body cells align to the first text line. Keep peer units and precision
   consistent.
+- A missing value is one em dash (`—`), the only place an em dash appears.
 - Short labels, such as usernames and dates, stay on one line. On narrow
   screens, drop secondary columns before shrinking the table.
 
