@@ -97,7 +97,12 @@ function Overview() {
         <>
           {live.isError ? <ErrorAlert error={live.error} /> : null}
           <div className={showNowPlaying ? `${GRID} lg:grid-cols-2` : GRID}>
-            <LibraryScan scan={live.data?.scan} canScan={can(me, "library:scan")} now={now} />
+            <LibraryScan
+              scan={live.data?.scan}
+              clock={live.data}
+              canScan={can(me, "library:scan")}
+              now={now}
+            />
             {showNowPlaying ? (
               <NowPlaying entries={nowPlaying} receivedAt={live.data?.receivedAt ?? now} />
             ) : null}

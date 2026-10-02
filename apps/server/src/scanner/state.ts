@@ -32,7 +32,7 @@
  */
 
 import { property } from "@stratosonic/db";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import type { Database } from "../db";
 import { PLAYLIST_IMPORT_PROGRESS_KEY } from "../playlists/state";
 import type { ScanStatement } from "./repository";
@@ -45,6 +45,14 @@ const LAST_SCAN_SUMMARY_KEY = "LastScanSummary";
 
 /** The row that remembers which objects are not worth reading again. */
 const BROKEN_OBJECTS_KEY = "BrokenObjects";
+
+/**
+ * The row the console's file routes write after an upload or delete:
+ * `{"at": <epoch ms>}`, the latest change. It mirrors the change the scan
+ * driver keeps (`scanner/driver.ts`, `pending`), so the console reads what
+ * the driver will do from D1, without a Durable Object request (#83).
+ */
+const LIBRARY_CHANGED_AT_KEY = "LibraryChangedAt";
 
 /** What a pass has done so far, or did in total. */
 export interface ScanCounts {
@@ -185,7 +193,14 @@ export interface ScanReport {
    * look finished.
    */
   readonly importingPlaylists: boolean;
+  /**
+   * When the import in flight began, which is the pass's own stamp; null
+   * when none is in flight, or its row will not parse.
+   */
+  readonly importStartedAt: number | null;
   readonly lastCompleted: ScanSummary | null;
+  /** When the console last changed a file in the bucket, or null if it never has. */
+  readonly lastChangedAt: number | null;
 }
 
 /** Everything a pass shows the outside world, in one query. */
@@ -203,21 +218,46 @@ export function scanReportQuery(db: Database) {
     SCAN_PROGRESS_KEY,
     PLAYLIST_IMPORT_PROGRESS_KEY,
     LAST_SCAN_SUMMARY_KEY,
+    LIBRARY_CHANGED_AT_KEY,
   ]);
 }
 
 /** The rows `scanReportQuery` returns, as `readScanReport` answers them. */
 export function toScanReport(rows: Awaited<ReturnType<typeof scanReportQuery>>): ScanReport {
   const stored = parsedProperties(rows);
+  const importing = stored.get(PLAYLIST_IMPORT_PROGRESS_KEY);
 
   return {
     progress: readProgress(stored.get(SCAN_PROGRESS_KEY)),
-    // Only whether the row is there: what the import has done is its own
-    // module's business, and a row that will not parse is treated as absent
-    // here as everywhere else in this module.
-    importingPlaylists: stored.has(PLAYLIST_IMPORT_PROGRESS_KEY),
+    // Only whether the row is there, and when its pass began: what the
+    // import has done is its own module's business, and a row that will not
+    // parse is treated as absent here as everywhere else in this module.
+    importingPlaylists: importing !== undefined,
+    importStartedAt: importing === undefined ? null : wholeNumber(importing.startedAt),
     lastCompleted: readSummary(stored.get(LAST_SCAN_SUMMARY_KEY)),
+    lastChangedAt: wholeNumber(stored.get(LIBRARY_CHANGED_AT_KEY)?.at),
   };
+}
+
+/**
+ * Records a change to the bucket at `at`, keeping the later of it and the
+ * stored one, so two requests that race cannot move the instant back. A
+ * stored row that will not parse is replaced.
+ */
+export function writeLibraryChangedAtStatement(db: Database, at: number): ScanStatement {
+  const value = JSON.stringify({ at });
+
+  return db
+    .insert(property)
+    .values({ id: LIBRARY_CHANGED_AT_KEY, value })
+    .onConflictDoUpdate({
+      target: property.id,
+      set: { value },
+      setWhere: sql`${at} > case when json_valid(${property.value})
+        then case when json_type(${property.value}, '$.at') in ('integer', 'real')
+          then json_extract(${property.value}, '$.at') else -1 end
+        else -1 end`,
+    });
 }
 
 /** The objects currently written off as unreadable. */

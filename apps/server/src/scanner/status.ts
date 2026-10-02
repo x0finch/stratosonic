@@ -6,9 +6,17 @@
  * and reuse").
  */
 
+import { database } from "../db";
 import type { Env } from "../env";
-import { type PokeOutcome, SCAN_DRIVER_INSTANCE } from "./driver";
-import type { ScanCounts, ScanReport } from "./state";
+import {
+  type PokeOutcome,
+  RESCAN_QUIET_MS,
+  SCAN_DRIVER_INSTANCE,
+  type ScanSchedule,
+} from "./driver";
+import { type ScanCounts, type ScanReport, writeLibraryChangedAtStatement } from "./state";
+
+export type { ScanSchedule } from "./driver";
 
 /**
  * Whether either phase of a pass is running: the scan's own, which keeps a
@@ -43,5 +51,90 @@ export function tracksOf(counts: Pick<ScanCounts, "indexed" | "unchanged">): num
  * is the caller's business.
  */
 export function pokeScanDriver(env: Env, pokedAt: number = Date.now()): Promise<PokeOutcome> {
-  return env.SCAN_DRIVER.get(env.SCAN_DRIVER.idFromName(SCAN_DRIVER_INSTANCE)).start(pokedAt);
+  return scanDriver(env).start(pokedAt);
+}
+
+/**
+ * Marks the library changed at `at` (epoch milliseconds), after an upload
+ * or a delete has changed the bucket, and answers what the scan driver will
+ * do about it (#83, "Rescan after a change"). A route computes `at` once and
+ * calls this after the bucket has changed.
+ *
+ * 1. It writes the `LibraryChangedAt` row, keeping the later instant
+ *    (`writeLibraryChangedAtStatement`), so the console's poll reads the
+ *    schedule from D1 (`scanSchedule`). A failed write throws: the files are
+ *    changed, the route answers 500, and the cron catches up.
+ * 2. It touches the driver, which starts one pass after the library has
+ *    been quiet for `RESCAN_QUIET_MS`, or one more after the pass in
+ *    flight.
+ *
+ * It answers the driver's schedule: a time a pass starts, one more pass
+ * after the one in flight, or `{ scheduledAt: null, afterCurrentPass:
+ * false }` when the pass in flight began after the change and covers it.
+ * It answers null only when the touch failed, which is logged: the change
+ * stands, and the next cron pass, at most a quarter of an hour away,
+ * indexes it. An `at` in the future is taken as now, so a wrong clock
+ * cannot hold the pass off.
+ *
+ * One D1 statement and one Durable Object request.
+ */
+export async function markLibraryChanged(env: Env, at: number): Promise<ScanSchedule | null> {
+  const changedAt = Math.min(at, Date.now());
+  await writeLibraryChangedAtStatement(database(env), changedAt);
+
+  try {
+    return await scanDriver(env).touch(changedAt);
+  } catch (error) {
+    console.error(
+      "scan driver: marking the library changed failed; the next cron pass indexes the change",
+      error,
+    );
+
+    return null;
+  }
+}
+
+/**
+ * What the driver will do about the console's file changes, read from D1
+ * alone, by the driver's own rule (`scanner/driver.ts`): a change is pending
+ * when it was made at or after the start of the latest pass, the one in
+ * flight or else the last completed one, or when no pass has ever run. A
+ * pending change waits for the pass in flight, or starts one
+ * `RESCAN_QUIET_MS` after it; a `scheduledAt` already past means the alarm
+ * is due, or the pass it started has not written its first step yet. A
+ * change the pass in flight covers reads as null here, as no change does:
+ * the view says nothing is pending, so it never gives `touch`'s third
+ * answer.
+ *
+ * `running` and `passStartedAt` default to what the report says. A caller
+ * that has just started a pass passes them, because the pass's first step
+ * has not written anything yet (`POST /api/library/scan`).
+ */
+export function scanSchedule(
+  report: ScanReport,
+  running: boolean = inFlight(report),
+  passStartedAt: number | null = latestPassStartedAt(report),
+): ScanSchedule | null {
+  const { lastChangedAt } = report;
+  if (lastChangedAt === null || (passStartedAt !== null && lastChangedAt < passStartedAt)) {
+    return null;
+  }
+
+  return running
+    ? { scheduledAt: null, afterCurrentPass: true }
+    : {
+        scheduledAt: new Date(lastChangedAt + RESCAN_QUIET_MS).toISOString(),
+        afterCurrentPass: false,
+      };
+}
+
+/** The stamp of the pass in flight, or else of the last completed one. */
+function latestPassStartedAt(report: ScanReport): number | null {
+  return (
+    report.progress?.startedAt ?? report.importStartedAt ?? report.lastCompleted?.startedAt ?? null
+  );
+}
+
+function scanDriver(env: Env) {
+  return env.SCAN_DRIVER.get(env.SCAN_DRIVER.idFromName(SCAN_DRIVER_INSTANCE));
 }

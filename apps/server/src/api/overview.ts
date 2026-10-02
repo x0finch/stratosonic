@@ -13,7 +13,13 @@ import {
 import { estimatedPositionMs } from "../nowplaying/session";
 import { playlistSummariesQuery } from "../playlists/repository";
 import { readScanReport, type ScanReport, scanReportQuery, toScanReport } from "../scanner/state";
-import { inFlight, pokeScanDriver, tracksOf } from "../scanner/status";
+import {
+  inFlight,
+  pokeScanDriver,
+  type ScanSchedule,
+  scanSchedule,
+  tracksOf,
+} from "../scanner/status";
 import type { ApiApp } from "./app";
 import { invalidRequest, limitJsonBody, readJsonObject } from "./json-body";
 import { requireSameOrigin } from "./same-origin";
@@ -114,7 +120,7 @@ export function registerOverviewRoutes(api: ApiApp): void {
     }
 
     return c.json({
-      scan: scanView(report, inFlight(report)),
+      scan: scanView(report, inFlight(report), scanSchedule(report)),
       nowPlaying: listening?.map((entry) => nowPlayingView(entry, now)) ?? null,
       serverTime: new Date(now).toISOString(),
     });
@@ -143,14 +149,22 @@ export function registerOverviewRoutes(api: ApiApp): void {
         return invalidRequest(c);
       }
 
-      const outcome = await pokeScanDriver(c.env);
+      const pokedAt = Date.now();
+      const outcome = await pokeScanDriver(c.env, pokedAt);
       console.log(
         outcome === "started"
           ? "admin api: a scan was requested; a pass has started"
           : "admin api: a scan was requested; a pass is already running",
       );
 
-      return c.json({ outcome, scan: scanView(await readScanReport(database(c.env)), true) });
+      // A pass this poke started is stamped after every change so far, so it
+      // covers them; one already in flight is followed by one more if a
+      // change came after its start.
+      const report = await readScanReport(database(c.env));
+      const scheduled =
+        outcome === "started" ? scanSchedule(report, true, pokedAt) : scanSchedule(report, true);
+
+      return c.json({ outcome, scan: scanView(report, true, scheduled) });
     },
   );
 }
@@ -165,8 +179,14 @@ export function registerOverviewRoutes(api: ApiApp): void {
  * completed pass's track count, the best guess at how many this one will
  * reach; null before the first pass, when the console shows an indeterminate
  * bar.
+ *
+ * `scheduled` is what the driver will do about the console's file changes
+ * (`scanSchedule`, #83): null when none is pending, a time when a pass
+ * starts once the library has been quiet, or `afterCurrentPass` when one
+ * more follows the pass in flight. It is read from D1 (`LibraryChangedAt`),
+ * so the polled route makes no Durable Object request.
  */
-function scanView(report: ScanReport, running: boolean) {
+function scanView(report: ScanReport, running: boolean, scheduled: ScanSchedule | null) {
   const { progress, importingPlaylists, lastCompleted } = report;
 
   return {
@@ -205,6 +225,7 @@ function scanView(report: ScanReport, running: boolean) {
               coversWritten: lastCompleted.counts.coversWritten,
             },
           },
+    scheduled,
   } as const;
 }
 

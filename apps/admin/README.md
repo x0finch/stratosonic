@@ -153,6 +153,12 @@ service, whose description names the metric closest to its limit
 usage panel shows only once `GET /api/usage` says the Worker has an
 analytics token: without one there is no panel and no error.
 
+The scan's description also says when the server will scan for recent file
+changes (`scan.scheduled`, ADR-0008): "A scan is scheduled in about 2
+minutes.", "A scan is starting." once that time has come, and "A scan is
+running. Another follows it for recent file changes." The words are
+`describeSchedule` in `src/lib/overview.ts`.
+
 How often it reads the Worker is `src/lib/overview.ts`, as #82's table
 sets it: the live route (scan and now playing) every 10 s while a pass
 runs and every 30 s otherwise; the library on page load, after **Scan now**
