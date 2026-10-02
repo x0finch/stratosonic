@@ -228,3 +228,49 @@ screen are in `src/lib/subsonic-users.ts`.
   scan imported from the bucket while they were the first Subsonic admin."
 - The list is read on page load and again after every write, and is never
   polled: only the console changes it.
+
+## Files
+
+The **Files** page (`/files`, `src/routes/_shell/files.tsx`, its parts in
+`src/components/files/`) browses the bound bucket one folder at a time and
+deletes files and folders from it (#83, ticket D). The rules that need no
+screen are in `src/lib/files.ts`. A role with `files:read` sees the page and
+the sidebar's Files entry; one with `files:write` also gets the checkboxes,
+each row's menu, **Delete** and **New folder**.
+
+- A folder is `?prefix=Artist/Album/`, so it is a deep link and the
+  browser's back button walks up. The path above the folder links each
+  folder from the bucket down; in a narrow column the folders in between
+  collapse into the breadcrumb's ellipsis.
+- A folder lists 1,000 entries a page, folders first, in R2's order;
+  **Load more** reads the next page while there is one. R2 gives no total,
+  so the description counts what is loaded ("12 files so far"). A cursor R2
+  refuses (`invalid_cursor`) opens the folder again from its first page.
+- **New folder** writes nothing: R2 has no folders, so the page opens the
+  new prefix ("Upload files to create this folder."), and the folder exists
+  once a file lands in it. Its name is checked here with the server's rules
+  for a new key's segment, and a refused one stays beside the field.
+- **Deletes are permanent** (owner decision 1): the confirmation names what
+  goes (up to five names), says "This cannot be undone.", and nothing offers
+  an undo. Files go in requests of at most 250 keys; each folder goes by
+  `delete-folder` rounds until the server says `done`, while the button
+  counts "Deleting… 2,000 files". The toast says what went ("Deleted 4
+  files", "Deleted Artist/Album (532 files)").
+- **Preview is read-only** (owner decision 2): where `GET /api/files/config`
+  says `writes.enabled: false`, no write control shows, and the folder's
+  heading says "Read-only on this deployment" instead.
+- **The scan line**, under the path, shows only while a pass is scheduled or
+  running: "Library scan in about 2 minutes.", "Library scan starting.", "A
+  scan is running. Another follows it for your recent changes." or "A scan is
+  running." It counts down on the server's clock from the schedule the last
+  delete returned (the answer's `Date` header standing for `serverTime`), or
+  from the live route's, whichever answered last. The rescan itself is the
+  server's (ADR-0008); the page only shows it.
+
+What it reads, for the free-tier budget: `GET /api/files/config` once a
+session; `GET /api/files` on opening a folder (fresh for 30 s), on **Load
+more**, and once after a delete (only the first page, whatever was
+loaded); `GET /api/overview/live` only while a pass is scheduled or running,
+with `library:read`, at the Overview's pace (every 30 s, every 10 s while a
+pass runs). Nothing else is polled, a return to the tab reads nothing, and
+a hidden tab reads nothing.
