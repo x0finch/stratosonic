@@ -2,16 +2,25 @@ import type { Context } from "hono";
 import { requireFreshSession, requirePermission, requireSession } from "../console-auth/middleware";
 import { database } from "../db";
 import type { Env } from "../env";
-import { fileWritesEnabled, requireFileWrites } from "../files/config";
+import {
+  bucketName,
+  fileWritesEnabled,
+  requireFileWrites,
+  type UploadsConfig,
+  uploadsStatus,
+} from "../files/config";
 import {
   ALLOWED,
   checkBrowsePrefix,
   checkFolderPrefix,
+  checkUploadKey,
+  checkUploadSize,
   isReservedKey,
   kindOf,
   type ListedKind,
   MAX_KEY_BYTES,
   MAX_SEGMENT_BYTES,
+  type PathRefusal,
   RESERVED_PREFIX,
   utf8Length,
 } from "../files/keys";
@@ -20,6 +29,7 @@ import {
   recordLibraryChange,
   type ScanScheduleView,
 } from "../files/library-change";
+import { type PresignedUpload, presignUpload } from "../files/sign";
 import { suffixOf } from "../library/audio-formats";
 import { PLAYLIST_SUFFIXES } from "../playlists/m3u";
 import { deletePlaylistRowsByKeys } from "../playlists/repository";
@@ -30,8 +40,9 @@ import { requireSameOrigin } from "./same-origin";
 
 /**
  * The console's Files page (#83): the bound bucket, `MUSIC`, browsed one
- * folder at a time, and files and folders deleted from it. Uploads are signed
- * by routes of their own (#83, "API: uploads").
+ * folder at a time, files and folders deleted from it, and files uploaded to
+ * it. An upload's bytes go from the browser straight to R2, with a URL this
+ * API presigns (files/sign.ts), and never through the Worker.
  *
  * R2 has no folders: a folder is a common key prefix ending in `/`, as a
  * delimited listing reports it. Keys are used exactly as R2 lists them, never
@@ -44,8 +55,9 @@ import { requireSameOrigin } from "./same-origin";
  * `requireFileWrites` (files/config.ts), in that order; each sends a JSON
  * object. The answers:
  *
- * - `GET /api/files/config`: `200 FilesConfig`, the allow-list, the limits,
- *   the quiet window and whether writes are enabled.
+ * - `GET /api/files/config`: `200 FilesConfig`, the bucket's name, whether
+ *   uploads are configured, the allow-list, the limits, the quiet window and
+ *   whether writes are enabled.
  * - `GET /api/files?prefix=&cursor=`: `200 {prefix, folders, files, cursor}`;
  *   `400 invalid_path`, `403 reserved_path`.
  * - `POST /api/files/delete`, `{keys}`, 1–250 keys:
@@ -53,7 +65,13 @@ import { requireSameOrigin } from "./same-origin";
  * - `POST /api/files/delete-folder`, `{prefix}`:
  *   `200 {deleted, done, scan}`, called again until `done`;
  *   `400 invalid_path`, `403 reserved_path`.
- * - Either write, where `FILE_WRITES` is `"off"`: `403 file_writes_disabled`.
+ * - `POST /api/files/uploads`, `{files: [{key, size, overwrite?}]}`, 1–20
+ *   files: `200 {uploads}`, one result per file, in order, each a presigned
+ *   `PUT` or a per-file `error`; `400 invalid_request`,
+ *   `503 uploads_not_configured`.
+ * - `POST /api/files/uploads/complete`, `{keys}`, 1–20 keys whose `PUT`
+ *   succeeded: `200 {scan}`; `400 invalid_request`, `403 reserved_path`.
+ * - Any write, where `FILE_WRITES` is `"off"`: `403 file_writes_disabled`.
  *
  * ## Deletes are permanent
  *
@@ -72,7 +90,37 @@ import { requireSameOrigin } from "./same-origin";
  *
  * `scan` is what the driver will do about the change, or null when it could
  * not be told, or when nothing was deleted.
+ *
+ * ## Uploads
+ *
+ * An upload is signed just before the browser sends it, and reported once R2
+ * has taken it:
+ *
+ * 1. `POST /api/files/uploads` checks each file against the upload rules
+ *    (files/keys.ts), asks R2 whether its key exists, and presigns a `PUT`
+ *    bound to the key, the exact size and the content type. A new key is
+ *    signed with `If-None-Match: *`, so R2 refuses it if it appears in the
+ *    meantime. An existing key answers `exists`, with its size and time,
+ *    unless the request says `overwrite: true` (Replace): then the URL is
+ *    signed for the key exactly as R2 stores it, which may be another
+ *    Unicode spelling of the one asked for, and without `If-None-Match`, so
+ *    the track's id and annotations are kept (ADR-0002). Nothing has changed
+ *    yet, so the library is not marked changed.
+ * 2. `POST /api/files/uploads/complete` reports the keys whose `PUT`
+ *    succeeded, and records the change as a delete does. It makes no R2 call:
+ *    the keys are bounded by the upload rules, and a key that was not really
+ *    uploaded only causes a pass that finds nothing new.
  */
+
+/**
+ * The most files one `POST /api/files/uploads` signs, and the most keys one
+ * `POST /api/files/uploads/complete` reports: 20 presigns keep the request
+ * well inside its 10 ms of CPU.
+ */
+export const SIGN_BATCH = 20;
+
+/** The most `head()` calls in flight at once: a Worker waits on six connections at a time. */
+export const HEADS_IN_FLIGHT = 6;
 
 /** The most keys one `POST /api/files/delete` takes; the body cap is sized for it. */
 export const DELETE_BATCH = 250;
@@ -115,9 +163,15 @@ export function registerFileRoutes(api: ApiApp): void {
   api.get("/files/config", requireSession, requirePermission("files:read"), (c) =>
     c.json({
       allowed: ALLOWED,
+      // R2_BUCKET_NAME, or null when unset.
+      bucket: bucketName(c.env),
+      // Whether uploads can be signed here; `missing` names the values that
+      // are not set, never their contents.
+      uploads: uploadsView(c.env),
       limits: {
         maxKeyBytes: MAX_KEY_BYTES,
         maxSegmentBytes: MAX_SEGMENT_BYTES,
+        signBatch: SIGN_BATCH,
         deleteBatch: DELETE_BATCH,
       },
       rescanQuietSeconds: RESCAN_QUIET_MS / 1000,
@@ -227,6 +281,188 @@ export function registerFileRoutes(api: ApiApp): void {
 
     return c.json({ deleted: deleted.length, done, scan });
   });
+
+  /**
+   * `POST /api/files/uploads` with `{files}`: 1–20 files to sign, each
+   * `{key, size, overwrite?}`. A refused file does not fail the others: the
+   * request answers 200 with one result per file, in order.
+   */
+  api.post("/files/uploads", requireSameOrigin, limitJsonBody, ...write, async (c) => {
+    const status = uploadsStatus(c.env);
+    if (!status.configured) {
+      return c.json({ error: "uploads_not_configured" }, 503);
+    }
+
+    const { files } = (await readJsonObject(c)) ?? {};
+    const requested = readUploadRequests(files);
+    if (requested === null) {
+      return invalidRequest(c);
+    }
+
+    // One instant for the whole batch: every URL expires together.
+    const now = Date.now();
+    const uploads = await mapInFlight(requested, HEADS_IN_FLIGHT, (file) =>
+      signUpload(c.env, status.config, file, now),
+    );
+
+    return c.json({ uploads });
+  });
+
+  /**
+   * `POST /api/files/uploads/complete` with `{keys}`: 1–20 keys whose `PUT`
+   * R2 accepted. It records the change, in one D1 statement and one call to
+   * the scan driver, and answers what the driver will do about it.
+   */
+  api.post("/files/uploads/complete", requireSameOrigin, limitJsonBody, ...write, async (c) => {
+    const { keys } = (await readJsonObject(c)) ?? {};
+    if (!isCompletedKeyList(keys)) {
+      return invalidRequest(c);
+    }
+    const refusals = keys.map(checkUploadKey).flatMap((key) => ("error" in key ? [key.error] : []));
+    if (refusals.includes("reserved_path")) {
+      return refused(c, "reserved_path");
+    }
+    if (refusals.length > 0) {
+      // Not a key an upload could have written.
+      return invalidRequest(c);
+    }
+
+    const scan = await recordLibraryChange(c.env, database(c.env), Date.now());
+
+    return c.json({ scan });
+  });
+}
+
+/** One file `POST /api/files/uploads` is asked to sign. */
+interface UploadRequest {
+  readonly key: string;
+  readonly size: number;
+  readonly overwrite: boolean;
+}
+
+/** Why one file is not signed. */
+export type UploadRefusal = PathRefusal | "empty_file" | "too_large";
+
+/** One result of `POST /api/files/uploads`, in the order the files were asked for. */
+export type UploadResult =
+  | ({ readonly key: string } & PresignedUpload)
+  | { readonly key: string; readonly error: UploadRefusal }
+  | {
+      readonly key: string;
+      readonly error: "exists";
+      readonly existing: { readonly size: number; readonly uploadedAt: string };
+    };
+
+/** `uploads` of `GET /api/files/config`. */
+function uploadsView(env: Env) {
+  const status = uploadsStatus(env);
+  return status.configured
+    ? { configured: true as const }
+    : { configured: false as const, missing: status.missing };
+}
+
+/**
+ * The files of a sign request, or null unless it is 1–20 objects, each with a
+ * string `key`, a `size` that is a whole number of bytes, and an `overwrite`
+ * that is a boolean when given.
+ */
+function readUploadRequests(files: unknown): UploadRequest[] | null {
+  if (!Array.isArray(files) || files.length < 1 || files.length > SIGN_BATCH) {
+    return null;
+  }
+
+  const requested: UploadRequest[] = [];
+  for (const file of files) {
+    if (typeof file !== "object" || file === null || Array.isArray(file)) {
+      return null;
+    }
+    const { key, size, overwrite } = file as Record<string, unknown>;
+    if (
+      typeof key !== "string" ||
+      typeof size !== "number" ||
+      !Number.isSafeInteger(size) ||
+      size < 0 ||
+      (overwrite !== undefined && typeof overwrite !== "boolean")
+    ) {
+      return null;
+    }
+    requested.push({ key, size, overwrite: overwrite === true });
+  }
+
+  return requested;
+}
+
+/**
+ * One file's result: why it is refused, that its key exists, or its
+ * presigned `PUT`. Its key is the one asked for in NFC, or on Replace the
+ * key exactly as R2 stores it.
+ */
+async function signUpload(
+  env: Env,
+  config: UploadsConfig,
+  file: UploadRequest,
+  now: number,
+): Promise<UploadResult> {
+  const checked = checkUploadKey(file.key);
+  if ("error" in checked) {
+    return { key: file.key.normalize("NFC"), error: checked.error };
+  }
+  const sizeRefusal = checkUploadSize(checked.kind, file.size);
+  if (sizeRefusal !== null) {
+    return { key: checked.key, error: sizeRefusal };
+  }
+
+  // One Class B operation. R2 treats NFC-equivalent keys as one object, so
+  // this finds an object stored under another spelling too.
+  const stored = await env.MUSIC.head(checked.key);
+  if (stored !== null && !file.overwrite) {
+    return {
+      key: checked.key,
+      error: "exists",
+      existing: { size: stored.size, uploadedAt: stored.uploaded.toISOString() },
+    };
+  }
+
+  const key = stored?.key ?? checked.key;
+  const presigned = await presignUpload(
+    config,
+    { key, size: file.size, contentType: checked.contentType, replace: stored !== null },
+    now,
+  );
+
+  return { key, ...presigned };
+}
+
+/**
+ * `work` applied to every item, at most `limit` at a time, with the results
+ * in the items' order.
+ */
+async function mapInFlight<T, R>(
+  items: readonly T[],
+  limit: number,
+  work: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await work(items[index] as T);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+
+  return results;
+}
+
+/** Whether `keys` is 1–20 strings, as a complete request reports them. */
+function isCompletedKeyList(keys: unknown): keys is string[] {
+  return (
+    Array.isArray(keys) &&
+    keys.length >= 1 &&
+    keys.length <= SIGN_BATCH &&
+    keys.every((key) => typeof key === "string")
+  );
 }
 
 /**
