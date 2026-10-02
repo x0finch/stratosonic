@@ -45,10 +45,19 @@ const MUSIC = {
   head: async (key: string) => stored.get(key) ?? null,
 } as unknown as R2Bucket;
 
-/** A scan driver that starts a pass at once. */
+/**
+ * A scan driver that answers at once: `touch`, which a completion calls,
+ * schedules a pass after the quiet window, as an idle driver does.
+ */
 const SCAN_DRIVER = {
   idFromName: () => ({}),
-  get: () => ({ start: async () => "started" }),
+  get: () => ({
+    start: async () => "started",
+    touch: async (at: number) => ({
+      scheduledAt: new Date(at + 120_000).toISOString(),
+      afterCurrentPass: false,
+    }),
+  }),
 } as unknown as Env["SCAN_DRIVER"];
 
 const { DB } = migratedD1();
@@ -148,26 +157,26 @@ await bench(
     ),
 );
 
+/**
+ * A completion, which must reach the driver: `scan: null` would mean the
+ * bench timed the logged-failure path instead.
+ */
+async function complete(keys: readonly string[]): Promise<void> {
+  const response = await send(
+    apiRequest(ORIGIN, "/api/files/uploads/complete", { body: { keys }, cookie }),
+  );
+  const body = (await response.json()) as { scan?: unknown };
+  if (response.status !== 200 || body.scan === null || body.scan === undefined) {
+    throw new Error(`a completion answered ${response.status} ${JSON.stringify(body)}`);
+  }
+}
+
 const keys = files(10).map((file) => file.key);
 await bench(
   "POST /api/files/uploads/complete, 1 key",
   1000,
-  async () => () =>
-    expecting(
-      200,
-      send(
-        apiRequest(ORIGIN, "/api/files/uploads/complete", { body: { keys: [keys[0]] }, cookie }),
-      ),
-    ),
+  async () => () => complete(keys.slice(0, 1)),
 );
-await bench(
-  "POST /api/files/uploads/complete, 10 keys",
-  1000,
-  async () => () =>
-    expecting(
-      200,
-      send(apiRequest(ORIGIN, "/api/files/uploads/complete", { body: { keys }, cookie })),
-    ),
-);
+await bench("POST /api/files/uploads/complete, 10 keys", 1000, async () => () => complete(keys));
 
 report();
