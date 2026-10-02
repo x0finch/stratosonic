@@ -372,7 +372,18 @@ export interface ScanStatus {
     steps: number;
     counts: LastScanCounts;
   } | null;
+  /** What the server will do about recent file changes; `null` when none is pending. */
+  scheduled: ScanSchedule | null;
 }
+
+/**
+ * A pass the server will run for recent file changes (#83): one starting at
+ * about `scheduledAt`, once the library has been quiet for two minutes, or
+ * one more after the pass in flight.
+ */
+export type ScanSchedule =
+  | { scheduledAt: string; afterCurrentPass: false }
+  | { scheduledAt: null; afterCurrentPass: true };
 
 /** Someone listening, with the position the server estimated at `serverTime`. */
 export interface NowPlayingEntry {

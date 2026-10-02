@@ -11,7 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { requestScan, type ScanStatus } from "@/lib/api";
 import { formatCount, formatDuration } from "@/lib/format";
-import { afterScanRequest } from "@/lib/overview";
+import { afterScanRequest, describeSchedule } from "@/lib/overview";
 import { toastError, toastSuccess } from "@/lib/toasts";
 
 /**
@@ -51,19 +51,30 @@ export function LibraryScan({
   );
 }
 
+/**
+ * What the scan is doing, in a sentence or two. A pass the server will run
+ * for recent file changes (`describeSchedule`) comes first: while a pass
+ * runs it says another follows; while idle it says when one starts, before
+ * the last pass's finish.
+ */
 function describeScan(scan: ScanStatus, now: number): ReactNode {
+  const scheduled = describeSchedule(scan, now);
   if (scan.running) {
+    if (scheduled !== null && scan.scheduled?.afterCurrentPass) {
+      return scheduled;
+    }
     return scan.phase === "playlists" ? "Importing playlists" : "A scan is running.";
   }
   if (scan.last) {
     return (
       <>
+        {scheduled === null ? null : `${scheduled} `}
         Last scan finished <RelativeTime iso={scan.last.finishedAt} now={now} /> and took{" "}
         {formatDuration(passSeconds(scan.last))}.
       </>
     );
   }
-  return "No scan has finished yet.";
+  return scheduled ?? "No scan has finished yet.";
 }
 
 /** How long a pass took, in seconds. */

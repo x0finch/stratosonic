@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LibraryOverview, LiveOverview, ScanStatus } from "@/lib/api";
 import {
   afterScanRequest,
+  describeSchedule,
   estimatePositionMs,
   followLive,
   LIVE_INTERVAL_IDLE_MS,
@@ -28,6 +29,7 @@ const IDLE: ScanStatus = {
   progress: null,
   estimatedTotal: 120,
   last: null,
+  scheduled: null,
 };
 
 function live(running: boolean): LiveRead {
@@ -317,6 +319,42 @@ describe("a scan request", () => {
     afterScanRequest(queryClient, { outcome: "running", scan: { ...IDLE, running: true } });
 
     expect(queryClient.getQueryData(liveQuery.queryKey)).toBeUndefined();
+  });
+});
+
+describe("the scan's schedule, in words", () => {
+  const now = Date.parse("2026-10-02T12:00:00.000Z");
+  const at = (offsetMs: number): ScanStatus => ({
+    ...IDLE,
+    scheduled: { scheduledAt: new Date(now + offsetMs).toISOString(), afterCurrentPass: false },
+  });
+
+  it("says nothing when no pass is scheduled", () => {
+    expect(describeSchedule(IDLE, now)).toBeNull();
+  });
+
+  it("says when a pass starts, in whole minutes", () => {
+    expect(describeSchedule(at(120_000), now)).toBe("A scan is scheduled in about 2 minutes.");
+    expect(describeSchedule(at(100_000), now)).toBe("A scan is scheduled in about 2 minutes.");
+    expect(describeSchedule(at(80_000), now)).toBe("A scan is scheduled in about a minute.");
+    expect(describeSchedule(at(5_000), now)).toBe("A scan is scheduled in about a minute.");
+  });
+
+  it("says a pass is starting once its time has come", () => {
+    expect(describeSchedule(at(0), now)).toBe("A scan is starting.");
+    expect(describeSchedule(at(-30_000), now)).toBe("A scan is starting.");
+  });
+
+  it("says another pass follows the one running", () => {
+    const scan: ScanStatus = {
+      ...IDLE,
+      running: true,
+      phase: "scan",
+      scheduled: { scheduledAt: null, afterCurrentPass: true },
+    };
+    expect(describeSchedule(scan, now)).toBe(
+      "A scan is running. Another follows it for recent file changes.",
+    );
   });
 });
 
