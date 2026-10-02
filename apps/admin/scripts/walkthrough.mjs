@@ -57,6 +57,20 @@
  * error 40. Its users are named `walkthrough-…`, so the database must not
  * have those yet.
  *
+ * The Files page (`/files`, #83 ticket D) is walked in a scratch folder of
+ * the bucket, `FILES_PREFIX` (`walkthrough-files/` by default), which the
+ * run deletes from: it must hold a file of its own (so that it outlives the
+ * run) and a subfolder `album/` with at least two files. Without it at the
+ * bucket's root, the Files steps are skipped. The walkthrough browses into
+ * the folder and `album/` and back, by the path and by the browser's back
+ * button; refuses a New folder name beside its field and opens a new one,
+ * empty, writing nothing; deletes one file of `album/` through the dialog,
+ * which says the delete cannot be undone, and sees the toast and the scan
+ * line; and deletes `album/` itself. On a server with `FILE_WRITES = "off"`
+ * (the preview) it instead checks that the page shows no write control and
+ * that the server refuses a delete (`file_writes_disabled`), and deletes
+ * nothing.
+ *
  * Any console error or uncaught exception on a page fails the walkthrough,
  * except the browser's own "Failed to load resource" line for a response the
  * console expects to be refused (a 401 from `/api/me` while signed out, the
@@ -75,6 +89,8 @@ const USERNAME = process.env.OWNER_USER ?? "owner";
 const SUBSONIC_USER = process.env.SUBSONIC_USER;
 const SUBSONIC_PASSWORD = process.env.SUBSONIC_PASSWORD;
 const SCREENSHOTS = process.env.SCREENSHOTS;
+/** The bucket's scratch folder the Files steps browse and delete from. */
+const FILES_PREFIX = process.env.FILES_PREFIX ?? "walkthrough-files/";
 /** How long a pass started with Scan now may take to finish, in seconds. */
 const SCAN_TIMEOUT_MS = Number(process.env.SCAN_TIMEOUT ?? 120) * 1000;
 
@@ -92,6 +108,8 @@ const EXPECTED_REFUSALS = {
   // A taken name, and the last Subsonic admin's demotion and deletion.
   "/api/subsonic-users": [409],
   "/api/subsonic-users/:id": [409],
+  // A delete the preview refuses (`file_writes_disabled`).
+  "/api/files/delete": [403],
 };
 
 /** A path as `EXPECTED_REFUSALS` names it: one Subsonic user's as `:id`. */
@@ -310,7 +328,7 @@ async function checkSidebarEntries(page) {
   await sidebar.getByRole("link", { name: "Overview" }).waitFor();
   const entries = await sidebar.locator('[data-sidebar="menu-button"]').allTextContents();
   check(
-    JSON.stringify(entries) === JSON.stringify(["Overview", "Users"]),
+    JSON.stringify(entries) === JSON.stringify(["Overview", "Users", "Files"]),
     `the sidebar lists ${JSON.stringify(entries)}`,
   );
   const disabled = await sidebar.locator('[data-sidebar="menu-button"]:disabled').count();
@@ -404,6 +422,43 @@ async function addSubsonicUser(page, { username, password }, { admin, locked, sc
   await dialogClosed(page);
   await page.getByRole("cell", { name: username, exact: true }).waitFor();
 }
+
+/** The Files page's folder, by its prefix: the root for `""`. */
+function filesUrl(prefix) {
+  return `${BASE_URL}/files${prefix === "" ? "" : `?prefix=${encodeURIComponent(prefix)}`}`;
+}
+
+/** One folder as `GET /api/files` lists it, with the page's session. */
+async function listFolder(page, prefix) {
+  return page.evaluate(async (prefix) => {
+    const response = await fetch(`/api/files?prefix=${encodeURIComponent(prefix)}`);
+    return response.json();
+  }, prefix);
+}
+
+/** What `GET /api/files/config` says, with the page's session. */
+async function filesConfig(page) {
+  return page.evaluate(async () => (await fetch("/api/files/config")).json());
+}
+
+/** That the Files page shows the folder `prefix`: its URL and its h2 (the bucket's at the root). */
+async function inFolder(page, prefix) {
+  await page.waitForURL((url) => (url.searchParams.get("prefix") ?? "") === prefix);
+  const name = prefix.split("/").at(-2);
+  await (name === undefined
+    ? page.getByRole("heading", { level: 2 })
+    : page.getByRole("heading", { level: 2, name, exact: true })
+  ).waitFor();
+}
+
+/** The folder path above the table. */
+function folderPath(page) {
+  return page.getByRole("navigation", { name: "Folder path" });
+}
+
+/** The scan line's sentences (#83, "Layout", item 2). */
+const SCAN_LINE =
+  /Library scan in about (a minute|\d+ minutes)\.|Library scan starting\.|A scan is running\./;
 
 async function main() {
   if (SCREENSHOTS) {
@@ -894,6 +949,175 @@ async function main() {
       }
     });
 
+    /** What the Files steps found: the scratch folder, and whether writes are on. */
+    const files = { present: false, writable: false, album: `${FILES_PREFIX}album/` };
+
+    await step(
+      "Files: browse into a folder and back, by the path and the back button",
+      async () => {
+        await page.goto(filesUrl(""));
+        await page.getByRole("heading", { level: 1, name: "Files" }).waitFor();
+        await checkSidebarEntries(page);
+        const root = await listFolder(page, "");
+        files.present = root.folders.some((folder) => folder.prefix === FILES_PREFIX);
+        if (!files.present) {
+          return "skipped";
+        }
+        files.writable = (await filesConfig(page)).writes.enabled;
+        const [scratch] = FILES_PREFIX.split("/");
+        await page.getByRole("link", { name: scratch, exact: true }).click();
+        await inFolder(page, FILES_PREFIX);
+        await page.getByRole("link", { name: "album", exact: true }).click();
+        await inFolder(page, files.album);
+        await shot(page, "files-album");
+        await folderPath(page).getByRole("link", { name: scratch, exact: true }).click();
+        await inFolder(page, FILES_PREFIX);
+        await page.goBack();
+        await inFolder(page, files.album);
+        await page.goBack();
+        await inFolder(page, FILES_PREFIX);
+        await page.goBack();
+        await inFolder(page, "");
+        return files.writable ? undefined : "file writes are off here";
+      },
+    );
+
+    await step(
+      "Files: New folder refuses a bad name, and opens a new one writing nothing",
+      async () => {
+        if (!files.present || !files.writable) {
+          return "skipped";
+        }
+        const writes = [];
+        const onRequest = (request) => {
+          if (
+            request.method() !== "GET" &&
+            new URL(request.url()).pathname.startsWith("/api/files")
+          ) {
+            writes.push(request.url());
+          }
+        };
+        page.on("request", onRequest);
+        try {
+          await page.goto(filesUrl(FILES_PREFIX));
+          await inFolder(page, FILES_PREFIX);
+          await page.getByRole("button", { name: "New folder" }).click();
+          const form = dialog(page);
+          await form.getByLabel("Name", { exact: true }).fill(".hidden");
+          await form.getByRole("button", { name: "Create folder" }).click();
+          await form.getByText("A name cannot start with a dot.").waitFor();
+          await checkNoToast(page, "A name cannot start with a dot.");
+          await shot(page, "files-new-folder-refused");
+          await form.getByLabel("Name", { exact: true }).fill("walkthrough new folder");
+          await form.getByRole("button", { name: "Create folder" }).click();
+          await dialogClosed(page);
+          await inFolder(page, `${FILES_PREFIX}walkthrough new folder/`);
+          await page.getByText("Upload files to create this folder.").waitFor();
+          await shot(page, "files-new-folder");
+          check(writes.length === 0, `New folder wrote: ${writes.join(", ")}`);
+          await page.goBack();
+          await inFolder(page, FILES_PREFIX);
+        } finally {
+          page.off("request", onRequest);
+        }
+      },
+    );
+
+    await step("Files: delete a file, which cannot be undone, and see the scan line", async () => {
+      if (!files.present || !files.writable) {
+        return "skipped";
+      }
+      const before = await listFolder(page, files.album);
+      const [target] = before.files;
+      check(before.files.length >= 2, `${files.album} holds ${before.files.length} files, not 2`);
+      await page.goto(filesUrl(files.album));
+      await inFolder(page, files.album);
+      await page.getByRole("button", { name: `Actions for ${target.name}`, exact: true }).click();
+      await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
+      const confirm = dialog(page);
+      await confirm.getByText("Delete 1 file?").waitFor();
+      await confirm.getByText(target.name, { exact: true }).waitFor();
+      await confirm.getByText(/This cannot be undone\./).waitFor();
+      await shot(page, "files-delete-file-dialog");
+      await markToasts(page);
+      await confirm.getByRole("button", { name: "Delete", exact: true }).click();
+      await expectToast(page, "Deleted 1 file");
+      await dialogClosed(page);
+      check(
+        (await page.locator(TOAST).filter({ hasText: /undo/i }).count()) === 0,
+        "a toast offers an undo",
+      );
+      await page.getByText(SCAN_LINE).first().waitFor();
+      await page.getByRole("cell", { name: target.name }).waitFor({ state: "detached" });
+      await shot(page, "files-deleted-file");
+      const after = await listFolder(page, files.album);
+      check(
+        !after.files.some((file) => file.key === target.key),
+        `${target.key} is still in the bucket`,
+      );
+    });
+
+    await step("Files: delete a folder, with everything in it", async () => {
+      if (!files.present || !files.writable) {
+        return "skipped";
+      }
+      const inside = (await listFolder(page, files.album)).files.length;
+      await page.goto(filesUrl(FILES_PREFIX));
+      await inFolder(page, FILES_PREFIX);
+      await page.getByRole("checkbox", { name: "Select album", exact: true }).click();
+      await page.getByRole("button", { name: "Delete 1 selected" }).click();
+      const confirm = dialog(page);
+      await confirm.getByText("Delete 1 folder?").waitFor();
+      await confirm.getByText(files.album, { exact: true }).waitFor();
+      await confirm.getByText(/This cannot be undone\./).waitFor();
+      await shot(page, "files-delete-folder-dialog");
+      await markToasts(page);
+      await confirm.getByRole("button", { name: "Delete", exact: true }).click();
+      await expectToast(
+        page,
+        `Deleted ${files.album.replace(/\/$/, "")} (${inside} file${inside === 1 ? "" : "s"})`,
+      );
+      await dialogClosed(page);
+      await page.getByRole("link", { name: "album", exact: true }).waitFor({ state: "detached" });
+      await page.getByText(SCAN_LINE).first().waitFor();
+      await shot(page, "files-deleted-folder");
+      const after = await listFolder(page, files.album);
+      check(after.files.length === 0 && after.folders.length === 0, `${files.album} is not empty`);
+    });
+
+    await step("Files: where file writes are off, the page is read-only", async () => {
+      if (!files.present || files.writable) {
+        return "skipped";
+      }
+      await page.goto(filesUrl(FILES_PREFIX));
+      await inFolder(page, FILES_PREFIX);
+      await page.getByText("Read-only on this deployment").waitFor();
+      for (const control of [
+        page.getByRole("checkbox"),
+        page.getByRole("button", { name: "New folder" }),
+        page.getByRole("button", { name: /^Actions for / }),
+        page.getByRole("button", { name: /^Delete/ }),
+      ]) {
+        check((await control.count()) === 0, "a write control shows on a read-only page");
+      }
+      await shot(page, "files-read-only");
+      const { files: listed } = await listFolder(page, FILES_PREFIX);
+      const refused = await page.evaluate(async (key) => {
+        const response = await fetch("/api/files/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ keys: [key] }),
+        });
+        return { status: response.status, body: await response.json() };
+      }, listed[0]?.key ?? `${FILES_PREFIX}nothing`);
+      check(
+        refused.status === 403 && refused.body.error === "file_writes_disabled",
+        `a delete answered ${JSON.stringify(refused)}`,
+      );
+      const after = await listFolder(page, FILES_PREFIX);
+      check(after.files.length === listed.length, "a refused delete deleted something");
+    });
+
     await step("dark mode", async () => {
       await page.goto(`${BASE_URL}/account`);
       await page.getByRole("button", { name: "Toggle theme" }).click();
@@ -917,6 +1141,11 @@ async function main() {
         "the Overview is not dark",
       );
       await shot(page, "overview-dark");
+      if (files.present) {
+        await page.goto(filesUrl(FILES_PREFIX));
+        await inFolder(page, FILES_PREFIX);
+        await shot(page, "files-dark");
+      }
       await page.getByRole("button", { name: "Toggle theme" }).click();
       await page.getByRole("menuitem", { name: "Light" }).click();
     });
@@ -944,6 +1173,16 @@ async function main() {
       await mobile.getByText("Recently added", { exact: true }).waitFor();
       check(!(await overflows()), "the Overview scrolls sideways");
       await shot(mobile, "mobile-overview");
+      if (files.present) {
+        await mobile.goto(filesUrl(FILES_PREFIX));
+        await inFolder(mobile, FILES_PREFIX);
+        check(!(await overflows()), "the Files page scrolls sideways");
+        check(
+          !(await mobile.getByRole("columnheader", { name: "Modified" }).isVisible()),
+          "the Files page shows Modified on a phone",
+        );
+        await shot(mobile, "mobile-files");
+      }
 
       await mobile.getByRole("button", { name: "Toggle Sidebar" }).first().click();
       await openUserMenu(mobile);

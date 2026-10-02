@@ -202,6 +202,17 @@ when there is none), sets its password, renames it, sees the last Subsonic
 admin's demotion and deletion refused, and deletes it, checking each change
 with a Subsonic `ping`. Run it on a database without those users.
 
+It walks the Files page (below) in a scratch folder at the bucket's root,
+`FILES_PREFIX` (`walkthrough-files/` by default), which it deletes from:
+put a file of its own there and a subfolder `album/` with at least two
+files, for example with `wrangler r2 object put navidrome/walkthrough-files/album/01.flac
+--file … --local`. It browses in and back by the path and the back button,
+opens a New folder (writing nothing), deletes one file and then `album/`
+through the dialog, and sees the toasts and the scan line. Against a
+Worker with `FILE_WRITES = "off"` (`wrangler dev --var FILE_WRITES:off`)
+it checks the read-only page instead and deletes nothing. Without the
+scratch folder the Files steps are skipped.
+
 ## Subsonic users
 
 The **Subsonic users** page (`/users`, `src/routes/_shell/users.tsx`, its
