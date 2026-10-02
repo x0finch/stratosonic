@@ -38,7 +38,7 @@ import { aboutMinutes, type LiveRead, scheduleState } from "@/lib/overview";
 /** How long a folder's listing stays fresh: only the console, a pass's covers and rclone change it. */
 export const FOLDER_STALE_MS = 30_000;
 
-/** The bucket's name when the server does not say it (`bucket` comes with ticket C). */
+/** The bucket's name when the server does not know it (`R2_BUCKET_NAME` unset). */
 export const BUCKET_FALLBACK = "Bucket";
 
 export const filesConfigQuery = queryOptions({
@@ -88,6 +88,49 @@ export function afterFilesChange(queryClient: QueryClient): Promise<void> {
     firstPage,
   );
   return queryClient.invalidateQueries({ queryKey: FOLDERS_KEY });
+}
+
+/**
+ * After uploads landed (lib/uploads.ts, at most once every 5 s): only the
+ * folders the keys change are read again, each cut back to its first page.
+ * A folder is changed by a key directly in it, or by one under a subfolder
+ * its loaded pages do not list yet (which the upload made). Every other
+ * folder, the one on screen included, keeps its pages, Load more and all.
+ */
+export function afterUploadsLanded(
+  queryClient: QueryClient,
+  keys: readonly string[],
+): Promise<void> {
+  const changed = queryClient
+    .getQueriesData<InfiniteData<FolderListing, string | null>>({ queryKey: FOLDERS_KEY })
+    .filter(([queryKey, data]) => {
+      const prefix = queryKey[FOLDERS_KEY.length];
+      return typeof prefix === "string" && keys.some((key) => changesFolder(prefix, key, data));
+    });
+  return Promise.all(
+    changed.map(([queryKey]) => {
+      queryClient.setQueryData(queryKey, firstPage);
+      return queryClient.invalidateQueries({ queryKey, exact: true });
+    }),
+  ).then(() => undefined);
+}
+
+/** Whether a key that landed changes the listing of the folder `prefix`. */
+function changesFolder(
+  prefix: string,
+  key: string,
+  data: InfiniteData<FolderListing, string | null> | undefined,
+): boolean {
+  if (!key.startsWith(prefix)) {
+    return false;
+  }
+  const rest = key.slice(prefix.length);
+  const slash = rest.indexOf("/");
+  if (slash === -1) {
+    return true;
+  }
+  const folder = `${prefix}${rest.slice(0, slash + 1)}`;
+  return !(data?.pages ?? []).some((page) => page.folders.some((f) => f.prefix === folder));
 }
 
 /**
@@ -234,11 +277,12 @@ export function describeListing(folders: number, files: number, more: boolean): 
   return `${parts.join(" and ")}${more ? " so far" : ""}`;
 }
 
+/** The characters no new key's segment may hold: controls, and a Windows path's backslash. */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point.
-const FORBIDDEN_CHARACTERS = /[\u0000-\u001f\u007f\\]/;
+export const FORBIDDEN_CHARACTERS = /[\u0000-\u001f\u007f\\]/;
 
 /** The length of a string in bytes of UTF-8, as R2 counts a key. */
-function utf8Length(value: string): number {
+export function utf8Length(value: string): number {
   return new TextEncoder().encode(value).length;
 }
 

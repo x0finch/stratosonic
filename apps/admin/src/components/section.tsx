@@ -11,7 +11,8 @@ import { type ComponentPropsWithoutRef, type ReactNode, useId } from "react";
  * names the section, which so becomes a region. A page of a single block
  * (#128) gives no `title`: the h1 names it already, so the block has no h2
  * and is no named region, and shows only its description, its action and
- * its content. The content's text is `text-sm`, the console's body size, as
+ * its content. A block with no heading on a page of several gives an
+ * `aria-label` instead, which makes it a named region. The content's text is `text-sm`, the console's body size, as
  * a card's was.
  */
 export function Section({
@@ -48,11 +49,19 @@ export function Section({
       </div>
     ) : null;
 
+  // A block with no visible heading on a page of several (DESIGN.md,
+  // "Accessibility") is a region named by `aria-label`. It stays a `div`
+  // with `role="region"`, so a block that becomes one of several (the Files
+  // page's folder, once the Uploads section joins it) keeps its content
+  // mounted.
+  const labelled = !titled && ariaLabel !== undefined && ariaLabel !== "";
+
   return (
     // A plain div is no region, so it takes no region's name either.
     <Root
+      role={labelled ? "region" : undefined}
       aria-labelledby={titled ? id : undefined}
-      aria-label={titled ? ariaLabel : undefined}
+      aria-label={titled || labelled ? ariaLabel : undefined}
       className={cn("flex min-w-0 flex-col gap-4 text-sm", className)}
       {...props}
     >

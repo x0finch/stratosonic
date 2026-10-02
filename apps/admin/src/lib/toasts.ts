@@ -13,6 +13,14 @@ export function toastSuccess(title: string, description: string): void {
 }
 
 /**
+ * Something that did not happen, in the console's own words, announced
+ * urgently, such as "2 files were not uploaded".
+ */
+export function toastFailure(title: string, description: string): void {
+  toast.add({ type: "error", priority: "high", title, description });
+}
+
+/**
  * A failed call, in words, announced urgently. `title` names what failed in
  * place of the error's own title.
  */

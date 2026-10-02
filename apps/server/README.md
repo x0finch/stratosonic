@@ -162,8 +162,11 @@ pnpm exec wrangler r2 bucket cors list navidrome
   The browser sets `Content-Length` itself, and that header never appears in
   a preflight.
 - `ETag` is exposed, so the console can show that R2 accepted the object.
-- `maxAgeSeconds: 3600` lets the browser reuse one preflight for an hour of
-  uploads instead of sending an `OPTIONS` for each file.
+- `maxAgeSeconds: 3600` lets the browser cache a preflight for up to an
+  hour, but it caches it by the request's full URL, and no two presigned
+  URLs are alike (each has its own key and signature). So every upload
+  still sends its own `OPTIONS`, to R2 and not to the Worker; the cache only
+  spares a second request to the very same URL.
 - A new rule can take up to 30 seconds to apply.
 
 **Custom domains.** Presigned URLs work only on
@@ -240,7 +243,10 @@ An expired URL fails with `403` and no CORS headers, so the browser sees a
 network error. The console signs just before each upload and signs again if
 needed. After a successful `PUT`, the console reports the file
 (`POST /api/files/uploads/complete`), and the debounced scan picks it up. A
-report that never arrives is covered by the next cron pass.
+report that never arrives is covered by the next cron pass. So one file
+costs its share of one sign request (the console signs 1–3 files at a
+time) and of one complete request (it reports up to 10 landed files
+together), which are Worker requests, and one `OPTIONS` and one `PUT` to R2, which are not.
 
 ### Rotating the token
 

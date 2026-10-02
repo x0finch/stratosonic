@@ -13,9 +13,30 @@ import { ApiError, meQuery } from "@/lib/api";
 export function signOutWhenUnauthenticated(queryClient: QueryClient, error: unknown): boolean {
   if (error instanceof ApiError && error.code === "unauthenticated") {
     queryClient.setQueryData(meQuery.queryKey, null);
+    announceSignOut();
     return true;
   }
   return false;
+}
+
+/** What has to end with the session, such as the upload queue (hooks/use-upload-queue.ts). */
+const onSignOut = new Set<() => void>();
+
+/**
+ * Runs `callback` once the console signs out, by the user's request
+ * (`leaveSignedOut`) or because the session ended
+ * (`signOutWhenUnauthenticated`), so nothing of one user's outlives their
+ * session in the tab. Answers the function that stops listening.
+ */
+export function whenSignedOut(callback: () => void): () => void {
+  onSignOut.add(callback);
+  return () => onSignOut.delete(callback);
+}
+
+function announceSignOut(): void {
+  for (const callback of [...onSignOut]) {
+    callback();
+  }
 }
 
 /** The one navigation `leaveSignedOut` makes, so a test can stand in for the router. */
@@ -38,6 +59,7 @@ export async function leaveSignedOut(
   queryClient: QueryClient,
   router: SignOutNavigator,
 ): Promise<void> {
+  announceSignOut();
   queryClient.clear();
   queryClient.setQueryData(meQuery.queryKey, null);
   await router.navigate({ to: "/login" });

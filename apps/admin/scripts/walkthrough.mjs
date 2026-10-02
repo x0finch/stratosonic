@@ -71,6 +71,19 @@
  * that the server refuses a delete (`file_writes_disabled`), and deletes
  * nothing.
  *
+ * Uploads (#83 ticket E) need a real bucket: a presigned `PUT` goes to R2's
+ * S3 endpoint, which a local `wrangler dev` bucket does not have. So they
+ * run only against a Worker with R2 API credentials whose bucket is a
+ * scratch bucket named in `UPLOADS_BUCKET` (and the CORS rule for
+ * `BASE_URL`'s origin, apps/server README "File uploads"), and are skipped
+ * otherwise. In `FILES_PREFIX` they upload a folder (two FLACs, their
+ * `.lrc` and a cover, from the server's test fixtures), seeing each file's
+ * progress row, the toast and the scan line; upload one of its files again,
+ * which already exists, and replace it; and delete the folder again. On
+ * any Worker with uploads configured (fake credentials will do), they pick
+ * a `.pdf` and see it refused before any request. Each step's note gives
+ * the requests its run made (sign, complete and `PUT`), for the budget.
+ *
  * Any console error or uncaught exception on a page fails the walkthrough,
  * except the browser's own "Failed to load resource" line for a response the
  * console expects to be refused (a 401 from `/api/me` while signed out, the
@@ -79,8 +92,10 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 
 const BASE_URL = (process.env.BASE_URL ?? "http://localhost:8787").replace(/\/$/, "");
@@ -91,6 +106,15 @@ const SUBSONIC_PASSWORD = process.env.SUBSONIC_PASSWORD;
 const SCREENSHOTS = process.env.SCREENSHOTS;
 /** The bucket's scratch folder the Files steps browse and delete from. */
 const FILES_PREFIX = process.env.FILES_PREFIX ?? "walkthrough-files/";
+/**
+ * The bucket the Worker binds, when it is a real scratch bucket that may be
+ * uploaded to: the upload steps run only when this names it and the Worker
+ * has R2 API credentials (`GET /api/files/config`). A presigned `PUT` goes to
+ * R2's S3 endpoint, which `wrangler dev`'s local bucket (miniflare) does not
+ * have, so these steps need a deployment (or `wrangler dev --remote`) on a
+ * scratch bucket with the CORS rule for the console's origin.
+ */
+const UPLOADS_BUCKET = process.env.UPLOADS_BUCKET;
 /** How long a pass started with Scan now may take to finish, in seconds. */
 const SCAN_TIMEOUT_MS = Number(process.env.SCAN_TIMEOUT ?? 120) * 1000;
 
@@ -456,6 +480,43 @@ async function inFolder(page, prefix) {
 /** The folder path above the table. */
 function folderPath(page) {
   return page.getByRole("navigation", { name: "Folder path" });
+}
+
+/** Picks files through the page's Upload menu ("Files…" or "Folder…") and the file chooser. */
+async function pick(page, item, paths) {
+  await page.getByRole("button", { name: "Upload", exact: true }).first().click();
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("menuitem", { name: item }).click();
+  await (await chooser).setFiles(paths);
+}
+
+/**
+ * Counts the requests an upload run makes from now on: sign and complete
+ * requests to the Worker, and `PUT`s to R2. A CORS preflight is not a
+ * request Playwright reports; there is one before each `PUT`, since a
+ * browser caches a preflight by its full URL and every presigned URL
+ * differs.
+ */
+function countUploadRequests(page) {
+  const counted = { sign: 0, complete: 0, put: 0, files: 0 };
+  page.on("request", (request) => {
+    const path = pathOf(request);
+    if (path === "/api/files/uploads") {
+      counted.sign++;
+      counted.files += JSON.parse(request.postData() ?? "{}").files?.length ?? 0;
+    } else if (path === "/api/files/uploads/complete") {
+      counted.complete++;
+    } else if (
+      request.method() === "PUT" &&
+      new URL(request.url()).host.endsWith(".r2.cloudflarestorage.com")
+    ) {
+      counted.put++;
+    }
+  });
+  counted.note = () =>
+    `${counted.sign} sign request(s) for ${counted.files} file(s), ${counted.put} PUT(s), ` +
+    `${counted.complete} complete request(s)`;
+  return counted;
 }
 
 /** The scan line's sentences (#83, "Layout", item 2). */
@@ -1086,6 +1147,146 @@ async function main() {
       await shot(page, "files-deleted-folder");
       const after = await listFolder(page, files.album);
       check(after.files.length === 0 && after.folders.length === 0, `${files.album} is not empty`);
+    });
+
+    /**
+     * What the upload steps found: whether uploads are configured (enough to
+     * check the console's own refusals), whether they may really upload (a
+     * scratch bucket), the local folder they pick from, and the bucket
+     * folder they upload.
+     */
+    const uploads = {
+      configured: false,
+      on: false,
+      dir: "",
+      album: `${FILES_PREFIX}walkthrough upload/`,
+    };
+
+    await step("Files: a .pdf is refused before any request", async () => {
+      if (!files.present || !files.writable) {
+        return "skipped";
+      }
+      const config = await filesConfig(page);
+      if (!config.uploads.configured) {
+        return "skipped";
+      }
+      uploads.configured = true;
+      uploads.on = Boolean(UPLOADS_BUCKET) && config.bucket === UPLOADS_BUCKET;
+      // What the steps pick: a folder of two FLACs, their lyrics and a
+      // cover, and a .pdf beside it.
+      uploads.dir = mkdtempSync(join(tmpdir(), "walkthrough-upload-"));
+      const album = join(uploads.dir, "walkthrough upload");
+      mkdirSync(album);
+      const fixture = (name) =>
+        fileURLToPath(new URL(`../../server/test/fixtures/${name}`, import.meta.url));
+      copyFileSync(fixture("hushed-interlude.flac"), join(album, "01 Hushed Interlude.flac"));
+      copyFileSync(fixture("lyrics-vorbis.flac"), join(album, "02 Lyrics.flac"));
+      writeFileSync(join(album, "01 Hushed Interlude.lrc"), "[00:00.00]Hushed\n");
+      writeFileSync(join(album, "02 Lyrics.lrc"), "[00:00.00]Lyrics\n");
+      copyFileSync(fixture("cover.png"), join(album, "cover.png"));
+      writeFileSync(join(uploads.dir, "notes.pdf"), "%PDF-1.4\n");
+
+      await page.goto(filesUrl(FILES_PREFIX));
+      await inFolder(page, FILES_PREFIX);
+      const counted = countUploadRequests(page);
+      await markToasts(page);
+      await pick(page, "Files…", join(uploads.dir, "notes.pdf"));
+      await page.getByRole("heading", { level: 2, name: "Uploads" }).waitFor();
+      // The folder's block is a region of its own now, named after it.
+      await page.getByRole("region", { name: FILES_PREFIX.split("/").at(-2) }).waitFor();
+      await page.getByText("Failed: not a type the server reads").waitFor();
+      await expectToast(page, "1 file was not uploaded");
+      check(
+        counted.sign === 0 && counted.put === 0,
+        `a refused .pdf made requests: ${counted.note()}`,
+      );
+      await shot(page, "files-upload-refused");
+      await page.getByRole("button", { name: "Clear finished" }).click();
+      await page.getByRole("heading", { level: 2, name: "Uploads" }).waitFor({ state: "detached" });
+    });
+
+    await step(
+      "Files: upload a folder, with each file's progress, the toast and the scan line",
+      async () => {
+        if (!uploads.on) {
+          if (uploads.configured) {
+            console.log(
+              "    uploads need UPLOADS_BUCKET naming the scratch bucket the Worker binds",
+            );
+          }
+          return "skipped";
+        }
+        await page.goto(filesUrl(FILES_PREFIX));
+        await inFolder(page, FILES_PREFIX);
+        const counted = countUploadRequests(page);
+        await markToasts(page);
+        await pick(page, "Folder…", join(uploads.dir, "walkthrough upload"));
+        await page.getByRole("heading", { level: 2, name: "Uploads" }).waitFor();
+        // One row a file; a progress bar shows only while a file is sent.
+        check(
+          (await page.getByRole("region", { name: "Uploads" }).getByRole("listitem").count()) === 5,
+          "the Uploads section does not show one row a file",
+        );
+        await expectToast(page, "Uploaded 5 files");
+        await page.getByText("5 of 5 uploaded").waitFor();
+        await page.getByText(SCAN_LINE).first().waitFor();
+        await shot(page, "files-uploaded");
+        const listed = await listFolder(page, uploads.album);
+        check(
+          listed.files.length === 5,
+          `${uploads.album} holds ${listed.files.length} files, not 5`,
+        );
+        return counted.note();
+      },
+    );
+
+    await step("Files: a file that exists is Already exists, and Replace replaces it", async () => {
+      if (!uploads.on) {
+        return "skipped";
+      }
+      await page.goto(filesUrl(uploads.album));
+      await inFolder(page, uploads.album);
+      await page.getByRole("button", { name: "Clear finished" }).click();
+      const counted = countUploadRequests(page);
+      await markToasts(page);
+      await pick(
+        page,
+        "Files…",
+        join(uploads.dir, "walkthrough upload", "01 Hushed Interlude.flac"),
+      );
+      await page.getByText("Already exists").waitFor();
+      await expectToast(page, "1 file was not uploaded");
+      await shot(page, "files-upload-exists");
+      await markToasts(page);
+      await page.getByRole("button", { name: "Replace", exact: true }).click();
+      await expectToast(page, "Uploaded 1 file");
+      await page.getByRole("button", { name: "Clear finished" }).click();
+      return counted.note();
+    });
+
+    await step("Files: the uploaded folder is deleted again", async () => {
+      if (uploads.dir !== "") {
+        rmSync(uploads.dir, { recursive: true, force: true });
+      }
+      if (!uploads.on) {
+        return "skipped";
+      }
+      const deleted = await page.evaluate(async (prefix) => {
+        let total = 0;
+        for (;;) {
+          const response = await fetch("/api/files/delete-folder", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prefix }),
+          });
+          const body = await response.json();
+          total += body.deleted ?? 0;
+          if (!response.ok || body.done) {
+            return total;
+          }
+        }
+      }, uploads.album);
+      check(deleted === 5, `deleting ${uploads.album} took ${deleted} files, not 5`);
     });
 
     await step("Files: where file writes are off, the page is read-only", async () => {
