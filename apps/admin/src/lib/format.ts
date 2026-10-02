@@ -61,17 +61,19 @@ const BYTE_UNITS = ["B", "kB", "MB", "GB", "TB", "PB"];
 
 /**
  * A size in decimal units, as Cloudflare states its limits (10 GB of R2
- * storage is 10,000,000,000 bytes): `98.8 GB`.
+ * storage is 10,000,000,000 bytes): `98.8 GB`. A measured size has one
+ * decimal below 100 of its unit; `digits` sets another precision, such as
+ * 0 for a limit, which is a round number (`10 GB`).
  */
-export function formatBytes(bytes: number): string {
+export function formatBytes(bytes: number, digits?: number): string {
   let value = Math.max(bytes, 0);
   let unit = 0;
   while (value >= 1_000 && unit < BYTE_UNITS.length - 1) {
     value /= 1_000;
     unit += 1;
   }
-  const digits = unit === 0 || value >= 100 ? 0 : 1;
-  return `${value.toFixed(digits)} ${BYTE_UNITS[unit]}`;
+  const shown = digits ?? (unit === 0 || value >= 100 ? 0 : 1);
+  return `${value.toFixed(shown)} ${BYTE_UNITS[unit]}`;
 }
 
 /** A share of a limit, as a whole percentage, or with a decimal below 10 %. */
@@ -94,13 +96,17 @@ const RELATIVE_STEPS: [Intl.RelativeTimeFormatUnit, number][] = [
   ["year", Number.POSITIVE_INFINITY],
 ];
 
-/** How long ago an instant was, from `now`: `5 minutes ago`, `yesterday`. */
+/**
+ * How long ago an instant was, from `now`: `5 minutes ago`, `yesterday`. The
+ * instants are past events the server stamped, so one a little ahead of this
+ * browser's clock is `just now`, not `in 3 seconds`.
+ */
 export function formatRelative(iso: string, now: number): string {
   const at = Date.parse(iso);
   if (!Number.isFinite(at)) {
     return "";
   }
-  let value = Math.round((at - now) / 1_000);
+  let value = Math.round((Math.min(at, now) - now) / 1_000);
   for (const [unit, size] of RELATIVE_STEPS) {
     if (Math.abs(value) < size) {
       return value === 0 && unit === "second" ? "just now" : RELATIVE.format(value, unit);

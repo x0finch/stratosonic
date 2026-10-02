@@ -47,6 +47,10 @@ function SubsonicUsers() {
   const writable = can(me, "subsonic-users:write");
   const users = useQuery({ ...subsonicUsersQuery, enabled: readable });
   const [dialog, setDialog] = useState<DialogState>({ open: null, user: null });
+  // What "2 minutes ago" is measured from: the latest read of the list, or
+  // the page's first render before any, as on the Overview.
+  const [openedAt] = useState(() => Date.now());
+  const now = Math.max(openedAt, users.dataUpdatedAt);
 
   if (!readable) {
     return (
@@ -73,14 +77,15 @@ function SubsonicUsers() {
 
   return (
     <>
-      {/* The Tasks example's layout: a header row, and the table beneath it. */}
+      {/* The Tasks example's layout: a header row, and the table beneath it.
+          The page is this one block, which the header's h1 names, so it has
+          no heading of its own (#128). */}
       <Section
-        title="Subsonic users"
         description="The accounts Subsonic clients, such as Substreamer, sign in with. They never sign in to this console."
         action={
           writable && users.isSuccess ? (
-            <Button onClick={() => openFor("create", null)}>
-              <PlusIcon />
+            <Button size="sm" onClick={() => openFor("create", null)}>
+              <PlusIcon data-icon="inline-start" />
               Add user
             </Button>
           ) : null
@@ -110,7 +115,7 @@ function SubsonicUsers() {
             </EmptyHeader>
           </Empty>
         ) : (
-          <UsersTable users={list} onAction={writable ? openFor : undefined} />
+          <UsersTable users={list} now={now} onAction={writable ? openFor : undefined} />
         )}
       </Section>
       {writable && (

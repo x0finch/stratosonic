@@ -1,3 +1,6 @@
+import { cn } from "cn";
+
+import { RelativeTime } from "@/components/relative-time";
 import { Section } from "@/components/section";
 import { Badge } from "@/components/ui/badge";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
@@ -11,11 +14,14 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { PlaylistSummary } from "@/lib/api";
-import { formatCount, formatDateTime, formatLength, formatRelative } from "@/lib/format";
+import { formatCount, formatLength } from "@/lib/format";
 
 /**
  * Every playlist, by name, with the Subsonic user it belongs to and its
- * track count. A playlist whose owner is gone says so.
+ * track count. A playlist whose owner is gone says so. The text columns
+ * come first and the numbers last (#128). A name is never truncated: it
+ * wraps, and on a narrow screen the secondary columns give way, the owner
+ * first.
  */
 export function PlaylistsTable({
   playlists,
@@ -49,37 +55,37 @@ export function PlaylistsTable({
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
-              <TableHead>Owner</TableHead>
+              <TableHead className="hidden md:table-cell">Owner</TableHead>
+              <TableHead className="hidden sm:table-cell">Changed</TableHead>
               <TableHead className="text-right">Tracks</TableHead>
               <TableHead className="hidden text-right sm:table-cell">Length</TableHead>
-              <TableHead className="hidden md:table-cell">Changed</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {playlists.map((playlist) => (
               <TableRow key={playlist.id}>
-                <TableCell className="max-w-40 sm:max-w-80">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate font-medium" title={playlist.name}>
-                      {playlist.name}
-                    </span>
+                <TableCell className="whitespace-normal">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="font-medium">{playlist.name}</span>
                     {playlist.public ? <Badge variant="secondary">Public</Badge> : null}
                   </div>
                 </TableCell>
-                <TableCell className={playlist.owner === null ? "text-muted-foreground" : ""}>
+                <TableCell
+                  className={cn(
+                    "hidden md:table-cell",
+                    playlist.owner === null && "text-muted-foreground",
+                  )}
+                >
                   {playlist.owner ?? "No owner"}
+                </TableCell>
+                <TableCell className="hidden text-muted-foreground sm:table-cell">
+                  <RelativeTime iso={playlist.changedAt} now={now} />
                 </TableCell>
                 <TableCell className="text-right tabular-nums">
                   {formatCount(playlist.songCount)}
                 </TableCell>
                 <TableCell className="hidden text-right tabular-nums sm:table-cell">
                   {formatLength(playlist.durationSec)}
-                </TableCell>
-                <TableCell
-                  className="hidden text-muted-foreground md:table-cell"
-                  title={formatDateTime(playlist.changedAt)}
-                >
-                  {formatRelative(playlist.changedAt, now)}
                 </TableCell>
               </TableRow>
             ))}

@@ -151,18 +151,3 @@ export function userNamesMatch(left: string, right: string): boolean {
 export function formatDay(iso: string, locale?: string, timeZone?: string): string {
   return new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeZone }).format(new Date(iso));
 }
-
-/**
- * When a Subsonic client last signed in as the user, for the Last access
- * column: "Never" for a user no client has used yet.
- */
-export function formatLastAccess(iso: string | null, locale?: string, timeZone?: string): string {
-  if (iso === null) {
-    return "Never";
-  }
-  return new Intl.DateTimeFormat(locale, {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone,
-  }).format(new Date(iso));
-}

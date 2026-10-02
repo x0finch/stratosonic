@@ -1,17 +1,8 @@
 import { Link } from "@tanstack/react-router";
-import {
-  AudioWaveformIcon,
-  FolderIcon,
-  LayoutDashboardIcon,
-  LibraryIcon,
-  ScanSearchIcon,
-  Settings2Icon,
-  UsersIcon,
-} from "lucide-react";
+import { AudioWaveformIcon, LayoutDashboardIcon, UsersIcon } from "lucide-react";
 import type { ComponentProps } from "react";
 
 import { type NavItem, NavMain } from "@/components/nav-main";
-import { NavSecondary } from "@/components/nav-secondary";
 import { NavUser } from "@/components/nav-user";
 import {
   Sidebar,
@@ -25,18 +16,12 @@ import {
 import type { Me } from "@/lib/api";
 import { can } from "@/lib/roles";
 
-// The entries without a page hold the places of the pages the coming admin
-// phases add (#80).
-const data: { navMain: NavItem[]; navSecondary: NavItem[] } = {
-  navMain: [
-    { title: "Overview", to: "/", icon: <LayoutDashboardIcon /> },
-    { title: "Library", icon: <LibraryIcon /> },
-    { title: "Scans", icon: <ScanSearchIcon /> },
-    { title: "Users", to: "/users", icon: <UsersIcon />, permission: "subsonic-users:read" },
-    { title: "Files", icon: <FolderIcon /> },
-  ],
-  navSecondary: [{ title: "Settings", icon: <Settings2Icon /> }],
-};
+// Only the pages that exist (#128): each coming admin phase adds its own
+// entry with its page (#80).
+const navMain: NavItem[] = [
+  { title: "Overview", to: "/", icon: <LayoutDashboardIcon /> },
+  { title: "Users", to: "/users", icon: <UsersIcon />, permission: "subsonic-users:read" },
+];
 
 /** Whether the signed-in console user's role grants what an entry's page needs. */
 function allowed(user: Me, item: NavItem): boolean {
@@ -45,8 +30,9 @@ function allowed(user: Me, item: NavItem): boolean {
 
 /**
  * The sidebar-08 block's inset sidebar: the console's name in the header,
- * its pages, the secondary entries at the bottom, and the signed-in user in
- * the footer. The block's projects group has no counterpart here.
+ * its pages, and the signed-in user in the footer. The block's projects
+ * group has no counterpart here, nor, until a page belongs there, its
+ * secondary entries.
  */
 export function AppSidebar({ user, ...props }: ComponentProps<typeof Sidebar> & { user: Me }) {
   return (
@@ -67,8 +53,7 @@ export function AppSidebar({ user, ...props }: ComponentProps<typeof Sidebar> & 
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
-        <NavMain items={data.navMain.filter((item) => allowed(user, item))} />
-        <NavSecondary items={data.navSecondary} className="mt-auto" />
+        <NavMain items={navMain.filter((item) => allowed(user, item))} />
       </SidebarContent>
       <SidebarFooter>
         <NavUser user={user} />

@@ -292,6 +292,31 @@ async function checkNoToast(page, text) {
   check(count === 0, `a toast repeats the field's "${text}"`);
 }
 
+/**
+ * That a page of one block has no h2: the header's h1 names it (#128). The
+ * h1 is the breadcrumb's page, a heading by its role.
+ */
+async function checkNoSectionHeading(page, what) {
+  const headings = await page.getByRole("heading").allTextContents();
+  check(
+    (await page.getByRole("heading", { level: 2 }).count()) === 0,
+    `${what} has a section heading: ${JSON.stringify(headings)}`,
+  );
+}
+
+/** That the sidebar lists only the pages that exist, with no placeholders (#128). */
+async function checkSidebarEntries(page) {
+  const sidebar = page.locator('[data-slot="sidebar-content"]');
+  await sidebar.getByRole("link", { name: "Overview" }).waitFor();
+  const entries = await sidebar.locator('[data-sidebar="menu-button"]').allTextContents();
+  check(
+    JSON.stringify(entries) === JSON.stringify(["Overview", "Users"]),
+    `the sidebar lists ${JSON.stringify(entries)}`,
+  );
+  const disabled = await sidebar.locator('[data-sidebar="menu-button"]:disabled').count();
+  check(disabled === 0, `the sidebar has ${disabled} disabled entries`);
+}
+
 async function openUserMenu(page) {
   await page.getByRole("button", { name: new RegExp(USERNAME) }).click();
 }
@@ -532,7 +557,9 @@ async function main() {
       const url = new URL(page.url());
       check(url.searchParams.get("redirect") === "/account", `redirect is ${url.search}`);
       await signIn(page, password, { expectAt: "/account" });
-      await page.getByRole("heading", { name: "Account" }).waitFor();
+      await page.getByRole("heading", { level: 1, name: "Account" }).waitFor();
+      await page.getByLabel("Current password", { exact: true }).waitFor();
+      await checkNoSectionHeading(page, "the account page");
     });
 
     await step("the account form checks its fields", async () => {
@@ -629,8 +656,10 @@ async function main() {
     await step("Subsonic users: add a user, and ping with it", async () => {
       await page.getByRole("link", { name: "Users" }).click();
       await page.waitForURL((url) => url.pathname === "/users");
-      // The page's h1; its one section's h2 has the same name.
+      // The page's h1. It is one block, so it has no h2 of its own (#128).
       await page.getByRole("heading", { level: 1, name: "Subsonic users" }).waitFor();
+      await page.getByRole("button", { name: "Add user" }).waitFor();
+      await checkNoSectionHeading(page, "the Subsonic users page");
       const before = await listSubsonicUsers(page);
       check(
         !before.some((user) => user.username.startsWith("walkthrough-")),
@@ -784,6 +813,7 @@ async function main() {
       await page.getByText("Library scan", { exact: true }).waitFor();
       await page.getByText("Artists", { exact: true }).waitFor();
       await page.getByText("Recently added", { exact: true }).waitFor();
+      await checkSidebarEntries(page);
       const answer = await usage;
       check(answer.ok(), `GET /api/usage answered ${answer.status()}`);
       const configured = (await answer.json()).configured;
