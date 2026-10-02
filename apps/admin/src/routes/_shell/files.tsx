@@ -25,7 +25,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { useClock } from "@/hooks/use-clock";
-import { useUploadQueue } from "@/hooks/use-upload-queue";
+import { useUploadQueue, useUploads } from "@/hooks/use-upload-queue";
 import { ApiError, type Me, meQuery } from "@/lib/api";
 import {
   BUCKET_FALLBACK,
@@ -52,7 +52,7 @@ import {
 import { formatCount } from "@/lib/format";
 import { liveQuery } from "@/lib/overview";
 import { can } from "@/lib/roles";
-import { toastError } from "@/lib/toasts";
+import { toastError, toastFailure } from "@/lib/toasts";
 import { planUploads } from "@/lib/uploads";
 
 export const Route = createFileRoute("/_shell/files")({
@@ -119,8 +119,15 @@ function FilesPage({ me }: { me: Me | null }) {
   // Uploads, where the server can presign them too: R2 API credentials.
   const uploadable = writable && config.data?.uploads.configured === true;
   const uploadsMissing = writable && config.data?.uploads.configured === false;
-  const { queue, snapshot: uploads } = useUploadQueue();
-  const uploadView = uploads.schedule && viewOfWrite(uploads.schedule);
+  // The page redraws for the queue only when it starts or stops holding
+  // files, or a completion brings a new schedule; the rows are the Uploads
+  // section's own.
+  const queue = useUploadQueue();
+  const queued = useUploads(queue, (snapshot) => snapshot.items.length > 0);
+  const uploadSchedule = useUploads(queue, (snapshot) => snapshot.schedule);
+  const uploadView = uploadSchedule && viewOfWrite(uploadSchedule);
+  // The Uploads section is for a role that may write files.
+  const showUploads = mayWrite && queued;
 
   // The scan line: the last write's schedule, or the live route's, whichever
   // came last. The live route is read only while a pass is scheduled or
@@ -162,7 +169,17 @@ function FilesPage({ me }: { me: Me | null }) {
     }
     const listed = (at: string) =>
       queryClient.getQueryData(folderQuery(at).queryKey)?.pages.flatMap((page) => page.folders);
-    queue.add(planUploads(picked, prefix, config.data, listed), config.data.limits.signBatch);
+    const planned = planUploads(picked, prefix, config.data, listed);
+    if (planned.length === 0) {
+      // A folder pick of hidden files only, such as a folder whose name
+      // starts with a dot: say so rather than do nothing.
+      toastFailure(
+        "Nothing to upload",
+        "Hidden files and folders, whose names start with a dot, are not uploaded.",
+      );
+      return;
+    }
+    queue.add(planned, config.data.limits.signBatch);
   }
 
   function select(targets: readonly DeleteTarget[], checked: boolean) {
@@ -227,73 +244,75 @@ function FilesPage({ me }: { me: Me | null }) {
     <div className="@container flex min-w-0 flex-col gap-4">
       <FolderPath prefix={prefix} bucket={bucket} />
       <ScanLine view={view} />
-      {/* The folder has no h2: the path's current page names it. While it
+      {/* The folder and the Uploads section are two blocks: `gap-6` between
+          sections (DESIGN.md, "Spacing and layout"). */}
+      <div className="flex min-w-0 flex-col gap-6">
+        {/* The folder has no h2: the path's current page names it. While it
           is the page's one block, it is no named region either (DESIGN.md,
           "A page with a single block has no section heading"); once the
           Uploads section joins it, it is a region named after the folder. */}
-      <Section
-        aria-label={uploads.items.length > 0 ? folderName : undefined}
-        description={
-          uploadsMissing
-            ? "Uploads need R2 API credentials on the server (see the server README)."
-            : // An empty folder says so in its `Empty` below, once.
-              empty
-              ? undefined
-              : folder.data
-                ? describeListing(folders.length, files.length, folder.hasNextPage)
-                : folder.isPending
-                  ? "Reading the folder…"
-                  : undefined
-        }
-        action={actions}
-      >
-        {folder.isPending ? (
-          <div className="flex flex-col gap-2" aria-busy="true">
-            <span className="sr-only">Loading the folder…</span>
-            <Skeleton className="h-8 w-full" />
-            <Skeleton className="h-8 w-full" />
-            <Skeleton className="h-8 w-full" />
-          </div>
-        ) : folder.data === undefined ? (
-          <ErrorAlert error={folder.error} />
-        ) : empty ? (
-          <FolderEmpty
-            prefix={prefix}
-            made={made.has(prefix)}
-            upload={uploadable ? <UploadMenu variant="outline" onPick={upload} /> : null}
-          />
-        ) : (
-          <>
-            <FilesTable
-              folders={folders}
-              files={files}
-              now={now}
-              actions={
-                writable
-                  ? {
-                      selected,
-                      onSelect: select,
-                      onDelete: (target) => openDialog("delete", [target]),
-                    }
-                  : undefined
-              }
+        <Section
+          aria-label={showUploads ? folderName : undefined}
+          description={
+            uploadsMissing
+              ? "Uploads need R2 API credentials on the server (see the server README)."
+              : // An empty folder says so in its `Empty` below, once.
+                empty
+                ? undefined
+                : folder.data
+                  ? describeListing(folders.length, files.length, folder.hasNextPage)
+                  : folder.isPending
+                    ? "Reading the folder…"
+                    : undefined
+          }
+          action={actions}
+        >
+          {folder.isPending ? (
+            <div className="flex flex-col gap-2" aria-busy="true">
+              <span className="sr-only">Loading the folder…</span>
+              <Skeleton className="h-8 w-full" />
+              <Skeleton className="h-8 w-full" />
+              <Skeleton className="h-8 w-full" />
+            </div>
+          ) : folder.data === undefined ? (
+            <ErrorAlert error={folder.error} />
+          ) : empty ? (
+            <FolderEmpty
+              prefix={prefix}
+              made={made.has(prefix)}
+              upload={uploadable ? <UploadMenu variant="outline" onPick={upload} /> : null}
             />
-            {folder.hasNextPage ? (
-              <div className="flex justify-center">
-                <Button variant="outline" disabled={folder.isFetchingNextPage} onClick={loadMore}>
-                  {folder.isFetchingNextPage ? (
-                    <Spinner data-icon="inline-start" aria-hidden="true" />
-                  ) : null}
-                  Load more
-                </Button>
-              </div>
-            ) : null}
-          </>
-        )}
-      </Section>
-      {uploads.items.length > 0 ? (
-        <UploadsSection items={uploads.items} queue={queue} allowed={config.data?.allowed} />
-      ) : null}
+          ) : (
+            <>
+              <FilesTable
+                folders={folders}
+                files={files}
+                now={now}
+                actions={
+                  writable
+                    ? {
+                        selected,
+                        onSelect: select,
+                        onDelete: (target) => openDialog("delete", [target]),
+                      }
+                    : undefined
+                }
+              />
+              {folder.hasNextPage ? (
+                <div className="flex justify-center">
+                  <Button variant="outline" disabled={folder.isFetchingNextPage} onClick={loadMore}>
+                    {folder.isFetchingNextPage ? (
+                      <Spinner data-icon="inline-start" aria-hidden="true" />
+                    ) : null}
+                    Load more
+                  </Button>
+                </div>
+              ) : null}
+            </>
+          )}
+        </Section>
+        {showUploads ? <UploadsSection queue={queue} config={config.data} /> : null}
+      </div>
       {writable && config.data ? (
         <>
           <NewFolderDialog

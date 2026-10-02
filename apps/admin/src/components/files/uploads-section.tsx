@@ -1,5 +1,5 @@
 import { CircleAlertIcon, XIcon } from "lucide-react";
-import { useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 
 import { RelativeTime } from "@/components/relative-time";
 import { Section } from "@/components/section";
@@ -16,16 +16,35 @@ import {
 import { Button } from "@/components/ui/button";
 import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress";
 import { useClock } from "@/hooks/use-clock";
+import { useUploads } from "@/hooks/use-upload-queue";
 import type { FilesConfig } from "@/lib/api";
 import { countOf, LISTED_NAMES } from "@/lib/files";
 import { formatBytes, formatCount } from "@/lib/format";
 import {
   describeFailure,
+  describeHidden,
   describeQueue,
   percentOf,
+  shownRows,
   type UploadQueue,
   type UploadView,
 } from "@/lib/uploads";
+
+/** What a row's own buttons do. */
+type RowAction = "replace" | "skip" | "cancel";
+
+/** Where focus goes once the row it was on loses its buttons: a row, or the heading. */
+type FocusTarget = number | "heading" | null;
+
+/** Whether a row has buttons: Replace and Skip, or Cancel upload. */
+function actionable(item: UploadView): boolean {
+  return (
+    item.state === "exists" ||
+    item.state === "waiting" ||
+    item.state === "signing" ||
+    item.state === "uploading"
+  );
+}
 
 /**
  * The Uploads section (#83, "Layout", item 6), while the queue holds a file:
@@ -37,37 +56,97 @@ import {
  * to read as a divider (DESIGN.md: no decorative lines). A file still to go
  * has a cancel button. Several conflicts get **Replace all**, which asks
  * first, and **Skip all**.
+ *
+ * A pick of thousands of files stays light: the section draws the files in
+ * flight, every failure and conflict, the next waiting files and the latest
+ * finished ones (`shownRows`), counts the rest, and redraws a row only when
+ * it changed (the queue keeps each row's object, and `UploadRow` is
+ * memoised).
+ *
+ * When a row's buttons go (Replace, Skip, Cancel upload), focus moves to the
+ * next row that has buttons, or to the heading when none is left; so it
+ * does after Replace all, Skip all, Cancel all and Clear finished.
  */
 export function UploadsSection({
-  items,
   queue,
-  allowed,
+  config,
 }: {
-  items: readonly UploadView[];
   queue: UploadQueue;
-  allowed: FilesConfig["allowed"] | undefined;
+  config: Pick<FilesConfig, "allowed" | "limits"> | undefined;
 }) {
+  const items = useUploads(queue, (snapshot) => snapshot.items);
   const now = useClock();
   const [confirming, setConfirming] = useState(false);
+  const [focusTarget, setFocusTarget] = useState<FocusTarget>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+  const headingRef = useRef<HTMLSpanElement>(null);
+  // Replace all confirmed: the dialog hands focus to the heading as it closes.
+  const replacedAll = useRef(false);
+
+  const { rows, hidden } = shownRows(items);
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
   const conflicts = items.filter((item) => item.state === "exists");
   const finished = items.some((item) =>
     ["uploaded", "failed", "skipped", "canceled"].includes(item.state),
   );
   const running = items.some((item) => ["waiting", "signing", "uploading"].includes(item.state));
 
+  // A stable callback, so a memoised row is not redrawn for its sake.
+  const act = useCallback(
+    (id: number, action: RowAction) => {
+      const shown = rowsRef.current;
+      const index = shown.findIndex((row) => row.id === id);
+      const next =
+        shown.slice(index + 1).find(actionable) ??
+        shown.slice(0, Math.max(index, 0)).findLast(actionable);
+      setFocusTarget(next?.id ?? "heading");
+      queue[action](id);
+    },
+    [queue],
+  );
+
+  useEffect(() => {
+    if (focusTarget === null) {
+      return;
+    }
+    if (focusTarget !== "heading") {
+      const button = listRef.current?.querySelector<HTMLElement>(
+        `[data-upload="${focusTarget}"] button`,
+      );
+      if (button) {
+        button.focus();
+        setFocusTarget(null);
+        return;
+      }
+    }
+    headingRef.current?.focus();
+    setFocusTarget(null);
+  }, [focusTarget]);
+
+  const all = (run: () => void) => () => {
+    run();
+    setFocusTarget("heading");
+  };
+
   return (
     <Section
-      title="Uploads"
+      title={
+        // Focus lands here once no row has buttons left.
+        <span ref={headingRef} tabIndex={-1}>
+          Uploads
+        </span>
+      }
       description={describeQueue(items)}
       action={
         <>
           {running ? (
-            <Button variant="outline" size="sm" onClick={() => queue.cancelAll()}>
+            <Button variant="outline" size="sm" onClick={all(() => queue.cancelAll())}>
               Cancel all
             </Button>
           ) : null}
           {finished ? (
-            <Button variant="outline" size="sm" onClick={() => queue.clearFinished()}>
+            <Button variant="outline" size="sm" onClick={all(() => queue.clearFinished())}>
               Clear finished
             </Button>
           ) : null}
@@ -83,22 +162,33 @@ export function UploadsSection({
             <Button variant="outline" size="sm" onClick={() => setConfirming(true)}>
               Replace all
             </Button>
-            <Button variant="outline" size="sm" onClick={() => queue.skipAll()}>
+            <Button variant="outline" size="sm" onClick={all(() => queue.skipAll())}>
               Skip all
             </Button>
           </div>
         </div>
       ) : null}
-      <ul className="flex flex-col gap-4">
-        {items.map((item) => (
-          <UploadRow key={item.id} item={item} queue={queue} allowed={allowed} now={now} />
+      <ul ref={listRef} className="flex flex-col gap-4">
+        {rows.map((item) => (
+          <UploadRow key={item.id} item={item} config={config} now={now} onAct={act} />
         ))}
       </ul>
+      {describeHidden(hidden).map((line) => (
+        <p key={line} className="text-muted-foreground">
+          {line}
+        </p>
+      ))}
       <ReplaceAllDialog
         conflicts={conflicts}
         open={confirming && conflicts.length > 0}
         onOpenChange={setConfirming}
+        finalFocus={() => {
+          const replaced = replacedAll.current;
+          replacedAll.current = false;
+          return replaced ? headingRef.current : true;
+        }}
         onConfirm={() => {
+          replacedAll.current = true;
           queue.replaceAll();
           setConfirming(false);
         }}
@@ -128,23 +218,24 @@ function stateLabel(item: UploadView): string {
   }
 }
 
-function UploadRow({
+/** One file's row, redrawn only when the queue gives it a new row object. */
+const UploadRow = memo(function UploadRow({
   item,
-  queue,
-  allowed,
+  config,
   now,
+  onAct,
 }: {
   item: UploadView;
-  queue: UploadQueue;
-  allowed: FilesConfig["allowed"] | undefined;
+  config: Pick<FilesConfig, "allowed" | "limits"> | undefined;
   now: number;
+  onAct: (id: number, action: RowAction) => void;
 }) {
   const active = item.state === "waiting" || item.state === "signing" || item.state === "uploading";
   const sending = item.state === "signing" || item.state === "uploading";
   const failed = item.state === "failed" && item.failure !== undefined;
 
   return (
-    <li className="flex flex-col gap-2">
+    <li data-upload={item.id} className="flex flex-col gap-2">
       <div className="flex items-center justify-between gap-3">
         <span className="min-w-0 font-mono wrap-anywhere">{item.key}</span>
         {active ? (
@@ -152,16 +243,16 @@ function UploadRow({
             variant="ghost"
             size="icon-sm"
             aria-label="Cancel upload"
-            onClick={() => queue.cancel(item.id)}
+            onClick={() => onAct(item.id, "cancel")}
           >
             <XIcon />
           </Button>
         ) : item.state === "exists" ? (
           <div className="flex shrink-0 items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => queue.replace(item.id)}>
+            <Button variant="outline" size="sm" onClick={() => onAct(item.id, "replace")}>
               Replace
             </Button>
-            <Button variant="outline" size="sm" onClick={() => queue.skip(item.id)}>
+            <Button variant="outline" size="sm" onClick={() => onAct(item.id, "skip")}>
               Skip
             </Button>
           </div>
@@ -178,10 +269,11 @@ function UploadRow({
         </Progress>
       ) : failed && item.failure ? (
         <p className="flex min-w-0 items-start gap-1.5 font-medium text-destructive">
-          <CircleAlertIcon className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-          <span className="min-w-0">
-            Failed: {describeFailure(item.failure, item.key, allowed)}
+          {/* A box one line tall keeps the icon beside the first line. */}
+          <span className="flex h-5 shrink-0 items-center">
+            <CircleAlertIcon className="size-4" aria-hidden="true" />
           </span>
+          <span className="min-w-0">Failed: {describeFailure(item.failure, item.key, config)}</span>
         </p>
       ) : (
         <p className="min-w-0 font-medium">
@@ -197,7 +289,7 @@ function UploadRow({
       )}
     </li>
   );
-}
+});
 
 /**
  * Replace all (#83, "Overwrite and conflicts"): confirmed in an alert
@@ -210,18 +302,21 @@ function ReplaceAllDialog({
   open,
   onOpenChange,
   onConfirm,
+  finalFocus,
 }: {
   conflicts: readonly UploadView[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
+  /** Where focus goes as the dialog closes: the heading after a confirm. */
+  finalFocus: () => HTMLElement | null | boolean;
 }) {
   const listed = conflicts.slice(0, LISTED_NAMES);
   const more = conflicts.length - listed.length;
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent>
+      <AlertDialogContent finalFocus={finalFocus}>
         <AlertDialogHeader>
           <AlertDialogTitle>Replace {countOf(conflicts.length, "file")}?</AlertDialogTitle>
           <AlertDialogDescription render={<div />} className="flex flex-col gap-3">

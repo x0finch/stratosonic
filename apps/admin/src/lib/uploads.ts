@@ -11,7 +11,7 @@ import {
   type UploadToSign,
 } from "@/lib/api";
 import { countOf, FORBIDDEN_CHARACTERS, utf8Length, type WriteSchedule } from "@/lib/files";
-import { formatBytes } from "@/lib/format";
+import { formatBytes, formatCount } from "@/lib/format";
 
 /**
  * The Files page's uploads (#83, "Upload queue", ticket E): which key each
@@ -238,15 +238,42 @@ export function planUploads(
       const { prefix, key } = uploadTarget(current, path, lookup);
       return [{ file, prefix, key, refusal: checkUpload(key, file.size, config) }];
     })
-    .sort((a, b) => PATH_ORDER.compare(a.key, b.key));
+    .map((planned) => ({ planned, order: pathOrder(planned.key) }))
+    .sort((a, b) => comparePathOrder(a.order, b.order))
+    .map(({ planned }) => planned);
 }
 
 /**
- * The order files go in: by path, numbers by their value, so an album
- * uploads from its first track (a browser hands a folder's files over in no
- * set order).
+ * The order files go in: by path, case ignored, numbers by their value, so
+ * an album uploads from its first track (a browser hands a folder's files
+ * over in no set order). Each key is split into its runs of digits and of
+ * other characters once, before the sort: `Intl.Collator` gives the same
+ * order but cost about half a second for a pick of 2,000 files.
  */
-const PATH_ORDER = new Intl.Collator("en", { numeric: true });
+function pathOrder(key: string): (string | number)[] {
+  return (key.toLowerCase().match(/\d+|\D+/g) ?? []).map((run) =>
+    /^\d/.test(run) && run.length <= 15 ? Number(run) : run,
+  );
+}
+
+function comparePathOrder(
+  a: readonly (string | number)[],
+  b: readonly (string | number)[],
+): number {
+  const length = Math.min(a.length, b.length);
+  for (let index = 0; index < length; index++) {
+    const left = a[index] as string | number;
+    const right = b[index] as string | number;
+    if (left === right) {
+      continue;
+    }
+    if (typeof left === "number" && typeof right === "number") {
+      return left - right;
+    }
+    return String(left) < String(right) ? -1 : 1;
+  }
+  return a.length - b.length;
+}
 
 /* --------------------------------------------------------------- queue -- */
 
@@ -319,8 +346,11 @@ export interface UploadCalls {
 
 /** What the queue tells its page. */
 export interface UploadHooks {
-  /** The bucket changed: read the folder on screen again (throttled). */
-  onRefresh?: () => void;
+  /**
+   * Files landed in the bucket (throttled): read again the folders their
+   * keys change, given the keys landed since the last call.
+   */
+  onRefresh?: (keys: readonly string[]) => void;
   /** Every file of a run has settled. */
   onDrained?: (summary: RunSummary) => void;
   /** A sign or complete request failed: a session that ended signs the console out. */
@@ -345,9 +375,16 @@ interface Entry {
   resigned: boolean;
   /** Counted in a run's summary already. */
   reported: boolean;
+  /**
+   * A `PUT` of it ended in a network error, so R2 may have taken it with
+   * the answer lost: a later Already exists may be this very upload.
+   */
+  maybeLanded: boolean;
   /** The sign request it was signed in, while it is being sent. */
   group?: number;
   abort?: AbortController;
+  /** Its last row, kept while nothing on it changes. */
+  view?: UploadView;
 }
 
 /** The files one sign request signed: reported together once none is still being sent. */
@@ -355,6 +392,9 @@ interface Group {
   open: Set<number>;
   keys: string[];
 }
+
+/** Listeners hear of changes at most this often: progress alone changes many times a second. */
+export const NOTIFY_EVERY_MS = 100;
 
 const ACTIVE: ReadonlySet<UploadState> = new Set(["waiting", "signing", "uploading"]);
 const IN_FLIGHT: ReadonlySet<UploadState> = new Set(["signing", "uploading"]);
@@ -388,7 +428,14 @@ export class UploadQueue {
   #scanUnknown = false;
   #lastRefresh = Number.NEGATIVE_INFINITY;
   #refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The keys landed since the folders were last read again. */
+  #landed: string[] = [];
   #listeners = new Set<() => void>();
+  #busyListeners = new Set<(busy: boolean) => void>();
+  #busy = false;
+  #lastNotify = Number.NEGATIVE_INFINITY;
+  #notifyQueued = false;
+  #dirty = false;
   #snapshot: QueueSnapshot = { items: [], schedule: undefined, busy: false };
 
   constructor(calls: UploadCalls, hooks: UploadHooks = {}) {
@@ -397,13 +444,56 @@ export class UploadQueue {
     this.#now = hooks.now ?? (() => Date.now());
   }
 
-  /** For `useSyncExternalStore`: a new object after every change, the same one otherwise. */
-  readonly getSnapshot = (): QueueSnapshot => this.#snapshot;
+  /**
+   * For `useSyncExternalStore`: a new object after a change, the same one
+   * otherwise. It is built when asked for, and keeps each row's object while
+   * nothing on that row changed, so a page of 2,000 rows redraws only the
+   * rows that moved.
+   */
+  readonly getSnapshot = (): QueueSnapshot => {
+    if (this.#dirty) {
+      this.#dirty = false;
+      this.#snapshot = {
+        items: this.#entries.map(viewOf),
+        schedule: this.#schedule,
+        busy: this.#busy,
+      };
+    }
+    return this.#snapshot;
+  };
 
+  /**
+   * Hears of changes, at most once every `NOTIFY_EVERY_MS` (the first at
+   * once, in a microtask), so a run of uploads cannot keep the page busy
+   * redrawing.
+   */
   readonly subscribe = (listener: () => void): (() => void) => {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   };
+
+  /** Hears at once when the queue starts or stops holding files to send (for `beforeunload`). */
+  onBusyChange(listener: (busy: boolean) => void): () => void {
+    this.#busyListeners.add(listener);
+    return () => this.#busyListeners.delete(listener);
+  }
+
+  /**
+   * Ends the queue, as on sign-out: every upload still to go is canceled
+   * (a `PUT` in flight is aborted), every row goes, and nothing more is
+   * reported.
+   */
+  dispose(): void {
+    for (const entry of this.#entries) {
+      entry.abort?.abort();
+    }
+    this.#entries = [];
+    this.#groups.clear();
+    this.#landed = [];
+    clearTimeout(this.#refreshTimer);
+    this.#refreshTimer = undefined;
+    this.#emit();
+  }
 
   /**
    * Queues the planned files, in order. A file the mirror refused is
@@ -425,6 +515,7 @@ export class UploadQueue {
         retried: false,
         resigned: false,
         reported: false,
+        maybeLanded: false,
       };
       if (refusal !== null) {
         entry.state = "failed";
@@ -497,12 +588,19 @@ export class UploadQueue {
   }
 
   #skip(entries: readonly Entry[]): void {
+    const landed: string[] = [];
     for (const entry of entries) {
       if (entry.state === "exists") {
         entry.state = "skipped";
         entry.reported = true;
+        // An answer lost after R2 took the file: what exists may be this
+        // upload, which the server has not heard of yet.
+        if (entry.maybeLanded) {
+          landed.push(entry.key);
+        }
       }
     }
+    this.#report(landed);
     this.#settle();
   }
 
@@ -633,7 +731,7 @@ export class UploadQueue {
       const before = percentOf(entry);
       entry.loaded = Math.min(Math.max(loaded, 0), entry.size);
       if (percentOf(entry) !== before) {
-        this.#emit();
+        this.#changed();
       }
     };
     void this.#calls
@@ -649,6 +747,7 @@ export class UploadQueue {
           entry.state = "uploaded";
           entry.loaded = entry.size;
           this.#leaveGroup(entry, entry.key);
+          this.#landed.push(entry.key);
           this.#refreshSoon();
         } else if (status === 412) {
           // The key appeared after the server looked: If-None-Match held.
@@ -658,6 +757,7 @@ export class UploadQueue {
           // A network error (an expired URL has no CORS headers) or a 403:
           // signed again and tried once more.
           entry.retried = true;
+          entry.maybeLanded ||= status === 0;
           entry.state = "waiting";
           this.#leaveGroup(entry);
         } else {
@@ -725,7 +825,7 @@ export class UploadQueue {
     const refresh = () => {
       this.#refreshTimer = undefined;
       this.#lastRefresh = this.#now();
-      this.#hooks.onRefresh?.();
+      this.#hooks.onRefresh?.(this.#landed.splice(0));
     };
     if (wait <= 0) {
       refresh();
@@ -766,24 +866,64 @@ export class UploadQueue {
     this.#emit();
   }
 
+  /** After a change of state: whether the queue is busy, and the listeners. */
   #emit(): void {
-    this.#snapshot = {
-      items: this.#entries.map((entry) => ({
-        id: entry.id,
-        key: entry.key,
-        size: entry.size,
-        loaded: entry.loaded,
-        state: entry.state,
-        ...(entry.failure ? { failure: entry.failure } : {}),
-        ...(entry.existing ? { existing: entry.existing } : {}),
-      })),
-      schedule: this.#schedule,
-      busy: this.#entries.some((entry) => ACTIVE.has(entry.state)),
+    const busy = this.#entries.some((entry) => ACTIVE.has(entry.state));
+    if (busy !== this.#busy) {
+      this.#busy = busy;
+      for (const listener of this.#busyListeners) {
+        listener(busy);
+      }
+    }
+    this.#changed();
+  }
+
+  /** The snapshot is stale: listeners hear of it, throttled. */
+  #changed(): void {
+    this.#dirty = true;
+    if (this.#notifyQueued) {
+      return;
+    }
+    this.#notifyQueued = true;
+    const notify = () => {
+      this.#notifyQueued = false;
+      this.#lastNotify = Date.now();
+      for (const listener of this.#listeners) {
+        listener();
+      }
     };
-    for (const listener of this.#listeners) {
-      listener();
+    const wait = this.#lastNotify + NOTIFY_EVERY_MS - Date.now();
+    if (wait <= 0) {
+      queueMicrotask(notify);
+    } else {
+      setTimeout(notify, wait);
     }
   }
+}
+
+/** An entry's row: the one it had while nothing on it changed, so a memoised row skips its redraw. */
+function viewOf(entry: Entry): UploadView {
+  const view = entry.view;
+  if (
+    view !== undefined &&
+    view.key === entry.key &&
+    view.loaded === entry.loaded &&
+    view.state === entry.state &&
+    view.failure === entry.failure &&
+    view.existing === entry.existing
+  ) {
+    return view;
+  }
+  entry.view = {
+    id: entry.id,
+    key: entry.key,
+    size: entry.size,
+    loaded: entry.loaded,
+    state: entry.state,
+    ...(entry.failure ? { failure: entry.failure } : {}),
+    ...(entry.existing ? { existing: entry.existing } : {}),
+  };
+  return entry.view;
 }
 
 /** An upload's progress, in whole percent: 100 for an empty file. */
@@ -821,9 +961,10 @@ export function xhrPut(
 
 /**
  * Keeps the page honest while uploads run: `beforeunload` asks before the
- * tab closes while a file is waiting or being sent, and `pagehide` reports
- * the uploads that landed but were not reported yet (`flush`). Answers the
- * function that stops watching.
+ * tab closes while a file is waiting or being sent (the listener is there
+ * only then, so the page stays eligible for the back-forward cache), and
+ * `pagehide` reports the uploads that landed but were not reported yet
+ * (`flush`). Answers the function that stops watching.
  */
 export function watchPage(
   queue: UploadQueue,
@@ -834,27 +975,99 @@ export function watchPage(
     // Older browsers ask for a return value as well.
     event.returnValue = "";
   };
-  let warning = false;
-  const follow = () => {
-    const busy = queue.getSnapshot().busy;
-    if (busy !== warning) {
-      warning = busy;
-      if (busy) {
-        target.addEventListener("beforeunload", warn);
-      } else {
-        target.removeEventListener("beforeunload", warn);
-      }
+  const follow = (busy: boolean) => {
+    if (busy) {
+      target.addEventListener("beforeunload", warn);
+    } else {
+      target.removeEventListener("beforeunload", warn);
     }
   };
   const flush = () => queue.flush();
   target.addEventListener("pagehide", flush);
-  const unsubscribe = queue.subscribe(follow);
-  follow();
+  const unsubscribe = queue.onBusyChange(follow);
+  follow(queue.getSnapshot().busy);
   return () => {
     unsubscribe();
     target.removeEventListener("pagehide", flush);
     target.removeEventListener("beforeunload", warn);
   };
+}
+
+/* ---------------------------------------------------------------- rows -- */
+
+/** The most finished rows the Uploads section shows: the latest ones. */
+export const SHOWN_FINISHED = 50;
+
+/** The most waiting rows the Uploads section shows: the next ones. */
+export const SHOWN_WAITING = 50;
+
+/** The rows the Uploads section shows, and how many of each kind it leaves out. */
+export interface ShownRows {
+  rows: UploadView[];
+  hidden: { uploaded: number; skipped: number; canceled: number; waiting: number };
+}
+
+/**
+ * Which rows to draw, in queue order: every file being signed or sent,
+ * every failure and every conflict (they need the owner), the next
+ * `SHOWN_WAITING` waiting files and the latest `SHOWN_FINISHED` uploaded,
+ * skipped or canceled ones. The rest are counted, so a pick of 2,000 files
+ * draws about a hundred rows.
+ */
+export function shownRows(
+  items: readonly UploadView[],
+  limits: { finished: number; waiting: number } = {
+    finished: SHOWN_FINISHED,
+    waiting: SHOWN_WAITING,
+  },
+): ShownRows {
+  const done = items.filter(
+    (item) => item.state === "uploaded" || item.state === "skipped" || item.state === "canceled",
+  );
+  const kept = new Set(done.slice(Math.max(done.length - limits.finished, 0)));
+  const hidden = { uploaded: 0, skipped: 0, canceled: 0, waiting: 0 };
+  let waiting = 0;
+  const rows = items.filter((item) => {
+    switch (item.state) {
+      case "waiting":
+        waiting++;
+        if (waiting <= limits.waiting) {
+          return true;
+        }
+        hidden.waiting++;
+        return false;
+      case "uploaded":
+      case "skipped":
+      case "canceled":
+        if (kept.has(item)) {
+          return true;
+        }
+        hidden[item.state]++;
+        return false;
+      default:
+        return true;
+    }
+  });
+  return { rows, hidden };
+}
+
+/**
+ * The lines that count the rows left out: `and 1,940 more uploaded` (with
+ * skipped and canceled ones), and `and 300 more waiting`.
+ */
+export function describeHidden(hidden: ShownRows["hidden"]): string[] {
+  const parts = (["uploaded", "skipped", "canceled"] as const)
+    .filter((state) => hidden[state] > 0)
+    .map((state, index) => `${formatCount(hidden[state])}${index === 0 ? " more" : ""} ${state}`);
+  const last = parts.pop();
+  const lines: string[] = [];
+  if (last !== undefined) {
+    lines.push(`and ${parts.length > 0 ? `${parts.join(", ")} and ${last}` : last}`);
+  }
+  if (hidden.waiting > 0) {
+    lines.push(`and ${formatCount(hidden.waiting)} more waiting`);
+  }
+  return lines;
 }
 
 /* --------------------------------------------------------------- words -- */
@@ -870,15 +1083,15 @@ export function describeQueue(items: readonly UploadView[]): string {
 export function describeFailure(
   failure: UploadFailure,
   key: string,
-  allowed: FilesConfig["allowed"] | undefined,
+  config: Pick<FilesConfig, "allowed" | "limits"> | undefined,
 ): string {
   switch (failure.code) {
     case "type_not_allowed":
       return "not a type the server reads";
     case "too_large": {
-      const kind = allowed ? kindOfSuffix(suffixOf(key), allowed) : null;
-      return kind && allowed
-        ? `over ${formatBytes(allowed[kind].maxBytes, 2)}, the most for its type (use rclone for larger files)`
+      const kind = config ? kindOfSuffix(suffixOf(key), config.allowed) : null;
+      return kind && config
+        ? `over ${formatBytes(config.allowed[kind].maxBytes, 2)}, the most for its type (use rclone for larger files)`
         : "over the most the server takes for its type";
     }
     case "empty_file":
@@ -886,7 +1099,9 @@ export function describeFailure(
     case "invalid_path":
       return "not a name the bucket takes";
     case "path_too_long":
-      return "the path is over 1,024 bytes, or a name in it over 255";
+      return config
+        ? `the path is over ${formatCount(config.limits.maxKeyBytes)} bytes, or a name in it over ${formatCount(config.limits.maxSegmentBytes)}`
+        : "the path or a name in it is too long";
     case "reserved_path":
       return "_covers/ is the scanner's own folder";
     case "replace_unavailable":

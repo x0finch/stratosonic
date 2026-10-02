@@ -15,8 +15,10 @@ import { describeError } from "@/lib/errors";
 import {
   checkUpload,
   describeFailure,
+  describeHidden,
   describeQueue,
   EXPIRY_MARGIN_MS,
+  NOTIFY_EVERY_MS,
   notUploadedToast,
   type PickedFile,
   type PlannedUpload,
@@ -24,11 +26,13 @@ import {
   planUploads,
   REFRESH_EVERY_MS,
   type RunSummary,
+  shownRows,
   UploadQueue,
   type UploadView,
   uploadedToast,
   uploadTarget,
   watchPage,
+  xhrPut,
 } from "@/lib/uploads";
 
 /**
@@ -573,9 +577,9 @@ describe("the upload queue", () => {
       await tick();
       const row = h.item("1.flac");
       expect(row).toMatchObject({ state: "failed", failure: { code: "replace_unavailable" } });
-      expect(
-        describeFailure(row.failure ?? { code: "invalid_path" }, row.key, CONFIG.allowed),
-      ).toMatch(/rclone/);
+      expect(describeFailure(row.failure ?? { code: "invalid_path" }, row.key, CONFIG)).toMatch(
+        /rclone/,
+      );
     });
   });
 
@@ -785,6 +789,8 @@ describe("the upload queue", () => {
     expect(h.refresh).toHaveBeenCalledTimes(2);
     vi.advanceTimersByTime(REFRESH_EVERY_MS * 3);
     expect(h.refresh).toHaveBeenCalledTimes(2);
+    // Each read names the keys landed since the last, for the folders they change.
+    expect(h.refresh.mock.calls).toEqual([[["1.flac"]], [["2.flac", "3.flac"]]]);
   });
 
   it("clears the finished rows and keeps the rest", async () => {
@@ -837,20 +843,20 @@ describe("the words", () => {
   });
 
   it("says why a file failed", () => {
-    expect(describeFailure({ code: "type_not_allowed" }, "a.pdf", CONFIG.allowed)).toBe(
+    expect(describeFailure({ code: "type_not_allowed" }, "a.pdf", CONFIG)).toBe(
       "not a type the server reads",
     );
-    expect(describeFailure({ code: "too_large" }, "a.lrc", CONFIG.allowed)).toBe(
+    expect(describeFailure({ code: "too_large" }, "a.lrc", CONFIG)).toBe(
       "over 1.05 MB, the most for its type (use rclone for larger files)",
     );
-    expect(describeFailure({ code: "put_failed", status: 0 }, "a.flac", CONFIG.allowed)).toBe(
+    expect(describeFailure({ code: "put_failed", status: 0 }, "a.flac", CONFIG)).toBe(
       "the upload did not reach the bucket",
     );
     expect(
       describeFailure(
         { code: "sign_failed", error: new ApiError(0, "network", "") },
         "a.flac",
-        CONFIG.allowed,
+        CONFIG,
       ),
     ).toBe("the server could not be reached");
   });
@@ -878,5 +884,248 @@ describe("the words", () => {
     expect(describeError(new ApiError(200, "replace_unavailable", "")).description).toMatch(
       /rclone/,
     );
+  });
+
+  it("names the limits the server gave", () => {
+    const limits = { ...CONFIG.limits, maxKeyBytes: 512, maxSegmentBytes: 100 };
+    expect(describeFailure({ code: "path_too_long" }, "a.flac", { ...CONFIG, limits })).toBe(
+      "the path is over 512 bytes, or a name in it over 100",
+    );
+  });
+});
+
+/* ------------------------------------------------------ large queues -- */
+
+describe("a large queue", () => {
+  it("keeps each row's object while nothing on it changes", async () => {
+    const h = harness();
+    h.queue.add(plan("", "1.flac", "2.flac", "3.flac", "4.flac"), 10);
+    const before = h.queue.getSnapshot();
+    // Asked again with no change: the very same snapshot.
+    expect(h.queue.getSnapshot()).toBe(before);
+    await h.signAll(0);
+    h.puts[0]?.onProgress(500);
+    const after = h.queue.getSnapshot();
+    expect(after).not.toBe(before);
+    // 1.flac moved; the waiting 4.flac did not.
+    expect(after.items[0]).not.toBe(before.items[0]);
+    expect(after.items[3]).toBe(before.items[3]);
+  });
+
+  it("tells its listeners at most once every 100 ms, however much progress there is", async () => {
+    vi.useFakeTimers({ now: NOW });
+    const h = harness(() => Date.now());
+    const listener = vi.fn();
+    h.queue.subscribe(listener);
+    h.queue.add(planUploads([picked("1.flac", 100_000)], "", CONFIG, noFolders), 10);
+    await h.signAll(0);
+    expect(listener).toHaveBeenCalledTimes(1);
+    for (let loaded = 1000; loaded <= 50_000; loaded += 1000) {
+      h.puts[0]?.onProgress(loaded);
+    }
+    expect(listener).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(NOTIFY_EVERY_MS);
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(percentOf(h.item("1.flac"))).toBe(50);
+  });
+
+  it("draws the rows that matter, and counts the rest", () => {
+    const view = (id: number, state: UploadView["state"]): UploadView => ({
+      id,
+      key: `${id}.flac`,
+      size: 1,
+      loaded: 0,
+      state,
+    });
+    const items = [
+      ...Array.from({ length: 100 }, (_, i) => view(i, "uploaded")),
+      view(100, "failed"),
+      view(101, "exists"),
+      view(102, "skipped"),
+      view(103, "uploading"),
+      ...Array.from({ length: 80 }, (_, i) => view(200 + i, "waiting")),
+    ];
+    const { rows, hidden } = shownRows(items, { finished: 10, waiting: 5 });
+    expect(rows.map((row) => row.id)).toEqual([
+      91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 200, 201, 202, 203, 204,
+    ]);
+    expect(hidden).toEqual({ uploaded: 91, skipped: 0, canceled: 0, waiting: 75 });
+    expect(describeHidden(hidden)).toEqual(["and 91 more uploaded", "and 75 more waiting"]);
+    expect(describeHidden({ uploaded: 1940, skipped: 2, canceled: 1, waiting: 0 })).toEqual([
+      "and 1,940 more uploaded, 2 skipped and 1 canceled",
+    ]);
+    expect(describeHidden({ uploaded: 0, skipped: 3, canceled: 0, waiting: 0 })).toEqual([
+      "and 3 more skipped",
+    ]);
+  });
+
+  it("keeps every failure and conflict on screen", () => {
+    const items = Array.from(
+      { length: 300 },
+      (_, i): UploadView => ({
+        id: i,
+        key: `${i}.flac`,
+        size: 1,
+        loaded: 0,
+        state: i % 2 ? "failed" : "exists",
+      }),
+    );
+    expect(shownRows(items).rows).toHaveLength(300);
+  });
+});
+
+describe("the queue's end", () => {
+  it("dispose cancels what is in flight and clears every row", async () => {
+    const h = harness();
+    const busy: boolean[] = [];
+    h.queue.onBusyChange((value) => busy.push(value));
+    h.queue.add(plan("", "1.flac", "2.flac", "3.flac", "4.flac"), 10);
+    await h.signAll(0);
+    h.queue.dispose();
+    expect(h.puts.every((call) => call.signal.aborted)).toBe(true);
+    expect(h.queue.getSnapshot()).toMatchObject({ items: [], busy: false });
+    expect(busy).toEqual([true, false]);
+    await h.putDone(0);
+    expect(h.completes).toHaveLength(0);
+    expect(h.signs).toHaveLength(1);
+  });
+
+  it("reports a skipped file whose earlier upload may have landed with its answer lost", async () => {
+    const h = harness();
+    h.queue.add(plan("", "1.flac"), 10);
+    await h.signAll(0);
+    // The answer is lost: a network error after R2 took the file.
+    await h.putDone(0, 0);
+    h.signs[1]?.resolve({
+      uploads: [
+        {
+          key: "1.flac",
+          error: "exists",
+          existing: { size: 1000, uploadedAt: "2026-10-02T12:00:00Z" },
+        },
+      ],
+      clock: clock(),
+    });
+    await tick();
+    expect(h.item("1.flac").state).toBe("exists");
+    h.queue.skip(h.item("1.flac").id);
+    expect(h.completes.map((call) => call.keys)).toEqual([["1.flac"]]);
+  });
+
+  it("reports no skipped file it never sent", async () => {
+    const h = harness();
+    h.queue.add(plan("", "1.flac"), 10);
+    h.signs[0]?.resolve({
+      uploads: [
+        {
+          key: "1.flac",
+          error: "exists",
+          existing: { size: 1000, uploadedAt: "2026-10-02T12:00:00Z" },
+        },
+      ],
+      clock: clock(),
+    });
+    await tick();
+    h.queue.skip(h.item("1.flac").id);
+    expect(h.completes).toHaveLength(0);
+  });
+
+  it("finds nothing to upload in a picked folder that is hidden", () => {
+    expect(
+      planUploads(
+        [picked("01.flac", 10, ".music/01.flac"), picked("02.flac", 10, ".music/02.flac")],
+        "",
+        CONFIG,
+        noFolders,
+      ),
+    ).toEqual([]);
+  });
+});
+
+/* ------------------------------------------------------------- xhrPut -- */
+
+describe("xhrPut", () => {
+  /** A stand-in for the browser's `XMLHttpRequest`, recording what the queue does with it. */
+  class FakeXhr {
+    static last: FakeXhr | undefined;
+    method = "";
+    url = "";
+    headers: Record<string, string> = {};
+    body: unknown;
+    status = 0;
+    aborted = false;
+    upload: { onprogress: ((event: { loaded: number }) => void) | null } = { onprogress: null };
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    ontimeout: (() => void) | null = null;
+    onabort: (() => void) | null = null;
+    constructor() {
+      FakeXhr.last = this;
+    }
+    open(method: string, url: string) {
+      this.method = method;
+      this.url = url;
+    }
+    setRequestHeader(name: string, value: string) {
+      this.headers[name] = value;
+    }
+    send(body: unknown) {
+      this.body = body;
+    }
+    abort() {
+      this.aborted = true;
+      this.onabort?.();
+    }
+  }
+
+  const upload = url("A/01 Song.flac") as PresignedUpload;
+
+  function start(signal = new AbortController().signal) {
+    vi.stubGlobal("XMLHttpRequest", FakeXhr);
+    const progress: number[] = [];
+    const body = new Blob(["abc"]);
+    const answer = xhrPut(upload, body, (loaded) => progress.push(loaded), signal);
+    const xhr = FakeXhr.last;
+    if (!xhr) {
+      throw new Error("no XMLHttpRequest made");
+    }
+    return { answer, xhr, progress, body };
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("sends the file with exactly the signed method, URL and headers", async () => {
+    const { answer, xhr, progress, body } = start();
+    expect([xhr.method, xhr.url]).toEqual(["PUT", upload.url]);
+    expect(xhr.headers).toEqual(upload.headers);
+    expect(xhr.body).toBe(body);
+    xhr.upload.onprogress?.({ loaded: 2 });
+    expect(progress).toEqual([2]);
+    xhr.status = 200;
+    xhr.onload?.();
+    expect(await answer).toBe(200);
+  });
+
+  it("answers the bucket's status, and 0 for a network error or a timeout", async () => {
+    const refused = start();
+    refused.xhr.status = 412;
+    refused.xhr.onload?.();
+    expect(await refused.answer).toBe(412);
+    const lost = start();
+    lost.xhr.onerror?.();
+    expect(await lost.answer).toBe(0);
+    const slow = start();
+    slow.xhr.ontimeout?.();
+    expect(await slow.answer).toBe(0);
+  });
+
+  it("aborts the request when the signal does, and answers 0", async () => {
+    const controller = new AbortController();
+    const { answer, xhr } = start(controller.signal);
+    controller.abort();
+    expect(xhr.aborted).toBe(true);
+    expect(await answer).toBe(0);
   });
 });
