@@ -13,6 +13,7 @@ import {
 } from "@/lib/api";
 import { describeError } from "@/lib/errors";
 import {
+  COMPLETE_QUIET_MS,
   checkUpload,
   describeFailure,
   describeHidden,
@@ -21,9 +22,11 @@ import {
   NOTIFY_EVERY_MS,
   notUploadedToast,
   type PickedFile,
+  PLAN_SLICE,
   type PlannedUpload,
   percentOf,
   planUploads,
+  planUploadsInSlices,
   REFRESH_EVERY_MS,
   type RunSummary,
   shownRows,
@@ -121,8 +124,14 @@ function url(key: string, ttlMs = 300_000): SignedResult {
   };
 }
 
-/** A queue whose every call waits for the test to answer it. */
+/**
+ * A queue whose every call waits for the test to answer it, on fake timers
+ * (`quiet` lets the hold of landed keys run out).
+ */
 function harness(now: () => number = () => NOW) {
+  if (!vi.isFakeTimers()) {
+    vi.useFakeTimers({ now: NOW });
+  }
   const signs: SignCall[] = [];
   const puts: PutCall[] = [];
   const completes: CompleteCall[] = [];
@@ -180,8 +189,14 @@ function harness(now: () => number = () => NOW) {
     call.resolve({ scan, clock: clock() });
     await tick();
   };
+  /** Lets `COMPLETE_QUIET_MS` pass with nothing new landing. */
+  const quiet = async () => {
+    vi.advanceTimersByTime(COMPLETE_QUIET_MS);
+    await tick();
+  };
   return {
     queue,
+    quiet,
     signs,
     puts,
     completes,
@@ -411,14 +426,20 @@ describe("the upload queue", () => {
     expect(percentOf(h.item("1.flac"))).toBe(37);
   });
 
-  it("reports a sign request's uploads together, once all of them are done", async () => {
+  it("holds landed keys, and reports them together once 2 s pass with nothing new", async () => {
     const h = harness();
     h.queue.add(plan("A/", "1.flac", "2.flac", "3.flac"), 10);
     await h.signAll(0);
     await h.putDone(0);
     await h.putDone(1, 500);
-    expect(h.completes).toHaveLength(0);
+    vi.advanceTimersByTime(COMPLETE_QUIET_MS - 1);
     await h.putDone(2);
+    // 3.flac landed inside the window, which starts again.
+    vi.advanceTimersByTime(COMPLETE_QUIET_MS - 1);
+    await tick();
+    expect(h.completes).toHaveLength(0);
+    vi.advanceTimersByTime(1);
+    await tick();
     expect(h.completes.map((call) => call.keys)).toEqual([["A/1.flac", "A/3.flac"]]);
     // The queue's run lasts until the report is answered.
     expect(h.drained).toEqual([]);
@@ -427,20 +448,21 @@ describe("the upload queue", () => {
     expect(h.drained).toEqual([{ uploaded: 2, notUploaded: 1, conflicts: 0, scanUnknown: false }]);
   });
 
-  it("makes one complete request per sign request that uploaded something", async () => {
+  it("reports at once when limits.signBatch keys wait, whatever the sign requests", async () => {
     const h = harness();
-    h.queue.add(plan("", "1.flac", "2.flac", "3.flac", "4.flac"), 10);
-    await h.signAll(0);
-    for (const index of [0, 1, 2]) {
-      await h.putDone(index);
+    const names = Array.from({ length: 12 }, (_, i) => `${String(i + 1).padStart(2, "0")}.flac`);
+    h.queue.add(plan("", ...names), 10);
+    let signed = 0;
+    for (let done = 0; done < 12; done++) {
+      while (signed < h.signs.length) {
+        await h.signAll(signed++);
+      }
+      await h.putDone(done);
     }
-    await h.signAll(1);
-    await h.putDone(3);
-    expect(h.signs.map((call) => call.files.length)).toEqual([3, 1]);
-    expect(h.completes.map((call) => call.keys)).toEqual([
-      ["1.flac", "2.flac", "3.flac"],
-      ["4.flac"],
-    ]);
+    // Ten landed: reported then, without waiting; the last two after the window.
+    expect(h.completes.map((call) => call.keys.length)).toEqual([10]);
+    await h.quiet();
+    expect(h.completes.map((call) => call.keys)).toEqual([names.slice(0, 10), names.slice(10)]);
   });
 
   it("completes with the key the server signed, not the one asked for", async () => {
@@ -449,6 +471,7 @@ describe("the upload queue", () => {
     h.signs[0]?.resolve({ uploads: [url("Stored/1.flac")], clock: clock() });
     await tick();
     await h.putDone(0);
+    await h.quiet();
     expect(h.completes[0]?.keys).toEqual(["Stored/1.flac"]);
   });
 
@@ -527,6 +550,7 @@ describe("the upload queue", () => {
       const h = await conflicted();
       expect(h.item("1.flac")).toMatchObject({ state: "exists", existing: { size: 5 } });
       await h.putDone(0);
+      await h.quiet();
       await h.completeDone(0);
       expect(h.drained).toEqual([
         { uploaded: 1, notUploaded: 2, conflicts: 2, scanUnknown: false },
@@ -646,6 +670,7 @@ describe("the upload queue", () => {
       await h.signAll(1);
       await h.putDone(1, 200);
       expect(h.item("1.flac").state).toBe("uploaded");
+      await h.quiet();
       expect(h.completes.map((call) => call.keys)).toEqual([["1.flac"]]);
     });
 
@@ -697,13 +722,14 @@ describe("the upload queue", () => {
       expect(h.signs).toHaveLength(2);
     });
 
-    it("drops a file being signed, and reports the rest of its request", async () => {
+    it("drops a file being signed, and reports the rest", async () => {
       const h = harness();
       h.queue.add(plan("", "1.flac", "2.flac"), 10);
       h.queue.cancel(h.item("1.flac").id);
       await h.signAll(0);
       expect(h.puts.map((call) => call.upload)).toEqual([url("2.flac")]);
       await h.putDone(0);
+      await h.quiet();
       expect(h.completes.map((call) => call.keys)).toEqual([["2.flac"]]);
     });
 
@@ -737,7 +763,7 @@ describe("the upload queue", () => {
     stop();
   });
 
-  it("reports the uploads waiting on their request at pagehide", async () => {
+  it("reports the landed keys it holds at pagehide", async () => {
     const h = harness();
     const target = new EventTarget();
     const stop = watchPage(h.queue, target as unknown as Window);
@@ -749,6 +775,7 @@ describe("the upload queue", () => {
     expect(h.completes.map((call) => call.keys)).toEqual([["1.flac"]]);
     // The rest of the request is reported on its own once done.
     await h.putDone(1);
+    await h.quiet();
     expect(h.completes.map((call) => call.keys)).toEqual([["1.flac"], ["2.flac"]]);
     stop();
   });
@@ -758,12 +785,14 @@ describe("the upload queue", () => {
     h.queue.add(plan("", "1.flac"), 10);
     await h.signAll(0);
     await h.putDone(0);
+    await h.quiet();
     await h.completeDone(0, null);
     expect(h.drained.at(-1)?.scanUnknown).toBe(true);
 
     h.queue.add(plan("", "2.flac"), 10);
     await h.signAll(1);
     await h.putDone(1);
+    await h.quiet();
     h.completes[1]?.reject(new ApiError(500, "internal", ""));
     await tick();
     expect(h.drained.at(-1)).toEqual({
@@ -950,13 +979,17 @@ describe("a large queue", () => {
       91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 200, 201, 202, 203, 204,
     ]);
     expect(hidden).toEqual({ uploaded: 91, skipped: 0, canceled: 0, waiting: 75 });
-    expect(describeHidden(hidden)).toEqual(["and 91 more uploaded", "and 75 more waiting"]);
-    expect(describeHidden({ uploaded: 1940, skipped: 2, canceled: 1, waiting: 0 })).toEqual([
-      "and 1,940 more uploaded, 2 skipped and 1 canceled",
-    ]);
-    expect(describeHidden({ uploaded: 0, skipped: 3, canceled: 0, waiting: 0 })).toEqual([
-      "and 3 more skipped",
-    ]);
+    expect(describeHidden(hidden)).toEqual({
+      earlier: "91 more uploaded earlier",
+      later: "and 75 more waiting",
+    });
+    expect(describeHidden({ uploaded: 1940, skipped: 2, canceled: 1, waiting: 0 })).toEqual({
+      earlier: "1,940 more uploaded, 2 skipped and 1 canceled earlier",
+      later: null,
+    });
+    expect(describeHidden({ uploaded: 0, skipped: 3, canceled: 0, waiting: 0 }).earlier).toBe(
+      "3 more skipped earlier",
+    );
   });
 
   it("keeps every failure and conflict on screen", () => {
@@ -990,6 +1023,38 @@ describe("the queue's end", () => {
     expect(h.signs).toHaveLength(1);
   });
 
+  it("starts nothing once disposed, though a sign request was still on its way", async () => {
+    const h = harness();
+    h.queue.add(plan("", "1.flac", "2.flac"), 10);
+    expect(h.signs).toHaveLength(1);
+    h.queue.dispose();
+    await h.signAll(0);
+    await h.quiet();
+    vi.advanceTimersByTime(REFRESH_EVERY_MS * 2);
+    await tick();
+    expect(h.puts).toHaveLength(0);
+    expect(h.refresh).not.toHaveBeenCalled();
+    expect(h.completes).toHaveLength(0);
+    expect(h.drained).toEqual([]);
+    // Nor does a queue that ended take new files.
+    h.queue.add(plan("", "3.flac"), 10);
+    expect(h.signs).toHaveLength(1);
+  });
+
+  it("reports nothing it held once disposed, and refreshes nothing", async () => {
+    const h = harness();
+    h.queue.add(plan("", "1.flac", "2.flac"), 10);
+    await h.signAll(0);
+    await h.putDone(0);
+    const refreshed = h.refresh.mock.calls.length;
+    h.queue.dispose();
+    await h.putDone(1);
+    await h.quiet();
+    vi.advanceTimersByTime(REFRESH_EVERY_MS * 2);
+    expect(h.completes).toHaveLength(0);
+    expect(h.refresh.mock.calls.length).toBe(refreshed);
+  });
+
   it("reports a skipped file whose earlier upload may have landed with its answer lost", async () => {
     const h = harness();
     h.queue.add(plan("", "1.flac"), 10);
@@ -1009,6 +1074,7 @@ describe("the queue's end", () => {
     await tick();
     expect(h.item("1.flac").state).toBe("exists");
     h.queue.skip(h.item("1.flac").id);
+    await h.quiet();
     expect(h.completes.map((call) => call.keys)).toEqual([["1.flac"]]);
   });
 
@@ -1028,6 +1094,19 @@ describe("the queue's end", () => {
     await tick();
     h.queue.skip(h.item("1.flac").id);
     expect(h.completes).toHaveLength(0);
+  });
+
+  it("plans a large pick in slices, drawing the page between them, to the same plan", async () => {
+    const files = Array.from({ length: 600 }, (_, i) =>
+      picked(`${600 - i}.flac`, 10, `Album/${600 - i}.flac`),
+    );
+    let yields = 0;
+    const sliced = await planUploadsInSlices(files, "", CONFIG, noFolders, async () => {
+      yields++;
+    });
+    expect(yields).toBe(Math.ceil(600 / PLAN_SLICE));
+    expect(sliced).toEqual(planUploads(files, "", CONFIG, noFolders));
+    expect(sliced[0]?.key).toBe("Album/1.flac");
   });
 
   it("finds nothing to upload in a picked folder that is hidden", () => {

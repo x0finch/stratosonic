@@ -65,14 +65,19 @@ function actionable(item: UploadView): boolean {
  *
  * When a row's buttons go (Replace, Skip, Cancel upload), focus moves to the
  * next row that has buttons, or to the heading when none is left; so it
- * does after Replace all, Skip all, Cancel all and Clear finished.
+ * does after Replace all, Skip all, Cancel all and Clear finished. A Clear
+ * finished that empties the queue takes the section away with it, so
+ * `onEmptied` hands focus back to the page.
  */
 export function UploadsSection({
   queue,
   config,
+  onEmptied,
 }: {
   queue: UploadQueue;
   config: Pick<FilesConfig, "allowed" | "limits"> | undefined;
+  /** The queue is empty and the section goes: the page places focus. */
+  onEmptied: () => void;
 }) {
   const items = useUploads(queue, (snapshot) => snapshot.items);
   const now = useClock();
@@ -84,6 +89,7 @@ export function UploadsSection({
   const replacedAll = useRef(false);
 
   const { rows, hidden } = shownRows(items);
+  const { earlier, later } = describeHidden(hidden);
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
   const conflicts = items.filter((item) => item.state === "exists");
@@ -146,7 +152,18 @@ export function UploadsSection({
             </Button>
           ) : null}
           {finished ? (
-            <Button variant="outline" size="sm" onClick={all(() => queue.clearFinished())}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                queue.clearFinished();
+                if (queue.getSnapshot().items.length === 0) {
+                  onEmptied();
+                } else {
+                  setFocusTarget("heading");
+                }
+              }}
+            >
               Clear finished
             </Button>
           ) : null}
@@ -168,16 +185,14 @@ export function UploadsSection({
           </div>
         </div>
       ) : null}
+      {/* The older finished files, counted above the latest ones shown. */}
+      {earlier ? <p className="text-muted-foreground">{earlier}</p> : null}
       <ul ref={listRef} className="flex flex-col gap-4">
         {rows.map((item) => (
           <UploadRow key={item.id} item={item} config={config} now={now} onAct={act} />
         ))}
       </ul>
-      {describeHidden(hidden).map((line) => (
-        <p key={line} className="text-muted-foreground">
-          {line}
-        </p>
-      ))}
+      {later ? <p className="text-muted-foreground">{later}</p> : null}
       <ReplaceAllDialog
         conflicts={conflicts}
         open={confirming && conflicts.length > 0}

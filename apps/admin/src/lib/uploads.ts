@@ -35,10 +35,13 @@ import { formatBytes, formatCount } from "@/lib/format";
  *    reports an upload's progress, sending exactly the headers the server
  *    signed. A URL that would be within 30 s of its expiry is signed again
  *    instead (once), on the server's clock.
- * 5. **Uploaded** on a 2xx. Once every file signed in the same request has
- *    finished, the uploaded ones are reported in one
- *    `POST /api/files/uploads/complete` (with `keepalive`), whose `scan` the
- *    page's scan line shows.
+ * 5. **Uploaded** on a 2xx. Landed keys are held, and reported in one
+ *    `POST /api/files/uploads/complete` (with `keepalive`) once
+ *    `limits.signBatch` (10) of them wait, or once `COMPLETE_QUIET_MS`
+ *    (2 s) pass with nothing new landing. The scan line shows the `scan` it
+ *    answers. The server's debounce waits 2 minutes, so the hold delays no
+ *    pass, and it cuts the complete requests, and their D1 and Durable
+ *    Object writes, up to tenfold.
  *
  * Or else:
  *
@@ -58,8 +61,8 @@ import { formatBytes, formatCount } from "@/lib/format";
  * ## What it costs
  *
  * Per file: its share of one sign request (1–3 files), one `PUT` straight
- * to R2 (no Worker request), and its share of one complete request (the
- * files of its sign request that were uploaded). Each `PUT` also has its
+ * to R2 (no Worker request), and its share of one complete request (up to
+ * 10 landed files). Each `PUT` also has its
  * own CORS preflight (`OPTIONS`, to R2, no Worker request): a browser
  * caches a preflight by its full URL, and no two presigned URLs are alike,
  * so the bucket's `maxAgeSeconds` saves none (measured in Chromium). The folder on
@@ -75,6 +78,9 @@ export const EXPIRY_MARGIN_MS = 30_000;
 
 /** The folder on screen is read again at most this often while uploads land. */
 export const REFRESH_EVERY_MS = 5_000;
+
+/** Landed keys are reported once this long passes with nothing new landing (or once 10 wait). */
+export const COMPLETE_QUIET_MS = 2_000;
 
 /* ---------------------------------------------------------------- keys -- */
 
@@ -229,18 +235,56 @@ export function planUploads(
   config: Pick<FilesConfig, "allowed" | "limits">,
   lookup: FolderLookup,
 ): PlannedUpload[] {
-  return files
-    .flatMap((file) => {
-      const path = file.webkitRelativePath || file.name;
-      if (file.webkitRelativePath && path.split("/").some((segment) => segment.startsWith("."))) {
-        return [];
-      }
-      const { prefix, key } = uploadTarget(current, path, lookup);
-      return [{ file, prefix, key, refusal: checkUpload(key, file.size, config) }];
-    })
-    .map((planned) => ({ planned, order: pathOrder(planned.key) }))
+  return inPathOrder(files.flatMap((file) => planOne(file, current, config, lookup)));
+}
+
+/** A pick at least this large is planned in slices, with the page drawn between them. */
+export const PLAN_SLICE = 100;
+
+/**
+ * `planUploads` for a large pick: the files go in slices of `PLAN_SLICE`,
+ * and `yieldToPage` lets the browser draw (and the Upload button show that
+ * it is preparing) between them. Reading a picked file's name and size is
+ * the browser's own work, about half a millisecond a file in Chromium, so a
+ * pick of 2,000 files would otherwise hold the page for a second.
+ */
+export async function planUploadsInSlices(
+  files: readonly PickedFile[],
+  current: string,
+  config: Pick<FilesConfig, "allowed" | "limits">,
+  lookup: FolderLookup,
+  yieldToPage: () => Promise<void> = () => new Promise((resolve) => setTimeout(resolve, 0)),
+): Promise<PlannedUpload[]> {
+  const planned: PlannedUpload[] = [];
+  for (let start = 0; start < files.length; start += PLAN_SLICE) {
+    await yieldToPage();
+    for (const file of files.slice(start, start + PLAN_SLICE)) {
+      planned.push(...planOne(file, current, config, lookup));
+    }
+  }
+  return inPathOrder(planned);
+}
+
+/** One picked file's plan, or none for a folder pick's hidden file. */
+function planOne(
+  file: PickedFile,
+  current: string,
+  config: Pick<FilesConfig, "allowed" | "limits">,
+  lookup: FolderLookup,
+): PlannedUpload[] {
+  const path = file.webkitRelativePath || file.name;
+  if (file.webkitRelativePath && path.split("/").some((segment) => segment.startsWith("."))) {
+    return [];
+  }
+  const { prefix, key } = uploadTarget(current, path, lookup);
+  return [{ file, prefix, key, refusal: checkUpload(key, file.size, config) }];
+}
+
+function inPathOrder(planned: readonly PlannedUpload[]): PlannedUpload[] {
+  return planned
+    .map((upload) => ({ upload, order: pathOrder(upload.key) }))
     .sort((a, b) => comparePathOrder(a.order, b.order))
-    .map(({ planned }) => planned);
+    .map(({ upload }) => upload);
 }
 
 /**
@@ -380,17 +424,9 @@ interface Entry {
    * the answer lost: a later Already exists may be this very upload.
    */
   maybeLanded: boolean;
-  /** The sign request it was signed in, while it is being sent. */
-  group?: number;
   abort?: AbortController;
   /** Its last row, kept while nothing on it changes. */
   view?: UploadView;
-}
-
-/** The files one sign request signed: reported together once none is still being sent. */
-interface Group {
-  open: Set<number>;
-  keys: string[];
 }
 
 /** Listeners hear of changes at most this often: progress alone changes many times a second. */
@@ -420,9 +456,12 @@ export class UploadQueue {
   readonly #now: () => number;
   #entries: Entry[] = [];
   #nextId = 1;
-  #groups = new Map<number, Group>();
-  #nextGroup = 1;
+  /** Keys that landed and wait to be reported, together. */
+  #unreported: string[] = [];
+  #completeTimer: ReturnType<typeof setTimeout> | undefined;
   #completing = 0;
+  /** Ended (`dispose`): an answer still on its way starts nothing more. */
+  #disposed = false;
   #signBatch = UPLOADS_AT_ONCE;
   #schedule: WriteSchedule | undefined;
   #scanUnknown = false;
@@ -484,13 +523,22 @@ export class UploadQueue {
    * reported.
    */
   dispose(): void {
+    this.#disposed = true;
     for (const entry of this.#entries) {
+      if (ACTIVE.has(entry.state)) {
+        entry.state = "canceled";
+      }
+      entry.reported = true;
       entry.abort?.abort();
     }
     this.#entries = [];
-    this.#groups.clear();
+    // The session is over, so a report would be refused: the cron's next
+    // pass indexes what landed.
+    this.#unreported = [];
     this.#landed = [];
+    clearTimeout(this.#completeTimer);
     clearTimeout(this.#refreshTimer);
+    this.#completeTimer = undefined;
     this.#refreshTimer = undefined;
     this.#emit();
   }
@@ -501,6 +549,9 @@ export class UploadQueue {
    * `signBatch` is the server's `limits.signBatch`.
    */
   add(planned: readonly PlannedUpload[], signBatch: number): void {
+    if (this.#disposed) {
+      return;
+    }
     this.#signBatch = Math.max(1, Math.floor(signBatch));
     for (const { file, prefix, key, refusal } of planned) {
       const entry: Entry = {
@@ -560,15 +611,12 @@ export class UploadQueue {
   }
 
   /**
-   * Reports at once every upload that waits for the rest of its sign
-   * request: for `pagehide`, so a tab closed mid-way still tells the server
-   * about the files that did land (the cron's next pass would find them
-   * anyway).
+   * Reports at once every landed key still held: for `pagehide`, so a tab
+   * closed mid-way still tells the server about the files that did land
+   * (the cron's next pass would find them anyway).
    */
   flush(): void {
-    for (const group of this.#groups.values()) {
-      this.#report(group.keys.splice(0));
-    }
+    this.#reportHeld();
   }
 
   #replace(entries: readonly Entry[]): void {
@@ -588,7 +636,6 @@ export class UploadQueue {
   }
 
   #skip(entries: readonly Entry[]): void {
-    const landed: string[] = [];
     for (const entry of entries) {
       if (entry.state === "exists") {
         entry.state = "skipped";
@@ -596,11 +643,10 @@ export class UploadQueue {
         // An answer lost after R2 took the file: what exists may be this
         // upload, which the server has not heard of yet.
         if (entry.maybeLanded) {
-          landed.push(entry.key);
+          this.#hold(entry.key);
         }
       }
     }
-    this.#report(landed);
     this.#settle();
   }
 
@@ -610,7 +656,6 @@ export class UploadQueue {
         entry.state = "canceled";
         entry.reported = true;
         entry.abort?.abort();
-        this.#leaveGroup(entry);
       }
     }
     this.#settle();
@@ -659,6 +704,9 @@ export class UploadQueue {
         batch.map(({ key, size, overwrite }) => ({ key, size, overwrite })),
       );
     } catch (error) {
+      if (this.#disposed) {
+        return;
+      }
       this.#hooks.onError?.(error);
       // A refusal of the whole request (signed out, writes off, uploads not
       // configured) would meet every file waiting too.
@@ -674,10 +722,9 @@ export class UploadQueue {
       return;
     }
 
-    // Every signed file joins the request's group before any is sent, so
-    // the group is reported only once the last of them is done.
-    const id = this.#nextGroup++;
-    const group: Group = { open: new Set(), keys: [] };
+    if (this.#disposed) {
+      return;
+    }
     const signed: [Entry, PresignedUpload][] = [];
     batch.forEach((entry, index) => {
       const answer = result.uploads[index];
@@ -691,8 +738,6 @@ export class UploadQueue {
       }
       entry.key = answer.key;
       if ("url" in answer) {
-        entry.group = id;
-        group.open.add(entry.id);
         signed.push([entry, answer]);
       } else if (answer.error === "exists") {
         entry.state = "exists";
@@ -701,9 +746,6 @@ export class UploadQueue {
         this.#fail(entry, { code: answer.error });
       }
     });
-    if (signed.length > 0) {
-      this.#groups.set(id, group);
-    }
     for (const [entry, upload] of signed) {
       this.#put(entry, upload, result.clock);
     }
@@ -712,10 +754,12 @@ export class UploadQueue {
 
   /** Sends one signed file, unless its URL is too close to its expiry, which is signed again. */
   #put(entry: Entry, upload: PresignedUpload, clock: ServerClock): void {
+    if (this.#disposed) {
+      return;
+    }
     const serverNow = Date.parse(clock.serverTime) + (this.#now() - clock.receivedAt);
     if (Date.parse(upload.expiresAt) - serverNow < EXPIRY_MARGIN_MS && !entry.resigned) {
       entry.resigned = true;
-      this.#leaveGroup(entry);
       entry.state = "waiting";
       return;
     }
@@ -739,27 +783,25 @@ export class UploadQueue {
       .catch(() => 0)
       .then((status) => {
         entry.abort = undefined;
-        if (entry.state !== "uploading") {
+        if (this.#disposed || entry.state !== "uploading") {
           // Canceled while it was being sent.
           return;
         }
         if (status >= 200 && status < 300) {
           entry.state = "uploaded";
           entry.loaded = entry.size;
-          this.#leaveGroup(entry, entry.key);
+          this.#hold(entry.key);
           this.#landed.push(entry.key);
           this.#refreshSoon();
         } else if (status === 412) {
           // The key appeared after the server looked: If-None-Match held.
           entry.state = "exists";
-          this.#leaveGroup(entry);
         } else if ((status === 0 || status === 403) && !entry.retried) {
           // A network error (an expired URL has no CORS headers) or a 403:
           // signed again and tried once more.
           entry.retried = true;
           entry.maybeLanded ||= status === 0;
           entry.state = "waiting";
-          this.#leaveGroup(entry);
         } else {
           this.#fail(entry, { code: "put_failed", status });
         }
@@ -770,29 +812,39 @@ export class UploadQueue {
   #fail(entry: Entry, failure: UploadFailure): void {
     entry.state = "failed";
     entry.failure = failure;
-    this.#leaveGroup(entry);
   }
 
-  /** A file stops being sent: once its whole sign request has, the uploaded ones are reported. */
-  #leaveGroup(entry: Entry, uploadedKey?: string): void {
-    const id = entry.group;
-    entry.group = undefined;
-    const group = id === undefined ? undefined : this.#groups.get(id);
-    if (id === undefined || group === undefined) {
-      return;
+  /**
+   * Holds a landed key for the next report: at once when `signBatch` keys
+   * wait, else once `COMPLETE_QUIET_MS` pass with nothing new landing.
+   */
+  #hold(key: string): void {
+    this.#unreported.push(key);
+    clearTimeout(this.#completeTimer);
+    this.#completeTimer = undefined;
+    if (this.#unreported.length >= this.#signBatch) {
+      this.#reportHeld();
+    } else {
+      this.#completeTimer = setTimeout(() => {
+        this.#completeTimer = undefined;
+        this.#reportHeld();
+        this.#settle();
+      }, COMPLETE_QUIET_MS);
     }
-    group.open.delete(entry.id);
-    if (uploadedKey !== undefined) {
-      group.keys.push(uploadedKey);
-    }
-    if (group.open.size === 0) {
-      this.#groups.delete(id);
-      this.#report(group.keys);
-    }
+  }
+
+  /** Reports every held key now. */
+  #reportHeld(): void {
+    clearTimeout(this.#completeTimer);
+    this.#completeTimer = undefined;
+    this.#report(this.#unreported.splice(0));
   }
 
   /** `POST /api/files/uploads/complete` for these keys, at most `signBatch` a request. */
   #report(keys: readonly string[]): void {
+    if (this.#disposed) {
+      return;
+    }
     for (let start = 0; start < keys.length; start += this.#signBatch) {
       this.#completing++;
       this.#calls
@@ -811,19 +863,24 @@ export class UploadQueue {
         )
         .finally(() => {
           this.#completing--;
-          this.#settle();
+          if (!this.#disposed) {
+            this.#settle();
+          }
         });
     }
   }
 
   /** At most once every `REFRESH_EVERY_MS`, and once more after the last upload of a burst. */
   #refreshSoon(): void {
-    if (this.#refreshTimer !== undefined) {
+    if (this.#disposed || this.#refreshTimer !== undefined) {
       return;
     }
     const wait = this.#lastRefresh + REFRESH_EVERY_MS - this.#now();
     const refresh = () => {
       this.#refreshTimer = undefined;
+      if (this.#disposed) {
+        return;
+      }
       this.#lastRefresh = this.#now();
       this.#hooks.onRefresh?.(this.#landed.splice(0));
     };
@@ -839,7 +896,7 @@ export class UploadQueue {
     this.#pump();
     const running =
       this.#entries.some((entry) => ACTIVE.has(entry.state)) ||
-      this.#groups.size > 0 ||
+      this.#unreported.length > 0 ||
       this.#completing > 0;
     if (!running) {
       const settled = this.#entries.filter(
@@ -1052,22 +1109,26 @@ export function shownRows(
 }
 
 /**
- * The lines that count the rows left out: `and 1,940 more uploaded` (with
- * skipped and canceled ones), and `and 300 more waiting`.
+ * The lines that count the rows left out. `earlier` stands for the older
+ * finished files, so it goes above the rows (`1,950 more uploaded
+ * earlier`, with skipped and canceled ones); `later` for the waiting files
+ * past the shown ones, below them (`and 300 more waiting`).
  */
-export function describeHidden(hidden: ShownRows["hidden"]): string[] {
+export function describeHidden(hidden: ShownRows["hidden"]): {
+  earlier: string | null;
+  later: string | null;
+} {
   const parts = (["uploaded", "skipped", "canceled"] as const)
     .filter((state) => hidden[state] > 0)
     .map((state, index) => `${formatCount(hidden[state])}${index === 0 ? " more" : ""} ${state}`);
   const last = parts.pop();
-  const lines: string[] = [];
-  if (last !== undefined) {
-    lines.push(`and ${parts.length > 0 ? `${parts.join(", ")} and ${last}` : last}`);
-  }
-  if (hidden.waiting > 0) {
-    lines.push(`and ${formatCount(hidden.waiting)} more waiting`);
-  }
-  return lines;
+  return {
+    earlier:
+      last === undefined
+        ? null
+        : `${parts.length > 0 ? `${parts.join(", ")} and ${last}` : last} earlier`,
+    later: hidden.waiting > 0 ? `and ${formatCount(hidden.waiting)} more waiting` : null,
+  };
 }
 
 /* --------------------------------------------------------------- words -- */

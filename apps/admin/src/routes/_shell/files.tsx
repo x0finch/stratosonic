@@ -53,7 +53,7 @@ import { formatCount } from "@/lib/format";
 import { liveQuery } from "@/lib/overview";
 import { can } from "@/lib/roles";
 import { toastError, toastFailure } from "@/lib/toasts";
-import { planUploads } from "@/lib/uploads";
+import { PLAN_SLICE, planUploads, planUploadsInSlices } from "@/lib/uploads";
 
 export const Route = createFileRoute("/_shell/files")({
   validateSearch: validateFilesSearch,
@@ -146,6 +146,8 @@ function FilesPage({ me }: { me: Me | null }) {
   const [dialog, setDialog] = useState<DialogState>({ open: null, targets: [] });
   // The folders made with New folder, which exist only once a file lands.
   const [made, setMade] = useState<ReadonlySet<string>>(new Set());
+  // The files of a large pick being prepared, or null.
+  const [preparing, setPreparing] = useState<number | null>(null);
 
   const now = Math.max(useClock(), folder.dataUpdatedAt);
   const bucket = config.data?.bucket ?? BUCKET_FALLBACK;
@@ -163,13 +165,25 @@ function FilesPage({ me }: { me: Me | null }) {
    * The picked files go into the folder on screen, each key in the deepest
    * folder the loaded listings show (lib/uploads.ts, `uploadTarget`).
    */
-  function upload(picked: readonly File[]) {
-    if (!config.data) {
+  async function upload(picked: readonly File[]) {
+    const settings = config.data;
+    if (!settings) {
       return;
     }
     const listed = (at: string) =>
       queryClient.getQueryData(folderQuery(at).queryKey)?.pages.flatMap((page) => page.folders);
-    const planned = planUploads(picked, prefix, config.data, listed);
+    let planned: ReturnType<typeof planUploads>;
+    if (picked.length > PLAN_SLICE) {
+      // A large pick is prepared in slices, with the button saying so.
+      setPreparing(picked.length);
+      try {
+        planned = await planUploadsInSlices(picked, prefix, settings, listed);
+      } finally {
+        setPreparing(null);
+      }
+    } else {
+      planned = planUploads(picked, prefix, settings, listed);
+    }
     if (planned.length === 0) {
       // A folder pick of hidden files only, such as a folder whose name
       // starts with a dot: say so rather than do nothing.
@@ -179,7 +193,22 @@ function FilesPage({ me }: { me: Me | null }) {
       );
       return;
     }
-    queue.add(planned, config.data.limits.signBatch);
+    queue.add(planned, settings.limits.signBatch);
+  }
+
+  /**
+   * Clear finished emptied the queue, and its section went with the focus:
+   * focus goes to the folder's Upload, or else to the page's h1.
+   */
+  function focusAfterUploads() {
+    const trigger = document.querySelector<HTMLElement>("[data-upload-trigger]");
+    if (trigger) {
+      trigger.focus();
+      return;
+    }
+    const heading = document.querySelector<HTMLElement>('[role="heading"][aria-level="1"]');
+    heading?.setAttribute("tabindex", "-1");
+    heading?.focus();
   }
 
   function select(targets: readonly DeleteTarget[], checked: boolean) {
@@ -234,7 +263,9 @@ function FilesPage({ me }: { me: Me | null }) {
         <FolderPlusIcon data-icon="inline-start" />
         New folder
       </Button>
-      {uploadable ? <UploadMenu onPick={upload} /> : null}
+      {uploadable ? (
+        <UploadMenu onPick={(files) => void upload(files)} preparing={preparing} />
+      ) : null}
     </>
   ) : readOnlyHere ? (
     <p className="text-sm text-muted-foreground">Read-only on this deployment</p>
@@ -280,7 +311,15 @@ function FilesPage({ me }: { me: Me | null }) {
             <FolderEmpty
               prefix={prefix}
               made={made.has(prefix)}
-              upload={uploadable ? <UploadMenu variant="outline" onPick={upload} /> : null}
+              upload={
+                uploadable ? (
+                  <UploadMenu
+                    variant="outline"
+                    onPick={(files) => void upload(files)}
+                    preparing={preparing}
+                  />
+                ) : null
+              }
             />
           ) : (
             <>
@@ -311,7 +350,9 @@ function FilesPage({ me }: { me: Me | null }) {
             </>
           )}
         </Section>
-        {showUploads ? <UploadsSection queue={queue} config={config.data} /> : null}
+        {showUploads ? (
+          <UploadsSection queue={queue} config={config.data} onEmptied={focusAfterUploads} />
+        ) : null}
       </div>
       {writable && config.data ? (
         <>

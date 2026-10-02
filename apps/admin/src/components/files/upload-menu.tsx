@@ -8,20 +8,26 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Spinner } from "@/components/ui/spinner";
+import { countOf } from "@/lib/files";
 
 /**
  * **Upload** (#83, "Layout", item 3): a menu of "Files…", which picks any
  * number of files, and "Folder…", which picks a folder with everything in
  * it (`webkitdirectory`), each file then carrying its path under the folder
  * picked (`webkitRelativePath`). The pickers are the browser's own, behind
- * two hidden inputs.
+ * two hidden inputs. While a large pick is being prepared, the button says
+ * so, with a spinner, and takes no other pick.
  */
 export function UploadMenu({
   onPick,
   variant = "default",
+  preparing = null,
 }: {
   onPick: (files: File[]) => void;
   variant?: "default" | "outline";
+  /** The files of a pick being prepared, or null. */
+  preparing?: number | null;
 }) {
   const filesInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
@@ -45,9 +51,23 @@ export function UploadMenu({
   return (
     <>
       <DropdownMenu>
-        <DropdownMenuTrigger render={<Button variant={variant} size="sm" />}>
-          <UploadIcon data-icon="inline-start" />
-          Upload
+        <DropdownMenuTrigger
+          // The page finds it here to give it focus back (routes/_shell/files.tsx).
+          data-upload-trigger=""
+          disabled={preparing !== null}
+          render={<Button variant={variant} size="sm" />}
+        >
+          {preparing !== null ? (
+            <>
+              <Spinner data-icon="inline-start" aria-hidden="true" />
+              Preparing {countOf(preparing, "file")}…
+            </>
+          ) : (
+            <>
+              <UploadIcon data-icon="inline-start" />
+              Upload
+            </>
+          )}
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem onClick={() => filesInput.current?.click()}>
