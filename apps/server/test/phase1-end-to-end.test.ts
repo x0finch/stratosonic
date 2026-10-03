@@ -3,7 +3,6 @@ import { albumId, artistId, playlistId, prefixedId, trackId } from "@stratosonic
 import { beforeAll, describe, expect, it } from "vitest";
 import { database } from "../src/db";
 import worker from "../src/index";
-import { MUSIC_FOLDER_ID, MUSIC_FOLDER_NAME } from "../src/library/music-folder";
 import { DEFAULT_SCAN_LIMITS } from "../src/scanner/scan";
 import { readLastScanSummary, readScanProgress, type ScanSummary } from "../src/scanner/state";
 import type { BrowsingResponse } from "./browsing-support";
@@ -395,12 +394,10 @@ describe("browsing the library the cron built", () => {
 /* ================================================= folder browsing == */
 
 describe("walking the same library by folder", () => {
-  it("offers the one music folder", async () => {
+  it("offers library 1, the one music folder", async () => {
     const body = await browse("getMusicFolders");
 
-    expect(body.musicFolders?.musicFolder).toEqual([
-      { id: MUSIC_FOLDER_ID, name: MUSIC_FOLDER_NAME },
-    ]);
+    expect(body.musicFolders?.musicFolder).toEqual([{ id: 1, name: "Music Library" }]);
   });
 
   it("lists every artist under getIndexes, dated by the pass", async () => {

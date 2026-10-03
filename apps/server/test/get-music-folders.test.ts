@@ -7,9 +7,10 @@ import { BASE, type JsonEnvelope } from "./support";
  * `getMusicFolders`: the list a folder-browsing client reads first, and whose
  * ids it sends back as `musicFolderId`.
  *
- * Nothing is seeded here on purpose. The folder exists because the server
- * serves one bucket, not because the library has anything in it, so an empty
- * library must still be offered a folder to browse.
+ * Nothing is seeded here on purpose. The folder exists because library 1,
+ * the bound bucket, exists, not because it has anything in it, so an empty
+ * library must still be offered a folder to browse. Several libraries, and
+ * users who see some of them, are test/library-scope.test.ts's.
  */
 
 beforeAll(async () => {

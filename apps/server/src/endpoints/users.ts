@@ -1,5 +1,5 @@
 import type { AuthenticatedUser } from "../auth/authenticate";
-import { MUSIC_FOLDER_ID } from "../library/music-folder";
+import { omitWhenEmpty } from "../library/serializers";
 import { requiredParameter } from "../subsonic/params";
 import { SubsonicError, SubsonicErrorCode, type SubsonicNode } from "../subsonic/response";
 import type { SubsonicHandler } from "../subsonic/router";
@@ -26,6 +26,10 @@ import { userNamesMatch } from "../users/repository";
  * them would only make a client offer the user something that then fails.
  * `maxBitRate` is omitted rather than sent as 0, as Navidrome's `omitempty`
  * does, because nothing is transcoded (ADR-0001).
+ *
+ * `folder` lists the libraries the user sees, by id, as Navidrome maps
+ * `user.Libraries` into it; with none it is left out, as `omitempty` leaves
+ * it out.
  */
 function buildUserResponse(user: AuthenticatedUser): SubsonicNode {
   return {
@@ -46,7 +50,7 @@ function buildUserResponse(user: AuthenticatedUser): SubsonicNode {
     videoConversionRole: false,
     // XML renders this as repeated `<folder>` children and JSON as an array,
     // which is what `xml:"folder,omitempty"` on a []int32 produces in Go.
-    folder: [MUSIC_FOLDER_ID],
+    folder: omitWhenEmpty([...user.libraryIds]),
   };
 }
 
