@@ -79,17 +79,18 @@
  * otherwise. In `FILES_PREFIX` they upload a folder (two FLACs, their
  * `.lrc` and a cover, from the server's test fixtures), seeing the toast,
  * the scan line, the header's Uploads trigger ("Uploads done") and one row
- * a file in its popover; upload one of its files again, which already
- * exists ("1 needs attention"), and replace it from the popover; and
- * delete the folder again. On any Worker with uploads configured (fake
- * credentials will do), they pick a `.pdf` and see it refused before any
- * request: the trigger says "1 needs attention" while the popover stays
- * closed and the folder stays the page's one block, the keyboard opens the
- * popover, Escape closes it with focus back on the trigger, and Clear
- * finished takes the trigger away with focus on Upload. Each step's note
- * gives the requests its run made (sign, complete and `PUT`), for the
- * budget. Signing out from the Files page then reads nothing more from the
- * files API (#141).
+ * a file in its popover; pick one of its files again, which already
+ * exists, see the conflict dialog ("1 of 1 file already exists") before
+ * anything is signed, and choose Replace them, which signs it with
+ * `overwrite`; and delete the folder again. On any Worker with uploads
+ * configured (fake credentials will do), they pick a `.pdf` and see it
+ * refused before any request, the check's included: the trigger says
+ * "1 needs attention" while the popover stays closed and the folder stays
+ * the page's one block, the keyboard opens the popover, Escape closes it
+ * with focus back on the trigger, and Clear finished takes the trigger
+ * away with focus on Upload. Each step's note gives the requests its run
+ * made (check, sign, complete and `PUT`), for the budget. Signing out from
+ * the Files page then reads nothing more from the files API (#141).
  *
  * Any console error or uncaught exception on a page fails the walkthrough,
  * except the browser's own "Failed to load resource" line for a response the
@@ -524,19 +525,23 @@ async function clearUploads(page) {
 }
 
 /**
- * Counts the requests an upload run makes from now on: sign and complete
- * requests to the Worker, and `PUT`s to R2. A CORS preflight is not a
- * request Playwright reports; there is one before each `PUT`, since a
- * browser caches a preflight by its full URL and every presigned URL
- * differs.
+ * Counts the requests an upload run makes from now on: check, sign and
+ * complete requests to the Worker (and the files signed with `overwrite`),
+ * and `PUT`s to R2. A CORS preflight is not a request Playwright reports;
+ * there is one before each `PUT`, since a browser caches a preflight by
+ * its full URL and every presigned URL differs.
  */
 function countUploadRequests(page) {
-  const counted = { sign: 0, complete: 0, put: 0, files: 0 };
+  const counted = { check: 0, sign: 0, complete: 0, put: 0, files: 0, overwrite: 0 };
   page.on("request", (request) => {
     const path = pathOf(request);
-    if (path === "/api/files/uploads") {
+    if (path === "/api/files/uploads/check") {
+      counted.check++;
+    } else if (path === "/api/files/uploads") {
+      const files = JSON.parse(request.postData() ?? "{}").files ?? [];
       counted.sign++;
-      counted.files += JSON.parse(request.postData() ?? "{}").files?.length ?? 0;
+      counted.files += files.length;
+      counted.overwrite += files.filter((file) => file.overwrite === true).length;
     } else if (path === "/api/files/uploads/complete") {
       counted.complete++;
     } else if (
@@ -547,6 +552,7 @@ function countUploadRequests(page) {
     }
   });
   counted.note = () =>
+    `${counted.check} check request(s), ` +
     `${counted.sign} sign request(s) for ${counted.files} file(s), ${counted.put} PUT(s), ` +
     `${counted.complete} complete request(s)`;
   return counted;
@@ -1234,7 +1240,7 @@ async function main() {
         "the Files page shows a region beside its folder",
       );
       check(
-        counted.sign === 0 && counted.put === 0,
+        counted.check === 0 && counted.sign === 0 && counted.put === 0,
         `a refused .pdf made requests: ${counted.note()}`,
       );
       // The keyboard opens it, Escape closes it, and focus returns to the trigger.
@@ -1294,32 +1300,42 @@ async function main() {
       },
     );
 
-    await step("Files: a file that exists is Already exists, and Replace replaces it", async () => {
-      if (!uploads.on) {
-        return "skipped";
-      }
-      await page.goto(filesUrl(uploads.album));
-      await inFolder(page, uploads.album);
-      await clearUploads(page);
-      const counted = countUploadRequests(page);
-      await markToasts(page);
-      await pick(
-        page,
-        "Files…",
-        join(uploads.dir, "walkthrough upload", "01 Hushed Interlude.flac"),
-      );
-      await expectToast(page, "1 file was not uploaded");
-      await uploadsTrigger(page, "1 needs attention").click();
-      await uploadsPopover(page).getByText("Already exists").waitFor();
-      await shot(page, "files-upload-exists");
-      await markToasts(page);
-      await uploadsPopover(page).getByRole("button", { name: "Replace", exact: true }).click();
-      await expectToast(page, "Uploaded 1 file");
-      await uploadsTrigger(page, "Uploads done").waitFor();
-      await uploadsPopover(page).getByRole("button", { name: "Clear finished" }).click();
-      await uploadsTrigger(page).waitFor({ state: "detached" });
-      return counted.note();
-    });
+    await step(
+      "Files: picking a file that exists asks first, and Replace them replaces it",
+      async () => {
+        if (!uploads.on) {
+          return "skipped";
+        }
+        await page.goto(filesUrl(uploads.album));
+        await inFolder(page, uploads.album);
+        await clearUploads(page);
+        const counted = countUploadRequests(page);
+        await markToasts(page);
+        await pick(
+          page,
+          "Files…",
+          join(uploads.dir, "walkthrough upload", "01 Hushed Interlude.flac"),
+        );
+        // Checked before anything is signed, and asked once, in a dialog.
+        const dialog = page.getByRole("alertdialog", { name: "1 of 1 file already exists" });
+        await dialog.waitFor();
+        check(
+          counted.check === 1 && counted.sign === 0,
+          `the conflict was not asked before signing: ${counted.note()}`,
+        );
+        await shot(page, "files-upload-exists");
+        await markToasts(page);
+        await dialog.getByRole("button", { name: "Replace them" }).click();
+        await expectToast(page, "Uploaded 1 file");
+        check(
+          counted.overwrite === 1,
+          `Replace them signed ${counted.overwrite} file(s) with overwrite, not 1`,
+        );
+        await uploadsTrigger(page, "Uploads done").waitFor();
+        await clearUploads(page);
+        return counted.note();
+      },
+    );
 
     await step("Files: the uploaded folder is deleted again", async () => {
       if (uploads.dir !== "") {
