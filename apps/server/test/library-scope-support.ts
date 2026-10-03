@@ -183,23 +183,40 @@ export function countingApp(): {
     endpoint: string,
     params?: readonly (readonly [string, string])[],
   ) => Promise<SubsonicJson>;
+  /** The same request, answered as it is: for the endpoints that send bytes. */
+  fetch: (
+    user: string,
+    endpoint: string,
+    params?: readonly (readonly [string, string])[],
+    init?: RequestInit,
+  ) => Promise<Response>;
 } {
   const d1 = countingD1(testEnv.DB);
   const env: Env = { ...testEnv, DB: d1.binding };
   const app = createApp();
 
+  const fetch = async (
+    user: string,
+    endpoint: string,
+    params: readonly (readonly [string, string])[] = [],
+    init?: RequestInit,
+  ) => {
+    const search = new URLSearchParams([
+      ["u", user],
+      ["p", PASSWORD],
+      ["v", "1.16.1"],
+      ["c", "Substreamer"],
+      ["f", "json"],
+      ...params.map(([name, value]): [string, string] => [name, value]),
+    ]);
+    return app.request(`${BASE}/rest/${endpoint}?${search}`, init, env);
+  };
+
   return {
     d1,
+    fetch,
     async call(user, endpoint, params = []) {
-      const search = new URLSearchParams([
-        ["u", user],
-        ["p", PASSWORD],
-        ["v", "1.16.1"],
-        ["c", "Substreamer"],
-        ["f", "json"],
-        ...params.map(([name, value]): [string, string] => [name, value]),
-      ]);
-      const response = await app.request(`${BASE}/rest/${endpoint}?${search}`, undefined, env);
+      const response = await fetch(user, endpoint, params);
       const body = (await response.json()) as { "subsonic-response": SubsonicJson };
 
       return body["subsonic-response"];
