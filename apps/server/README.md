@@ -266,8 +266,8 @@ or skip them, before any upload starts:
   as one folder-delete round reaches). A key whose folder was not listed
   to its end (a flat folder of more than 2,000 entries, or one past the
   budget) is then looked for with one `HeadObject`, which finds it under
-  any Unicode spelling, as many as the request's 48 binding calls leave
-  room for (at least 8). A key still unknown comes back in `unchecked`,
+  any Unicode spelling, as many as the request's 47 binding calls leave
+  room for (at least 7). A key still unknown comes back in `unchecked`,
   never as new. The console asks again for those, each request with a
   fresh budget, so a pick across many folders, or into one large folder,
   is checked in a few requests; what it cannot check after that, it asks
@@ -276,8 +276,10 @@ or skip them, before any upload starts:
   `If-None-Match: *` still refuses them if they exist.
 - It costs one Class A operation per page listed (a 25-file album in one
   folder: one) and one Class B per key looked up with `HeadObject`, no D1
-  statement past the session check's two, and no scan driver call: at
-  most 48 + 2 = 50 subrequests.
+  statement past the session check's, and no scan driver call: 47 binding
+  calls + at most 3 D1 statements = 50 subrequests (the session check reads
+  the session and its user, and updates the session once it is old enough
+  to be refreshed).
 
 An expired URL fails with `403` and no CORS headers, so the browser sees a
 network error. The console signs just before each upload and signs again if

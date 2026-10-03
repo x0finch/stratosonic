@@ -146,15 +146,17 @@ import { requireSameOrigin } from "./same-origin";
  *    `CHECK_ENTRIES` (2,000) entries listed in all, as much as one
  *    `delete-folder` round. A key whose folder was not listed to its end
  *    (a large flat folder, or one past the budget) is then looked for with
- *    one `head()` (Class B), as many as the request's `CHECK_CALLS` (48)
- *    binding calls leave room for: at least 8. A key still unknown is
+ *    one `head()` (Class B), as many as the request's `CHECK_CALLS` (47)
+ *    binding calls leave room for: at least 7. A key still unknown is
  *    answered in `unchecked`, never as new, and the console asks again for
  *    those, each request with a fresh budget. A folder stored in another
  *    spelling than the one given lists nothing, so its keys read as new;
  *    the `PUT`'s `If-None-Match: *` still refuses them. Its cost: one
  *    `ListObjects` (Class A) per page and one `HeadObject` (Class B) per
- *    key looked up, no D1 statement past the session's, no driver call;
- *    at most 48 + 2 = 50 subrequests. At most `CHECK_BATCH` (500) keys a
+ *    key looked up, no D1 statement past the session check's, no driver
+ *    call: 47 binding calls + at most 3 D1 statements = 50 subrequests
+ *    (`requireFreshSession` reads the session and its user, and updates
+ *    the session once it is past `updateAge`). At most `CHECK_BATCH` (500) keys a
  *    request: checking them against the upload rules is most of its CPU.
  * 1. `POST /api/files/uploads` checks each file against the upload rules
  *    (files/keys.ts), asks R2 whether its key exists, and presigns a `PUT`
@@ -212,9 +214,12 @@ export { CHECK_BATCH } from "../files/check";
 
 /**
  * The most binding calls one upload check makes, listings and `head()`s
- * together: with the session check's two D1 statements, 50 subrequests.
+ * together: 47 binding calls + at most 3 D1 statements = 50 subrequests.
+ * The session check (`requireFreshSession`) reads the session and its
+ * user, and updates the session once it is past Better Auth's `updateAge`
+ * (test/console-auth-sessions.test.ts).
  */
-export const CHECK_CALLS = 48;
+export const CHECK_CALLS = 47;
 
 /** The most of those calls that are listings: the rest are left for `head()`s. */
 export const CHECK_LISTINGS = 40;
@@ -731,7 +736,8 @@ async function checkExisting(
   }
 
   // One head() a key, with the calls left. Keys NFC-equal to one another
-  // were grouped under one name, so they share one head().
+  // are grouped under one name for the listings, but each still gets its
+  // own head() here, which R2 answers for either spelling.
   const heads = unknown.slice(0, Math.max(CHECK_CALLS - listings, 0));
   const found = await mapInFlight(heads, HEADS_IN_FLIGHT, (key) => env.MUSIC.head(key));
   heads.forEach((key, index) => {

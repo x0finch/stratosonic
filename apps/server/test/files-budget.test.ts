@@ -42,6 +42,13 @@ const ORIGIN = "https://files-budget.stratosonic.test";
  */
 const harness = filesHarness(ORIGIN, { uploads: UPLOADS_ENV, scanDriver: inertDriver() });
 
+/**
+ * The most D1 statements a write's session check makes: the session and
+ * its user, and, a day on (Better Auth's `updateAge`), an update of the
+ * session row (test/console-auth-sessions.test.ts).
+ */
+const WORST_SESSION_STATEMENTS = 3;
+
 /** Entries in the one playlist each delete takes with it. */
 const ENTRIES = 25;
 
@@ -336,7 +343,7 @@ describe("the Files routes' budget", () => {
     expect(subrequests(result)).toBe(1);
   });
 
-  it("POST /api/files/uploads/check at the bound: 40 listings and 8 head(), 50 subrequests with the session", async () => {
+  it("POST /api/files/uploads/check at the bound: 40 listings and 7 head(), 50 subrequests with a 3-statement session check", async () => {
     // A folder each: one listing each, until the bound, then a head() each
     // for as many as the calls left allow.
     const keys = Array.from({ length: CHECK_CALLS + 5 }, (_, index) => `F${index}/a.flac`);
@@ -351,7 +358,12 @@ describe("the Files routes' budget", () => {
       ...Array.from({ length: CHECK_CALLS - CHECK_LISTINGS }, () => "head"),
     ]);
     expect(result.driver).toEqual([]);
-    expect(subrequests(result) + result.session.length).toBe(50);
+    expect(subrequests(result)).toBe(CHECK_CALLS);
+    // A fresh session reads 2 statements here; one past Better Auth's
+    // updateAge also updates it (test/console-auth-sessions.test.ts): the
+    // bound holds against that worst case.
+    expect(result.session.length).toBeLessThanOrEqual(WORST_SESSION_STATEMENTS);
+    expect(subrequests(result) + WORST_SESSION_STATEMENTS).toBeLessThanOrEqual(50);
   });
 
   it("POST /api/files/uploads/complete, 10 keys: 1 statement, 1 driver call, no R2 call", async () => {

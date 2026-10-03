@@ -203,7 +203,7 @@ describe("POST /api/files/uploads/check", () => {
 
     const { body } = await check({ keys });
 
-    // 40 folders listed, then a head() each for as many as the 48 calls allow.
+    // 40 folders listed, then a head() each for as many as the CHECK_CALLS (47) calls allow.
     expect(listings()).toHaveLength(CHECK_LISTINGS);
     const heads = harness.r2Calls.filter((call) => call.method === "head");
     expect(heads).toHaveLength(CHECK_CALLS - CHECK_LISTINGS);
