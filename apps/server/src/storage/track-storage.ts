@@ -1,6 +1,7 @@
-import { type Library, library } from "@stratosonic/db";
+import { library } from "@stratosonic/db";
 import type { Env } from "../env";
 import { BOUND_LIBRARY_ID, bindingStorage } from "./binding";
+import { type StorageRow, storageFor } from "./for-library";
 import type { LibraryStorage } from "./storage";
 
 /**
@@ -12,7 +13,8 @@ import type { LibraryStorage } from "./storage";
  * **The library row comes with the track.** A library other than the bound
  * one is reached with what its row says (kind, endpoint, bucket, sealed
  * token), so the reads that serve bytes join `library` onto the track lookup
- * (`storageRowColumns`) rather than spend a round trip on it.
+ * (`storageRowColumns`) rather than spend a round trip on it, and hand the
+ * row to `storageFor` (storage/for-library.ts).
  *
  * **Unless every track the caller can see is the bound bucket's.** A caller
  * whose libraries are library 1 alone, which is every caller of a
@@ -20,14 +22,7 @@ import type { LibraryStorage } from "./storage";
  * lookups run v0.5.0's statement, with no join (`joinsLibraryRow`).
  */
 
-/**
- * What a library row says about reaching its bucket: the columns a storage
- * is built from.
- */
-export type StorageRow = Pick<
-  Library,
-  "id" | "kind" | "path" | "endpoint" | "bucket" | "credentials"
->;
+export type { StorageRow };
 
 /** `StorageRow`'s columns, for a select that joins `library`. */
 export const storageRowColumns = {
@@ -50,7 +45,8 @@ export function joinsLibraryRow(libraryIds: readonly number[]): boolean {
 /**
  * The storage a track's bytes are read from: its library row's, when the
  * lookup joined one, and otherwise the binding, which only a library-1
- * track may be read without (`joinsLibraryRow`).
+ * track may be read without (`joinsLibraryRow`). Nothing is read or sent
+ * here: an S3 library's token is opened on its first request.
  */
 export function storageOfTrack(
   env: Env,
@@ -58,25 +54,11 @@ export function storageOfTrack(
   row: StorageRow | null,
 ): LibraryStorage {
   if (row !== null) {
-    return storageForRow(env, row);
+    return storageFor(env, row);
   }
   if (track.libraryId === BOUND_LIBRARY_ID) {
     return bindingStorage(env);
   }
 
   throw new Error(`a track of library ${track.libraryId} was read without its library row`);
-}
-
-/**
- * A library's storage, from its row. The S3 client and `storageFor`
- * (storage/for-library.ts) arrive with #146; until then only the bound
- * bucket is reachable, and no other library can be connected (#84, ticket
- * G waits for this one).
- */
-function storageForRow(env: Env, row: StorageRow): LibraryStorage {
-  if (row.kind === "r2-binding" && row.id === BOUND_LIBRARY_ID) {
-    return bindingStorage(env);
-  }
-
-  throw new Error(`library ${row.id} is reached over the S3 API, which arrives with #146`);
 }

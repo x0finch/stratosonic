@@ -41,8 +41,8 @@ import {
  * listener of library 1 only, who is scoped without needing a library row:
  * every track they can see is the bound bucket's.
  *
- * Library 2 is an S3 library, whose storage arrives with #146, so nothing
- * here reads a library-2 track's bytes; those tests come with it.
+ * Library 2 has no bucket here, so nothing reads a library-2 track's bytes;
+ * library-scope-s3.test.ts streams them from the fake S3.
  */
 
 const { d1, call, fetch } = countingApp();

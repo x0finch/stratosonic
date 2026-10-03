@@ -2,7 +2,7 @@ import type { EntityId } from "@stratosonic/db";
 import type { Database } from "../db";
 import { NO_USER } from "../library/annotations";
 import { findAlbum, findArtist, findTrack } from "../library/repository";
-import type { LibraryScope } from "../library/scope";
+import { ALL_LIBRARIES, type LibraryScope } from "../library/scope";
 
 /**
  * Which stored object a client-facing id asks for.
@@ -50,9 +50,11 @@ export async function findCoverKey(
     case "artist": {
       const coverAlbumId = (await findArtist(db, entity.id, NO_USER, scope))?.coverAlbumId ?? null;
 
+      // The cover album is one of the artist's albums in scope already
+      // (`coverAlbumOf`), so it is read by its id alone.
       return coverAlbumId === null
         ? null
-        : ((await findAlbum(db, coverAlbumId, NO_USER, scope))?.coverKey ?? null);
+        : ((await findAlbum(db, coverAlbumId, NO_USER, ALL_LIBRARIES))?.coverKey ?? null);
     }
 
     default:
