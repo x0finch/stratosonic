@@ -69,11 +69,6 @@ function foldAsciiCase(value: string): string {
   return value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
 }
 
-/** Inserts a user. Fails if the name is taken, whatever its case. */
-export async function insertUser(db: Database, values: NewSubsonicUser): Promise<void> {
-  await db.insert(subsonicUser).values(values);
-}
-
 /** Counts every user, which is how the first-run bootstrap knows it is first. */
 export async function countUsers(db: Database): Promise<number> {
   const rows = await db.select({ count: sql<number>`count(*)` }).from(subsonicUser);
@@ -190,6 +185,8 @@ export function grantLibrariesStatement(db: Database, userId: string, grant: Lib
         .where(
           and(
             grant === "defaults" ? eq(library.defaultNewUsers, true) : undefined,
+            // Also the WHERE that `INSERT ... SELECT ... ON CONFLICT` needs:
+            // without one SQLite parses `ON` as a join constraint. Keep it.
             sql`exists (select 1 from ${subsonicUser} as granted where granted.id = ${userId})`,
           ),
         ),

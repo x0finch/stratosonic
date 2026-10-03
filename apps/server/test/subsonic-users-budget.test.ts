@@ -1,7 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { encryptPassword } from "../src/auth/crypto";
 import { database } from "../src/db";
-import { insertUser } from "../src/users/repository";
 import {
   type CookieJar,
   cost,
@@ -11,7 +10,7 @@ import {
   signIn,
 } from "./console-auth-support";
 import { subsonicUsersHarness } from "./subsonic-users-support";
-import { encryptionKey, testEnv } from "./support";
+import { encryptionKey, insertUser, testEnv } from "./support";
 
 /**
  * What the Subsonic-user routes cost D1 on #82's reference library ("Free-tier

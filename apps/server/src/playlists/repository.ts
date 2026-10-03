@@ -409,7 +409,11 @@ export function upsertPlaylistStatements(
           ...(writesDetails ? { comment: imported.comment, public: imported.public } : {}),
         },
         // The collision guard, as on tracks (scanner/repository.ts): another
-        // library's playlist row is never moved into this one.
+        // library's playlist row is never moved into this one. It guards the
+        // row only: the statements below still replace that id's entries.
+        // Nothing reaches this while every caller passes library 1; the
+        // import and writes across libraries (#84, ticket F) must detect the
+        // refused upsert before replacing the entries.
         setWhere: sql`${playlist.libraryId} = excluded.${sql.identifier(playlist.libraryId.name)}`,
       }),
     db.delete(playlistTrack).where(eq(playlistTrack.playlistId, imported.id)),

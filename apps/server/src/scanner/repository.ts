@@ -204,8 +204,12 @@ export function upsertStatements(db: Database, rows: DerivedRows, now: Date): Sc
         },
         // The collision guard (ADR-0009). Another library's id hashes its
         // library id as a leading part, so a library-1 key that begins with
-        // that library's digits and U+200B would hash to the same id. Such a
-        // row is left alone rather than moved into this library.
+        // that library's digits and U+200B would hash to the same id. This
+        // leaves such a row alone rather than moving it into this library,
+        // but it guards the track row only: the batch's `lyricsStatement`
+        // still writes the lyrics of that id. Nothing reaches this while
+        // every caller passes library 1; the scan across libraries (#84,
+        // ticket E) must detect the refused upsert before writing the rest.
         setWhere: sql`${track.libraryId} = excluded.${sql.identifier(track.libraryId.name)}`,
       }),
   ];

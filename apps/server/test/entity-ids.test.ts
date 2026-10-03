@@ -262,6 +262,13 @@ describe("ids per library (ADR-0009)", () => {
       "2fQHO5jSWCIT2YiMMHCFWG",
     ],
     [
+      // The same key as a macOS upload spells it, decomposed (NFD). A key is
+      // hashed as stored, never normalized, so it is another track.
+      "a track whose key is decomposed (NFD)",
+      () => trackId(1, "Sigur Rós/Ágætis byrjun/04 Svefn-g-englar.flac"),
+      "4zSFZjjAfvgN0urr58fSPQ",
+    ],
+    [
       "an album",
       () => albumId(1, "Aphex Twin", "Selected Ambient Works 85-92", 1992),
       "2QdrdJrQZQnQZiaAYJ6KYm",

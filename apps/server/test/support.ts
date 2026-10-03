@@ -9,22 +9,23 @@ import {
   annotation,
   artist,
   artistId,
+  type NewSubsonicUser,
   newRandomId,
   type Playlist,
   playlist,
   playlistId,
   playlistTrack,
+  subsonicUser,
   type Track,
   track,
   trackId,
 } from "@stratosonic/db";
 import { encryptPassword } from "../src/auth/crypto";
-import { database } from "../src/db";
+import { type Database, database } from "../src/db";
 import type { Env } from "../src/env";
 import { suffixOf } from "../src/library/audio-formats";
 import { type ByteSource, bytesSource } from "../src/library/byte-source";
 import { SCAN_VERSION } from "../src/scanner/version";
-import { insertUser } from "../src/users/repository";
 import {
   type FixtureAlbum,
   fixtureBytes,
@@ -43,6 +44,16 @@ export const BASE = "https://stratosonic.test";
 
 /** The test environment, including the bindings that are secrets in production. */
 export const testEnv = env as Env;
+
+/**
+ * Inserts a Subsonic user row as given, and nothing else: unlike
+ * `createUser` (users/repository.ts) it grants no library, so a test that
+ * needs `user_library` rows writes them itself. Fails if the name is taken,
+ * whatever its case.
+ */
+export async function insertUser(db: Database, values: NewSubsonicUser): Promise<void> {
+  await db.insert(subsonicUser).values(values);
+}
 
 export function encryptionKey(): string {
   const key = testEnv.PASSWORD_ENCRYPTION_KEY;
