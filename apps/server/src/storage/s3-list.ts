@@ -17,15 +17,15 @@ import { StorageError, type StorageListing, type StoredObject } from "./storage"
  *   cannot carry a key's control characters. Keys and prefixes are then
  *   decoded as S3 encodes them, a form encoding (`+` for a space, `%2B` for
  *   a plus), which is how botocore (`unquote_plus`) and rclone
- *   (`url.QueryUnescape`) read them from R2 too. They are decoded only when
- *   the answer says `<EncodingType>url</EncodingType>`, so a server that
- *   ignored the parameter cannot have a literal `%` or `+` mangled. The
+ *   (`url.QueryUnescape`) read them from R2 too. An answer that does not say
+ *   `<EncodingType>url</EncodingType>` is refused rather than read raw. The
  *   continuation token is opaque and never URL-encoded.
  * - **Strictness.** A body with no `<ListBucketResult>`, no closing tag, no
- *   `<IsTruncated>`, a truncated page with no `<NextContinuationToken>`, or
- *   an entry missing a field is `unavailable`, never an empty last page: a
- *   scan that took a garbled answer for the end of the bucket would sweep
- *   every track after it.
+ *   `<IsTruncated>`, no `<EncodingType>url</EncodingType>`, a truncated page
+ *   with no `<NextContinuationToken>`, an entry missing a field, or element
+ *   text holding a raw `<` (a CDATA section, a comment, mixed content) is
+ *   `unavailable`, never an empty last page: a scan that took a garbled
+ *   answer for the end of the bucket would sweep every track after it.
  *
  * CPU is gated by a bench, <= 4 ms per 1,000 entries in workerd
  * (scripts/bench-s3-list-workerd.ts, and bench-files.ts in Node): a handful
@@ -62,7 +62,12 @@ export function parseListObjectsV2(xml: string): StorageListing {
     cursor = unescapeXml(token);
   }
 
-  const encoded = element(xml, "EncodingType", root, end) === "url";
+  // The client always asks for `encoding-type=url`. An answer that does not
+  // say it honoured it may carry its keys raw, and reading them either way
+  // could name the wrong objects, so it is not read at all.
+  if (element(xml, "EncodingType", root, end) !== "url") {
+    throw malformed("no <EncodingType>url</EncodingType>: the keys' encoding is unknown");
+  }
   // The keys of a page mostly share their folders, so the last folder
   // decoded is kept: a key in it decodes only its name. A `/` is never part
   // of a multi-byte character, so a key splits there into parts that decode
@@ -71,9 +76,6 @@ export function parseListObjectsV2(xml: string): StorageListing {
   let decodedFolder = "";
   const name = (text: string) => {
     const unescaped = unescapeXml(text);
-    if (!encoded) {
-      return unescaped;
-    }
     const slash = unescaped.lastIndexOf("/") + 1;
     if (slash === 0) {
       return urlDecode(unescaped);
@@ -185,9 +187,12 @@ function element(xml: string, name: string, from: number, to: number): string | 
     return empty !== -1 && empty < to ? "" : null;
   }
   const textStart = start + open.length;
-  const close = xml.indexOf(`</${name}>`, textStart);
-  if (close === -1 || close > to) {
-    throw malformed(`an unclosed <${name}>`);
+  // The first `<` after the text must close it: text holds no raw `<`, so
+  // one there is a CDATA section, a comment or a child element, none of
+  // which a listing's values are.
+  const close = xml.indexOf("<", textStart);
+  if (close === -1 || close > to || !xml.startsWith(`</${name}>`, close)) {
+    throw malformed(`<${name}> is not closed right after its text`);
   }
   return xml.slice(textStart, close);
 }

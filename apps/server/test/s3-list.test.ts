@@ -121,37 +121,36 @@ describe("parseListObjectsV2", () => {
     ]);
   });
 
-  it("leaves keys as they are when the answer is not URL-encoded", () => {
-    const page = parseListObjectsV2(
-      listing(contents("100% + more.flac") + contents("a%20b"), { encoded: false }),
-    );
+  it("refuses an answer that does not say its keys are URL-encoded, never reading them raw", () => {
+    const keys = contents("100%25+%2B+more.flac") + contents("a%20b");
 
-    expect(page.objects.map((object) => object.key)).toEqual(["100% + more.flac", "a%20b"]);
+    expectUnavailable(listing(keys, { encoded: false }));
+    expectUnavailable(
+      listing(keys).replace("<EncodingType>url</EncodingType>", "<EncodingType>raw</EncodingType>"),
+    );
+    expectUnavailable(listing("", { encoded: false }));
+    expect(parseListObjectsV2(listing(keys)).objects.map((object) => object.key)).toEqual([
+      "100% + more.flac",
+      "a b",
+    ]);
   });
 
-  it("unescapes XML entities and character references", () => {
+  it("unescapes XML entities and character references, before URL decoding", () => {
     const page = parseListObjectsV2(
-      listing(
-        contents(
-          "Tom &amp; Jerry &lt;3&gt; &quot;x&quot; &apos;y&apos; &#233;&#x1F3B5;",
-          1,
-          '"quoted"',
-        ),
-        {
-          encoded: false,
-        },
-      ),
+      listing(contents("Tom+%26+Jerry+&#x25;3C3&#37;3E+&#233;&#x1F3B5;+&amp;amp;", 1, '"quoted"')),
     );
 
-    expect(page.objects[0]?.key).toBe(`Tom & Jerry <3> "x" 'y' é🎵`);
+    // `&#x25;3C` is `%3C`, which URL-decodes to `<`; `&amp;amp;` is `&amp;`.
+    expect(page.objects[0]?.key).toBe("Tom & Jerry <3> é🎵 &amp;");
     expect(page.objects[0]?.etag).toBe("quoted");
+    expect(unescapeXml(`&amp;&lt;&gt;&quot;&apos;&#233;&#x1F3B5;`)).toBe(`&<>"'é🎵`);
   });
 
   it("reads an empty last page", () => {
     expect(parseListObjectsV2(listing(""))).toEqual({ objects: [], prefixes: [], cursor: null });
     expect(
       parseListObjectsV2(
-        `<ListBucketResult xmlns="${XMLNS}"><Name>a</Name><KeyCount>0</KeyCount><IsTruncated>false</IsTruncated></ListBucketResult>`,
+        `<ListBucketResult xmlns="${XMLNS}"><Name>a</Name><KeyCount>0</KeyCount><EncodingType>url</EncodingType><IsTruncated>false</IsTruncated></ListBucketResult>`,
       ),
     ).toEqual({ objects: [], prefixes: [], cursor: null });
   });
@@ -189,6 +188,10 @@ describe("parseListObjectsV2", () => {
     ["a bare ampersand", listing(contents("a & b"))],
     ["a key that does not URL-decode", listing(contents("bad%E0%A4"))],
     ["a prefix-less <CommonPrefixes>", listing("<CommonPrefixes></CommonPrefixes>")],
+    ["a CDATA section in a key", listing(contents("<![CDATA[a<b]]>"))],
+    ["a comment in a key", listing(contents("a<!-- note -->b"))],
+    ["a child element in a key", listing(contents("a<b>c</b>"))],
+    ["a raw < in a size", listing(contents("a").replace(">5<", "><5<"))],
   ])("is unavailable for %s, never an empty last page", (_, xml) => {
     expectUnavailable(xml);
   });
