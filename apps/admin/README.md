@@ -356,8 +356,10 @@ credentials, **Upload**.
   which never opens by itself: a run's conflicts are told by its toast
   and by the label. Escape closes it, and focus returns to the trigger.
 - **The upload list**, in that popover: "4 of 12
-  uploaded", **Cancel all**, **Clear finished**, and one row a file, its
-  key over its state: a progress bar with its percent while it is sent,
+  uploaded", **Cancel all**, **Clear finished**, and one row a file: its
+  name (on one line, cut short with the whole name in its title), the
+  folder it goes to beneath as metadata, then its state: a progress bar
+  with its percent while it is sent,
   otherwise a line of text (Waiting, Uploaded, Already exists, Failed and
   why, Skipped, Canceled), so no empty track reads as a divider; and
   **Cancel upload** while it is still to go. The popover is at most 32rem

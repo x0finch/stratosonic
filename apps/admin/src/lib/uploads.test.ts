@@ -31,6 +31,7 @@ import {
   REFRESH_EVERY_MS,
   type RunSummary,
   shownRows,
+  splitKey,
   UploadQueue,
   type UploadView,
   uploadedToast,
@@ -903,6 +904,14 @@ describe("the words", () => {
     const done = [view("uploaded"), view("skipped"), view("canceled")];
     expect(uploadsStatus(done)).toBe("done");
     expect(describeUploadsStatus(done)).toBe("Uploads done");
+  });
+
+  it("splits a row's key into the file's name and its folder", () => {
+    expect(splitKey("Aurora Lane/Glass City (2023)/CD1/01 Opening.flac")).toEqual({
+      name: "01 Opening.flac",
+      folder: "Aurora Lane/Glass City (2023)/CD1",
+    });
+    expect(splitKey("cover.jpg")).toEqual({ name: "cover.jpg", folder: "" });
   });
 
   it("says why a file failed", () => {

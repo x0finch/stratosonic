@@ -1185,6 +1185,15 @@ export function describeUploadsStatus(items: readonly UploadView[]): string {
   }
 }
 
+/**
+ * A row's key as its two lines: the file's name, and the folder it goes
+ * to (`Artist/Album`, with no trailing slash; empty at the bucket's root).
+ */
+export function splitKey(key: string): { name: string; folder: string } {
+  const slash = key.lastIndexOf("/");
+  return { name: key.slice(slash + 1), folder: slash < 0 ? "" : key.slice(0, slash) };
+}
+
 /** Why a file failed, for its row: short, after `Failed: `. */
 export function describeFailure(
   failure: UploadFailure,

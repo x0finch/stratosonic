@@ -37,6 +37,7 @@ import {
   describeUploadsStatus,
   percentOf,
   shownRows,
+  splitKey,
   type UploadQueue,
   type UploadView,
   uploadsStatus,
@@ -158,8 +159,9 @@ export function UploadsPopover() {
 
 /**
  * The upload list (#83, "Layout", item 6), in the Uploads popover: "4 of 12
- * uploaded", then one row a file, its key in mono over its state. While
- * the file is sent, the state is a `Progress` labelled "Uploading" with its
+ * uploaded", then one row a file: the file's name, the folder it goes to
+ * beneath (metadata, the path in mono), then its state. While the file is
+ * sent, the state is a `Progress` labelled "Uploading" with its
  * percent; otherwise it is a line of text ("Waiting", "Uploaded", "Already
  * exists" with **Replace** and **Skip**, "Failed:" and why in `destructive`
  * with an icon, "Skipped", "Canceled"), with no empty track to read as a
@@ -376,11 +378,22 @@ const UploadRow = memo(function UploadRow({
   const active = item.state === "waiting" || item.state === "signing" || item.state === "uploading";
   const sending = item.state === "signing" || item.state === "uploading";
   const failed = item.state === "failed" && item.failure !== undefined;
+  const { name, folder } = splitKey(item.key);
 
   return (
     <li data-upload={item.id} className="flex flex-col gap-2">
       <div className="flex items-center justify-between gap-3">
-        <span className="min-w-0 font-mono wrap-anywhere">{item.key}</span>
+        {/* The file's name is the row's line, cut short on one line with
+            the whole name in its title (the text itself stays whole for a
+            screen reader); the folder it goes to is metadata beneath. */}
+        <div className="flex min-w-0 flex-col gap-1">
+          <span className="truncate" title={name}>
+            {name}
+          </span>
+          {folder ? (
+            <span className="font-mono text-xs wrap-anywhere text-muted-foreground">{folder}</span>
+          ) : null}
+        </div>
         {active ? (
           <Button
             variant="ghost"
