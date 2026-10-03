@@ -379,9 +379,10 @@ credentials, **Upload**.
   "Uploading 3 of 12" (the file the run is on) while a file waits or is
   sent, "2 need attention" once only failures wait, and "Uploads done"
   once everything has finished. It redraws only when those words change.
-  Its accessible name is its words and a hidden suffix that says what they
-  are about ("Uploading 3 of 12 files", "2 need attention in uploads"), so
-  the visible label stays the start of the name (WCAG 2.5.3). In a narrow
+  Its accessible name (`aria-label`) is its words and a suffix that says
+  what they are about ("Uploading 3 of 12 files", "2 need attention in
+  uploads"), built from the same strings, so the visible label stays the
+  name's contiguous start (WCAG 2.5.3) and its text reads as one line. In a narrow
   header it shrinks (`shrink` over the button's own `shrink-0`) and its
   words are cut short rather than overflow. It opens the upload list in the
   shadcn `Popover`, which never opens by itself: a run's failures are told

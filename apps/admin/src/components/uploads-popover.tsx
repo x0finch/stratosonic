@@ -102,8 +102,14 @@ export function UploadsPopover() {
     <Popover>
       {/* It may shrink (`shrink` over the button's own `shrink-0`), its
           words cut short, so a narrow header never overflows. Its name is
-          its words and a hidden suffix saying what they are about. */}
-      <PopoverTrigger render={<Button variant="outline" className="min-w-0 shrink" />}>
+          its words, then a suffix saying what they are about, built from
+          the same strings, so the visible label is always the name's
+          contiguous start (WCAG 2.5.3). An `sr-only` span would do the
+          same, but its absolute position makes it a block, which breaks
+          the button's text into two lines. */}
+      <PopoverTrigger
+        render={<Button variant="outline" className="min-w-0 shrink" aria-label={label + suffix} />}
+      >
         {status === "running" ? (
           <Spinner data-icon="inline-start" aria-hidden="true" />
         ) : status === "attention" ? (
@@ -112,9 +118,6 @@ export function UploadsPopover() {
           <CircleCheckIcon data-icon="inline-start" aria-hidden="true" />
         )}
         <span className="truncate">{label}</span>
-        {/* Outside the cut-short words, so they read as one line; the name
-            is still the words, then this. */}
-        {suffix ? <span className="sr-only">{suffix}</span> : null}
       </PopoverTrigger>
       {/* Never taller than the room below the header, as the official
           dropdown menu is, and at most 32rem: a long list scrolls inside,
