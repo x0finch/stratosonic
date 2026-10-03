@@ -4,6 +4,7 @@ import { FolderIcon, FolderPlusIcon, InfoIcon, Trash2Icon } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 
 import { ErrorAlert } from "@/components/error-alert";
+import { ConflictDialog } from "@/components/files/conflict-dialog";
 import { DeleteDialog } from "@/components/files/delete-dialog";
 import { FilesTable } from "@/components/files/files-table";
 import { FolderPath, folderSearch } from "@/components/files/folder-path";
@@ -25,9 +26,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { useClock } from "@/hooks/use-clock";
 import { useUploadQueue, useUploads } from "@/hooks/use-upload-queue";
-import { ApiError, type Me, meQuery } from "@/lib/api";
+import { ApiError, checkUploads, type Me, meQuery } from "@/lib/api";
 import {
   BUCKET_FALLBACK,
+  countOf,
   type DeleteTarget,
   describeListing,
   filesConfigQuery,
@@ -50,8 +52,18 @@ import {
 import { formatCount } from "@/lib/format";
 import { liveQuery } from "@/lib/overview";
 import { can } from "@/lib/roles";
+import { signOutWhenUnauthenticated } from "@/lib/sign-out";
 import { toastError, toastFailure } from "@/lib/toasts";
-import { PLAN_SLICE, planUploads, planUploadsInSlices } from "@/lib/uploads";
+import {
+  type ConflictDecision,
+  decideConflicts,
+  findConflicts,
+  PLAN_SLICE,
+  type PlannedUpload,
+  planUploads,
+  planUploadsInSlices,
+  type UploadConflict,
+} from "@/lib/uploads";
 
 export const Route = createFileRoute("/_shell/files")({
   validateSearch: validateFilesSearch,
@@ -87,6 +99,17 @@ function Files() {
 interface DialogState {
   open: "delete" | "new-folder" | null;
   targets: readonly DeleteTarget[];
+}
+
+/** A pick with conflicts, and what the conflict dialog says of it. */
+interface AskingState {
+  open: boolean;
+  planned: readonly PlannedUpload[];
+  conflicts: readonly UploadConflict[];
+  /** The files checked: the pick less what the mirror refused. */
+  checked: number;
+  /** The folder the pick went into, which every key starts with. */
+  folder: string;
 }
 
 function FilesPage({ me }: { me: Me | null }) {
@@ -149,8 +172,18 @@ function FilesPage({ me }: { me: Me | null }) {
   const [dialog, setDialog] = useState<DialogState>({ open: null, targets: [] });
   // The folders made with New folder, which exist only once a file lands.
   const [made, setMade] = useState<ReadonlySet<string>>(new Set());
-  // The files of a large pick being prepared, or null.
-  const [preparing, setPreparing] = useState<number | null>(null);
+  // What the pick in hand is going through, in the Upload button's words:
+  // "Preparing 2,000 files…" (a large pick), "Checking 25 files…", or null.
+  const [busy, setBusy] = useState<string | null>(null);
+  // A pick with conflicts, waiting for the owner's one answer; it stays
+  // while the dialog closes.
+  const [asking, setAsking] = useState<AskingState>({
+    open: false,
+    planned: [],
+    conflicts: [],
+    checked: 0,
+    folder: "",
+  });
 
   const now = Math.max(useClock(), folder.dataUpdatedAt);
   const bucket = config.data?.bucket ?? BUCKET_FALLBACK;
@@ -165,7 +198,9 @@ function FilesPage({ me }: { me: Me | null }) {
 
   /**
    * The picked files go into the folder on screen, each key in the deepest
-   * folder the loaded listings show (lib/uploads.ts, `uploadTarget`).
+   * folder the loaded listings show (lib/uploads.ts, `uploadTarget`). They
+   * are checked against the bucket first (#141): a pick with no conflict
+   * goes at once, and one with conflicts asks once, in the conflict dialog.
    */
   async function upload(picked: readonly File[]) {
     const settings = config.data;
@@ -174,14 +209,14 @@ function FilesPage({ me }: { me: Me | null }) {
     }
     const listed = (at: string) =>
       queryClient.getQueryData(folderQuery(at).queryKey)?.pages.flatMap((page) => page.folders);
-    let planned: ReturnType<typeof planUploads>;
+    let planned: PlannedUpload[];
     if (picked.length > PLAN_SLICE) {
       // A large pick is prepared in slices, with the button saying so.
-      setPreparing(picked.length);
+      setBusy(`Preparing ${countOf(picked.length, "file")}…`);
       try {
         planned = await planUploadsInSlices(picked, prefix, settings, listed);
       } finally {
-        setPreparing(null);
+        setBusy(null);
       }
     } else {
       planned = planUploads(picked, prefix, settings, listed);
@@ -195,7 +230,42 @@ function FilesPage({ me }: { me: Me | null }) {
       );
       return;
     }
-    queue.add(planned, settings.limits.signBatch);
+
+    // The files the mirror took are checked; the refused ones fail in the
+    // list without a request.
+    const checked = planned.filter((upload) => upload.refusal === null).length;
+    let conflicts: UploadConflict[] = [];
+    if (checked > 0) {
+      setBusy(`Checking ${countOf(checked, "file")}…`);
+      try {
+        conflicts = await findConflicts(planned, checkUploads);
+      } catch (error) {
+        // Nothing is uploaded without the check: the owner picks again.
+        if (!signOutWhenUnauthenticated(queryClient, error)) {
+          toastError(error, "The files could not be checked");
+        }
+        return;
+      } finally {
+        setBusy(null);
+      }
+    }
+    if (conflicts.length === 0) {
+      queue.add(planned, settings.limits.signBatch);
+      return;
+    }
+    setAsking({ open: true, planned, conflicts, checked, folder: prefix });
+  }
+
+  /** The owner's one answer to the conflict dialog: what goes, if anything. */
+  function decide(decision: ConflictDecision) {
+    if (!asking.open || !config.data) {
+      return;
+    }
+    setAsking((state) => ({ ...state, open: false }));
+    const going = decideConflicts(asking.planned, asking.conflicts, decision);
+    if (going.length > 0) {
+      queue.add(going, config.data.limits.signBatch);
+    }
   }
 
   function select(targets: readonly DeleteTarget[], checked: boolean) {
@@ -250,9 +320,7 @@ function FilesPage({ me }: { me: Me | null }) {
         <FolderPlusIcon data-icon="inline-start" />
         New folder
       </Button>
-      {uploadable ? (
-        <UploadMenu onPick={(files) => void upload(files)} preparing={preparing} />
-      ) : null}
+      {uploadable ? <UploadMenu onPick={(files) => void upload(files)} busy={busy} /> : null}
     </>
   ) : readOnlyHere ? (
     <p className="text-sm text-muted-foreground">Read-only on this deployment</p>
@@ -296,11 +364,7 @@ function FilesPage({ me }: { me: Me | null }) {
             made={made.has(prefix)}
             upload={
               uploadable ? (
-                <UploadMenu
-                  variant="outline"
-                  onPick={(files) => void upload(files)}
-                  preparing={preparing}
-                />
+                <UploadMenu variant="outline" onPick={(files) => void upload(files)} busy={busy} />
               ) : null
             }
           />
@@ -344,6 +408,13 @@ function FilesPage({ me }: { me: Me | null }) {
               setMade((current) => new Set(current).add(next));
               void navigate({ search: folderSearch(next) });
             }}
+          />
+          <ConflictDialog
+            open={asking.open}
+            conflicts={asking.conflicts}
+            total={asking.checked}
+            folder={asking.folder}
+            onDecide={decide}
           />
           <DeleteDialog
             targets={dialog.targets}
