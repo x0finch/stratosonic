@@ -6,9 +6,10 @@ audio headers via Range GET, parses tags, extracts embedded cover art, upserts
 artist/album/track into D1, incrementally, skipping unchanged objects by
 etag+size) and imports `.m3u` playlists from R2. Music is uploaded to R2 out of
 band with rclone; the first admin user is created on first run from the
-`INITIAL_USER` / `INITIAL_PASSWORD` variables. We use only D1, R2, the Cache
-API and one Durable Object (no Queues), and v1 runs on the `workers.dev` domain
-without a custom domain.
+`INITIAL_USER` / `INITIAL_PASSWORD` variables. The Worker binds one bucket,
+library 1; further buckets are reached through the S3 API (ADR-0009). We use
+only D1, R2, the Cache API and one Durable Object (no Queues), and v1 runs on
+the `workers.dev` domain without a custom domain.
 
 **Amendment (#31): one Durable Object drives the scan.** A step of the scan is
 bounded by the free plan's 50 subrequests per invocation, which is about six
