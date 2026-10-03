@@ -244,7 +244,7 @@ the picked keys already exist, then asks the owner once whether to replace
 or skip them, before any upload starts:
 
 ```jsonc
-// POST /api/files/uploads/check: 1–1,000 keys, the same optional prefix
+// POST /api/files/uploads/check: 1–500 keys, the same optional prefix
 { "prefix": "Björk/Homogenic/", "keys": ["Björk/Homogenic/01 Jóga.flac", "…"] }
 // 200
 { "existing": [{ "key": "Björk/Homogenic/01 Jóga.flac",   // as asked
@@ -254,32 +254,37 @@ or skip them, before any upload starts:
 ```
 
 - It goes through the same checks as the other writes (same origin, a
-  2 MiB body cap, a fresh session, `files:write`, `FILE_WRITES`), but it
+  1 MiB body cap, a fresh session, `files:write`, `FILE_WRITES`), but it
   needs no R2 API token: it reads the bucket through the binding.
 - A key the upload rules refuse is simply not reported. The others are
   grouped by folder, exactly as given; each folder is listed (with a
   delimiter, a page of 1,000 at a time) and the names compared in NFC, so
   a file stored in another Unicode spelling is found too.
+- At most 500 keys a request: checking each against the upload rules is
+  most of its CPU (`pnpm --filter @stratosonic/server bench:files`).
 - At most 40 listings a request, and 2,000 entries listed in all (as much
-  as one folder-delete round reaches, so the request stays well inside its
-  10 ms of CPU). A key whose folder was not listed to its end comes back in
-  `unchecked`, never as new. The console asks again for those, each
-  request with a fresh budget, so a pick across many folders is checked
-  in a few requests; a key whose folder holds more than 2,000 entries
-  stays unchecked, and the console asks about it as "could not be
-  checked". A folder stored in another spelling than the one given lists
-  nothing, so its keys read as new; the `PUT`'s `If-None-Match: *` still
-  refuses them if they exist.
+  as one folder-delete round reaches). A key whose folder was not listed
+  to its end (a flat folder of more than 2,000 entries, or one past the
+  budget) is then looked for with one `HeadObject`, which finds it under
+  any Unicode spelling, as many as the request's 48 binding calls leave
+  room for (at least 8). A key still unknown comes back in `unchecked`,
+  never as new. The console asks again for those, each request with a
+  fresh budget, so a pick across many folders, or into one large folder,
+  is checked in a few requests; what it cannot check after that, it asks
+  about as "could not be checked". A folder stored in another spelling
+  than the one given lists nothing, so its keys read as new; the `PUT`'s
+  `If-None-Match: *` still refuses them if they exist.
 - It costs one Class A operation per page listed (a 25-file album in one
-  folder: one), no D1 statement past the session check's two, and no scan
-  driver call: at most 42 subrequests.
+  folder: one) and one Class B per key looked up with `HeadObject`, no D1
+  statement past the session check's two, and no scan driver call: at
+  most 48 + 2 = 50 subrequests.
 
 An expired URL fails with `403` and no CORS headers, so the browser sees a
 network error. The console signs just before each upload and signs again if
 needed. After a successful `PUT`, the console reports the file
 (`POST /api/files/uploads/complete`), and the debounced scan picks it up. A
 report that never arrives is covered by the next cron pass. So one file
-costs its share of one check request (up to 1,000 keys), its share of one
+costs its share of one check request (up to 500 keys), its share of one
 sign request (the console signs 1–3 files at a
 time) and of one complete request (it reports up to 10 landed files
 together), which are Worker requests, and one `OPTIONS` and one `PUT` to R2, which are not.

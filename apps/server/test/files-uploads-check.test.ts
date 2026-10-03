@@ -1,6 +1,6 @@
 import { SELF } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { CHECK_BATCH, CHECK_ENTRIES, CHECK_LISTINGS } from "../src/api/files";
+import { CHECK_BATCH, CHECK_CALLS, CHECK_ENTRIES, CHECK_LISTINGS } from "../src/api/files";
 import { MAX_FILE_CHECK_BODY_BYTES } from "../src/api/json-body";
 import { type CookieJar, GUEST_ROLE, seedConsoleUser, signIn } from "./console-auth-support";
 import {
@@ -131,9 +131,10 @@ describe("POST /api/files/uploads/check", () => {
     expect(listings(paged)).toHaveLength(3);
   });
 
-  it("answers unchecked, never new, past the entries a request may list", {
+  it("looks for the keys of a large flat folder with head() once its entries are spent", {
     timeout: 60_000,
   }, async () => {
+    // More direct entries than a request lists: Big/2000.flac is past them.
     await seedObjects(
       Array.from(
         { length: CHECK_ENTRIES + 1 },
@@ -141,16 +142,42 @@ describe("POST /api/files/uploads/check", () => {
       ),
       100,
     );
+    await seedObjects(["Other/a.flac"]);
 
     const { body } = await check({
-      keys: ["Big/0000.flac", "Big/9999.flac", "Other/a.flac"],
+      keys: ["Big/0000.flac", "Big/2000.flac", "Big/9999.flac", "Other/a.flac"],
     });
 
-    expect(body.existing.map((entry) => entry.key)).toEqual(["Big/0000.flac"]);
-    // Big/ was not listed to its end, and the budget ran out before Other/.
-    expect(body.unchecked).toEqual(["Big/9999.flac", "Other/a.flac"]);
-    // Two full pages, exactly the entries allowed, and nothing more.
+    // Found by listing, found by head(), and known new by head().
+    expect(body.existing.map(({ key, storedKey }) => [key, storedKey])).toEqual([
+      ["Big/0000.flac", "Big/0000.flac"],
+      ["Big/2000.flac", "Big/2000.flac"],
+      ["Other/a.flac", "Other/a.flac"],
+    ]);
+    expect(body.unchecked).toEqual([]);
+    // Two full pages, exactly the entries allowed, then one head() a key left.
     expect(listings().map((call) => (call.argument as R2ListOptions).limit)).toEqual([1000, 1000]);
+    expect(
+      harness.r2Calls.filter((call) => call.method === "head").map((call) => call.argument),
+    ).toEqual(["Big/2000.flac", "Big/9999.flac", "Other/a.flac"]);
+  });
+
+  it("finds a key stored in another spelling with head()", { timeout: 60_000 }, async () => {
+    await seedObjects(
+      Array.from(
+        { length: CHECK_ENTRIES },
+        (_, index) => `Big/${String(index).padStart(4, "0")}.flac`,
+      ),
+      100,
+    );
+    await seedObjects(["Big/Zoë.flac".normalize("NFD")]);
+
+    const { body } = await check({ keys: ["Big/Zoë.flac".normalize("NFC")] });
+
+    expect(body.existing.map(({ key, storedKey }) => [key, storedKey])).toEqual([
+      ["Big/Zoë.flac".normalize("NFC"), "Big/Zoë.flac".normalize("NFD")],
+    ]);
+    expect(body.unchecked).toEqual([]);
   });
 
   it("asks each listing for no more than the entries left", { timeout: 60_000 }, async () => {
@@ -170,14 +197,19 @@ describe("POST /api/files/uploads/check", () => {
     ]);
   });
 
-  it("answers unchecked past the listings a request may make, and makes no more", async () => {
-    const keys = Array.from({ length: CHECK_LISTINGS + 2 }, (_, index) => `F${index}/a.flac`);
+  it("looks past the listings with the calls left, and answers the rest unchecked", async () => {
+    await seedObjects([`F${CHECK_LISTINGS + 1}/a.flac`]);
+    const keys = Array.from({ length: CHECK_LISTINGS + 10 }, (_, index) => `F${index}/a.flac`);
 
     const { body } = await check({ keys });
 
-    expect(body.existing).toEqual([]);
-    expect(body.unchecked).toEqual(keys.slice(CHECK_LISTINGS));
+    // 40 folders listed, then a head() each for as many as the 48 calls allow.
     expect(listings()).toHaveLength(CHECK_LISTINGS);
+    const heads = harness.r2Calls.filter((call) => call.method === "head");
+    expect(heads).toHaveLength(CHECK_CALLS - CHECK_LISTINGS);
+    expect(harness.r2Calls).toHaveLength(CHECK_CALLS);
+    expect(body.existing.map((entry) => entry.key)).toEqual([`F${CHECK_LISTINGS + 1}/a.flac`]);
+    expect(body.unchecked).toEqual(keys.slice(CHECK_CALLS));
   });
 
   it("does not report a key the upload rules refuse, and lists nothing for it", async () => {
@@ -237,7 +269,7 @@ describe("POST /api/files/uploads/check", () => {
     expect(harness.r2Calls).toEqual([]);
   });
 
-  it("takes 1,000 keys in one request", async () => {
+  it(`takes ${CHECK_BATCH} keys in one request`, async () => {
     const keys = Array.from({ length: CHECK_BATCH }, (_, index) => `Album/${index}.flac`);
 
     const { status } = await check({ keys });
@@ -314,7 +346,7 @@ describe("POST /api/files/uploads/check", () => {
     expect(harness.r2Calls).toEqual([]);
   });
 
-  it("answers 413 to a body over 2 MiB", async () => {
+  it("answers 413 to a body over 1 MiB", async () => {
     await expectRefusal(
       harness,
       () =>

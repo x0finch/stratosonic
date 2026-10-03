@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import { requireFreshSession, requirePermission, requireSession } from "../console-auth/middleware";
 import { database } from "../db";
 import type { Env } from "../env";
+import { CHECK_BATCH, type ExistingKey, groupCheckKeys, matchListing } from "../files/check";
 import {
   bucketName,
   fileWritesEnabled,
@@ -80,7 +81,7 @@ import { requireSameOrigin } from "./same-origin";
  *   and only the part of each key after it is normalised to NFC; a key
  *   outside it answers `invalid_path` for that file, and a bad prefix
  *   `400 invalid_path` or `403 reserved_path` for the request.
- * - `POST /api/files/uploads/check`, `{prefix?, keys}`, 1–1,000 keys about
+ * - `POST /api/files/uploads/check`, `{prefix?, keys}`, 1–500 keys about
  *   to be uploaded: `200 {existing: [{key, storedKey, size, uploadedAt}],
  *   unchecked: [key]}`; `400 invalid_request`, and for a bad prefix
  *   `400 invalid_path` or `403 reserved_path`. It needs no upload
@@ -143,13 +144,18 @@ import { requireSameOrigin } from "./same-origin";
  *    page, and the names compared in NFC, since the stored spelling may
  *    differ. At most `CHECK_LISTINGS` (40) listings a request, and
  *    `CHECK_ENTRIES` (2,000) entries listed in all, as much as one
- *    `delete-folder` round: a key whose folder was not listed to its end
- *    is answered in `unchecked`, never as new, and the console asks again
- *    for those, each request with a fresh budget. A folder
- *    stored in another spelling than the one given lists nothing, so its
- *    keys read as new; the `PUT`'s `If-None-Match: *` still refuses them.
- *    Its cost: one `ListObjects` (Class A) per page, no D1 statement past
- *    the session's, no driver call; at most 40 + 2 = 42 subrequests.
+ *    `delete-folder` round. A key whose folder was not listed to its end
+ *    (a large flat folder, or one past the budget) is then looked for with
+ *    one `head()` (Class B), as many as the request's `CHECK_CALLS` (48)
+ *    binding calls leave room for: at least 8. A key still unknown is
+ *    answered in `unchecked`, never as new, and the console asks again for
+ *    those, each request with a fresh budget. A folder stored in another
+ *    spelling than the one given lists nothing, so its keys read as new;
+ *    the `PUT`'s `If-None-Match: *` still refuses them. Its cost: one
+ *    `ListObjects` (Class A) per page and one `HeadObject` (Class B) per
+ *    key looked up, no D1 statement past the session's, no driver call;
+ *    at most 48 + 2 = 50 subrequests. At most `CHECK_BATCH` (500) keys a
+ *    request: checking them against the upload rules is most of its CPU.
  * 1. `POST /api/files/uploads` checks each file against the upload rules
  *    (files/keys.ts), asks R2 whether its key exists, and presigns a `PUT`
  *    bound to the key, the exact size and the content type. A new key is
@@ -201,13 +207,16 @@ const SPELLING_PAGES_PER_SEGMENT = 2;
  */
 export const SPELLING_LISTINGS = 3;
 
-/** The most keys one `POST /api/files/uploads/check` takes; the body cap is sized for it. */
-export const CHECK_BATCH = 1000;
+/** The most keys one `POST /api/files/uploads/check` takes (files/check.ts). */
+export { CHECK_BATCH } from "../files/check";
 
 /**
- * The most listings one upload check makes, across its folders: with the
- * session check's two D1 statements, 42 subrequests, inside the 50.
+ * The most binding calls one upload check makes, listings and `head()`s
+ * together: with the session check's two D1 statements, 50 subrequests.
  */
+export const CHECK_CALLS = 48;
+
+/** The most of those calls that are listings: the rest are left for `head()`s. */
 export const CHECK_LISTINGS = 40;
 
 /**
@@ -215,8 +224,7 @@ export const CHECK_LISTINGS = 40;
  * its listings: two of R2's pages, what one `delete-folder` round reaches
  * (`FOLDER_DELETE_PAGES`), so a request stays as far inside its 10 ms of
  * CPU. Each listing asks for no more than is left, so the bound is exact.
- * A folder of more entries is never listed to its end: its keys come back
- * `unchecked`.
+ * The keys of a folder of more entries are looked for one `head()` each.
  */
 export const CHECK_ENTRIES = 2000;
 
@@ -406,7 +414,7 @@ export function registerFileRoutes(api: ApiApp): void {
   });
 
   /**
-   * `POST /api/files/uploads/check` with `{prefix?, keys}`: which of 1–1,000
+   * `POST /api/files/uploads/check` with `{prefix?, keys}`: which of 1–500
    * keys already exist, as the console asks before a pick is signed (see
    * "Uploads", step 0). It reads only the binding, so it works where uploads
    * are not configured.
@@ -677,77 +685,38 @@ async function mapInFlight<T, R>(
   return results;
 }
 
-/** A key of an upload check that already exists. */
-export interface ExistingKey {
-  /** The key as the check was given it. */
-  readonly key: string;
-  /** The key exactly as R2 lists it, which may be another Unicode spelling. */
-  readonly storedKey: string;
-  readonly size: number;
-  readonly uploadedAt: string;
-}
-
 /**
- * Which of `keys` exist, by listing each one's folder (as given) and
- * comparing names in NFC, in at most `CHECK_LISTINGS` listings and
- * `CHECK_ENTRIES` entries listed. A folder listed to its end answers for
- * every key in it; the keys of one that was not are `unchecked`. A key the
- * upload rules refuse is in neither.
+ * Which of `keys` exist. First by listing each one's folder (as given) and
+ * comparing names in NFC (`matchListing`), in at most `CHECK_LISTINGS`
+ * listings and `CHECK_ENTRIES` entries listed: a folder listed to its end
+ * answers for every key in it. Then, for the keys whose folder was not, one
+ * `head()` each, as many as the request's `CHECK_CALLS` binding calls have
+ * room for: R2 finds a key under any Unicode spelling (`storedKey` is then
+ * the key `head()` answers). What is still unknown is `unchecked`. A key
+ * the upload rules refuse is in neither list.
  */
 async function checkExisting(
   env: Env,
   prefix: string,
   keys: readonly string[],
 ): Promise<{ existing: ExistingKey[]; unchecked: string[] }> {
-  // Folder (as given) -> name in NFC -> the keys asked with that name.
-  const folders = new Map<string, Map<string, string[]>>();
-  for (const key of new Set(keys)) {
-    if ("error" in checkUploadKey(key, prefix)) {
-      continue;
-    }
-    const slash = key.lastIndexOf("/");
-    const folder = key.slice(0, slash + 1);
-    const name = inNfc(key.slice(slash + 1));
-    let names = folders.get(folder);
-    if (names === undefined) {
-      names = new Map();
-      folders.set(folder, names);
-    }
-    const same = names.get(name);
-    if (same === undefined) {
-      names.set(name, [key]);
-    } else {
-      same.push(key);
-    }
-  }
-
+  const folders = groupCheckKeys(prefix, keys);
   const existing: ExistingKey[] = [];
-  const unchecked: string[] = [];
-  let listings = CHECK_LISTINGS;
+  const unknown: string[] = [];
+  let listings = 0;
   let entries = CHECK_ENTRIES;
   for (const [folder, names] of folders) {
     let cursor: string | undefined;
-    while (names.size > 0 && listings > 0 && entries > 0) {
+    while (names.size > 0 && listings < CHECK_LISTINGS && entries > 0) {
       const listing = await env.MUSIC.list({
         prefix: folder,
         delimiter: "/",
         limit: Math.min(CHECK_PAGE, entries),
         cursor,
       });
-      listings--;
+      listings++;
       entries -= listing.objects.length + listing.delimitedPrefixes.length;
-      for (const object of listing.objects) {
-        const name = inNfc(object.key.slice(folder.length));
-        for (const key of names.get(name) ?? []) {
-          existing.push({
-            key,
-            storedKey: object.key,
-            size: object.size,
-            uploadedAt: object.uploaded.toISOString(),
-          });
-        }
-        names.delete(name);
-      }
+      matchListing(folder, names, listing.objects, existing);
       if (!listing.truncated) {
         // Listed to its end: no other key of it exists.
         names.clear();
@@ -755,21 +724,32 @@ async function checkExisting(
       }
       cursor = listing.cursor;
     }
-    // Every folder after the budget ran out goes back unchecked too.
+    // Every folder after the budget ran out is still to look for too.
     for (const asked of names.values()) {
-      unchecked.push(...asked);
+      unknown.push(...asked);
     }
   }
 
-  return { existing, unchecked };
+  // One head() a key, with the calls left. Keys NFC-equal to one another
+  // were grouped under one name, so they share one head().
+  const heads = unknown.slice(0, Math.max(CHECK_CALLS - listings, 0));
+  const found = await mapInFlight(heads, HEADS_IN_FLIGHT, (key) => env.MUSIC.head(key));
+  heads.forEach((key, index) => {
+    const object = found[index];
+    if (object) {
+      existing.push({
+        key,
+        storedKey: object.key,
+        size: object.size,
+        uploadedAt: object.uploaded.toISOString(),
+      });
+    }
+  });
+
+  return { existing, unchecked: unknown.slice(heads.length) };
 }
 
-/** A name in NFC; an ASCII name is its own. */
-function inNfc(name: string): string {
-  return isAscii(name) ? name : name.normalize("NFC");
-}
-
-/** Whether `keys` is 1–1,000 strings, as an upload check takes them. */
+/** Whether `keys` is 1–500 strings, as an upload check takes them. */
 function isCheckKeyList(keys: unknown): keys is string[] {
   return (
     Array.isArray(keys) &&
