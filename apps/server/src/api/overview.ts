@@ -1,5 +1,5 @@
 import { library, prefixedId } from "@stratosonic/db";
-import { asc, eq } from "drizzle-orm";
+import { asc } from "drizzle-orm";
 import type { Context } from "hono";
 import { requireFreshSession, requirePermission, requireSession } from "../console-auth/middleware";
 import { roleGrants } from "../console-auth/permissions";
@@ -7,7 +7,12 @@ import { database } from "../db";
 import { NO_USER } from "../library/annotations";
 import { albumsQuery, toAlbumViews } from "../library/lists";
 import { genresQuery, libraryTotalsQuery, toGenreViews } from "../library/repository";
-import { ALL_LIBRARIES, type LibraryScope, librariesScope } from "../library/scope";
+import {
+  ALL_LIBRARIES,
+  activeLibrariesScope,
+  type LibraryScope,
+  librariesScope,
+} from "../library/scope";
 import {
   type NowPlayingEntry,
   nowPlayingQuery,
@@ -55,11 +60,17 @@ export function registerOverviewRoutes(api: ApiApp): void {
    *
    * `library` (#84, "Console") narrows the counts, the genres and the albums
    * to one library, with its artists counted from its albums
-   * (`libraryTotalsQuery`); without it they are every library's, as v0.5.0
-   * answered them. The playlists are never narrowed. `libraries` lists the
-   * active ones, by id, for the console's library switch. A library that is
-   * not one of them, or a value that names none, is `404 library_not_found`,
-   * found after the batch from `libraries` so the check costs no round trip.
+   * (`libraryTotalsQuery`); without it they are every active library's. The
+   * playlists are never narrowed. `libraries` lists the active ones, by id,
+   * for the console's library switch. A library that is not one of them, or
+   * a value that names none, is `404 library_not_found`, found after the
+   * batch from the libraries it read, so the check costs no round trip.
+   *
+   * A library being removed is gone at once (#84, "Removing a library"). The
+   * batch learns whether one is, so while every library is active the
+   * unnarrowed view runs v0.5.0's SQL in one round trip; while one is
+   * removed, its three narrowed statements are read again, kept to the
+   * active libraries, in a second.
    */
   api.get("/overview/library", requireSession, requirePermission("library:read"), async (c) => {
     const db = database(c.env);
@@ -69,19 +80,30 @@ export function registerOverviewRoutes(api: ApiApp): void {
     }
 
     const scope: LibraryScope = asked === null ? ALL_LIBRARIES : librariesScope([asked]);
-    const [[totals], genreRows, albumRows, playlists, libraries] = await db.batch([
-      libraryTotalsQuery(db, scope),
-      genresQuery(db, scope),
-      albumsQuery(db, NO_USER, scope, { type: "newest" }, { size: RECENT_ALBUMS, offset: 0 }),
+    const narrowed = (to: LibraryScope) =>
+      [
+        libraryTotalsQuery(db, to),
+        genresQuery(db, to),
+        albumsQuery(db, NO_USER, to, { type: "newest" }, { size: RECENT_ALBUMS, offset: 0 }),
+      ] as const;
+    const [[firstTotals], firstGenres, firstAlbums, playlists, allLibraries] = await db.batch([
+      ...narrowed(scope),
       playlistSummariesQuery(db),
       db
-        .select({ id: library.id, name: library.name })
+        .select({ id: library.id, name: library.name, state: library.state })
         .from(library)
-        .where(eq(library.state, "active"))
         .orderBy(asc(library.id)),
     ]);
+    let [totals, genreRows, albumRows] = [firstTotals, firstGenres, firstAlbums];
+    const libraries = allLibraries.filter((entry) => entry.state === "active");
     if (asked !== null && !libraries.some((entry) => entry.id === asked)) {
       return libraryNotFound(c);
+    }
+    if (asked === null && libraries.length < allLibraries.length) {
+      const [[activeTotals], activeGenres, activeAlbums] = await db.batch(
+        narrowed(activeLibrariesScope(libraries.map((entry) => entry.id))),
+      );
+      [totals, genreRows, albumRows] = [activeTotals, activeGenres, activeAlbums];
     }
     const genres = toGenreViews(genreRows);
 

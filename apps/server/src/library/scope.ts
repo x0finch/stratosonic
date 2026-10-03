@@ -76,6 +76,19 @@ export function librariesScope(ids: readonly number[]): LibraryScope {
 }
 
 /**
+ * Every active library, for a reader with no user (the console's Overview)
+ * while some library is `removing`: these ids, which a long list reads as
+ * the rule an admin's scope repeats, `library.state = 'active'`.
+ */
+export function activeLibrariesScope(ids: readonly number[]): LibraryScope {
+  return {
+    all: false,
+    ids: [...new Set(ids)].sort((a, b) => a - b),
+    viewer: { id: "", isAdmin: true },
+  };
+}
+
+/**
  * A user's own scope, before any `musicFolderId` narrows it: every library
  * when they see every one and none is `removing`, otherwise the active
  * libraries they may see.

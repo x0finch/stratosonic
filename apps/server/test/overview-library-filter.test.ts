@@ -85,7 +85,12 @@ describe("GET /api/overview/library?library=", () => {
   });
 
   it("answers every library's totals without the parameter, as v0.5.0 did", async () => {
+    d1.reset();
     const body = await overviewOf("");
+
+    // One round trip, and no library predicate while every library is active.
+    expect(cost(d1.statements)).toMatchObject({ statements: 5, roundTrips: 1 });
+    expect(d1.statements.some((s) => /library_id" in \(/.test(s.sql))).toBe(false);
 
     expect(body.counts).toEqual({
       artists: 3,
@@ -123,7 +128,37 @@ describe("GET /api/overview/library?library=", () => {
 
       expect(response.status).toBe(404);
       expect(await response.json()).toEqual({ error: "library_not_found" });
-      expect((await overviewOf("")).libraries).toEqual([{ id: 1, name: "Music Library" }]);
+    } finally {
+      await database(testEnv).update(library).set({ state: "active" }).where(eq(library.id, 2));
+    }
+  });
+
+  it("leaves a library being removed out of every library's view, at once", async () => {
+    await database(testEnv).update(library).set({ state: "removing" }).where(eq(library.id, 2));
+    try {
+      d1.reset();
+      const body = await overviewOf("");
+
+      expect(body.libraries).toEqual([{ id: 1, name: "Music Library" }]);
+      expect(body.counts).toEqual({
+        // The shared artist and the one only in library 1, from its albums.
+        artists: 2,
+        albums: 2,
+        tracks: 2,
+        genres: 2,
+        durationSec: 0,
+        sizeBytes: 0,
+      });
+      expect(body.genres.map((genre: { name: string }) => genre.name).sort()).toEqual([
+        "Jazz",
+        "Rock",
+      ]);
+      expect(body.recentAlbums.map((album: { id: string }) => album.id).sort()).toEqual(
+        [`al-${ids.firstOnly}`, `al-${ids.sharedAlbum1}`].sort(),
+      );
+      expect(body.playlists).toHaveLength(1);
+      // The first batch learns of the removal; the second reads it again.
+      expect(cost(d1.statements)).toMatchObject({ statements: 8, roundTrips: 2, rowsWritten: 0 });
     } finally {
       await database(testEnv).update(library).set({ state: "active" }).where(eq(library.id, 2));
     }
