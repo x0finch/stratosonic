@@ -55,6 +55,8 @@ import { DEFAULT_LIBRARY_ID, playlistId } from "@stratosonic/db";
 import { type Database, database } from "../db";
 import type { Env } from "../env";
 import { isCoverKey } from "../scanner/covers";
+import { bindingStorage } from "../storage/binding";
+import type { LibraryStorage, StoredObject } from "../storage/storage";
 import { findFirstAdmin } from "../users/repository";
 import { entryKeyCandidates, isPlaylistKey, parseM3u, playlistNameFromKey } from "./m3u";
 import {
@@ -138,6 +140,7 @@ export async function importPlaylists(
   limits: PlaylistImportLimits = DEFAULT_PLAYLIST_IMPORT_LIMITS,
 ): Promise<PlaylistImportRun> {
   const db = database(env);
+  const storage = bindingStorage(env);
   const previous = await readPlaylistImportProgress(db);
   const startedAt = previous?.startedAt ?? now.getTime();
   const before = previous?.counts ?? noPlaylistImportCounts();
@@ -162,7 +165,7 @@ export async function importPlaylists(
   let completed = false;
 
   for (;;) {
-    const listing = await env.MUSIC.list({
+    const listing = await storage.list({
       limit: limits.pageSize,
       ...(cursor === "" ? {} : { cursor }),
     });
@@ -211,7 +214,7 @@ export async function importPlaylists(
       counts.examined++;
       imports++;
 
-      await importOne(env, db, object, owner.id, stored.get(object.key), counts);
+      await importOne(storage, db, object, owner.id, stored.get(object.key), counts);
     }
 
     if (interrupted) {
@@ -227,14 +230,14 @@ export async function importPlaylists(
     const removed = await sweepMissingPlaylists(
       db,
       sweptTo,
-      listing.truncated ? (lastKey ?? sweptTo) : null,
+      listing.cursor !== null ? (lastKey ?? sweptTo) : null,
       pageKeys,
       new Date(startedAt),
     );
     counts.removed += removed.length;
 
     skip = 0;
-    if (!listing.truncated) {
+    if (listing.cursor === null) {
       completed = true;
       break;
     }
@@ -274,14 +277,14 @@ export async function importPlaylists(
  * hundred.
  */
 async function importOne(
-  env: Env,
+  storage: LibraryStorage,
   db: Database,
-  object: R2Object,
+  object: StoredObject,
   adminId: string,
   held: IndexedPlaylist | undefined,
   counts: PlaylistImportCounts,
 ): Promise<void> {
-  const text = await readPlaylistText(env, object.key, counts);
+  const text = await readPlaylistText(storage, object.key, counts);
   if (text === null) {
     return;
   }
@@ -347,12 +350,12 @@ async function importOne(
  * scan defers an object it could not read.
  */
 async function readPlaylistText(
-  env: Env,
+  storage: LibraryStorage,
   key: string,
   counts: PlaylistImportCounts,
 ): Promise<string | null> {
   try {
-    const object = await env.MUSIC.get(key);
+    const object = await storage.get(key);
     if (object === null) {
       // Deleted between the listing and now. The next pass will not list it,
       // and the sweep will remove whatever it left behind.
@@ -361,7 +364,7 @@ async function readPlaylistText(
       return null;
     }
 
-    return await object.text();
+    return new TextDecoder().decode(await object.bytes());
   } catch (error) {
     counts.deferred++;
     console.warn(`playlists: could not read ${key}; retrying next run`, error);
@@ -380,7 +383,7 @@ function autoImportedComment(r2Key: string): string {
  * writes, and everything else is decided by the playlist suffixes - so audio,
  * artwork and stray files are never mistaken for a playlist.
  */
-function isPlaylistObject(object: R2Object): boolean {
+function isPlaylistObject(object: StoredObject): boolean {
   return !isCoverKey(object.key) && isPlaylistKey(object.key);
 }
 

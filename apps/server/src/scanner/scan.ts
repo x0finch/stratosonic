@@ -88,17 +88,18 @@
 import { type Database, database } from "../db";
 import type { Env } from "../env";
 import { isAudioKey, suffixOf } from "../library/audio-formats";
-import { r2Source } from "../library/byte-source";
+import { storageSource } from "../library/byte-source";
 import {
   type EmbeddedCover,
   extractMetadata,
   MetadataError,
   type TrackMetadata,
 } from "../library/metadata";
+import { bindingStorage, boundStorage } from "../storage/binding";
+import type { LibraryStorage, StoredObject } from "../storage/storage";
 import { coverKeyFor, isCoverKey } from "./covers";
 import { type DerivedRows, deriveRows, type LibraryObject } from "./derive";
 import {
-  chunked,
   deleteTracksStatements,
   findAlbumCovers,
   findTracksInRange,
@@ -144,9 +145,6 @@ export const DEFAULT_SCAN_LIMITS: ScanLimits = {
   extractionsPerRun: 6,
   deletionsPerPage: 90,
 };
-
-/** R2 refuses a bulk delete of more keys than this. */
-const KEYS_PER_BULK_DELETE = 1000;
 
 /** What one run of the scan did. */
 export interface ScanRun {
@@ -204,6 +202,8 @@ export async function runScan(
   limits: ScanLimits = DEFAULT_SCAN_LIMITS,
 ): Promise<ScanRun> {
   const db = database(env);
+  const storage = bindingStorage(env);
+  const covers = boundStorage(env);
   const { progress: previous, broken } = await readScanState(db);
   const before = previous?.counts ?? noCounts();
   const startedAt = previous?.startedAt ?? now.getTime();
@@ -218,14 +218,14 @@ export async function runScan(
   let completed = false;
 
   for (let page = 0; page < limits.pagesPerRun; page++) {
-    const listing = await env.MUSIC.list({
+    const listing = await storage.list({
       limit: limits.pageSize,
       ...(cursor === "" ? {} : { cursor }),
     });
     const objects = listing.objects;
     const listedKeys = new Set(objects.map(keyOf));
     const lastKey = objects.at(-1)?.key;
-    const through = listing.truncated ? (lastKey ?? sweptTo) : null;
+    const through = listing.cursor !== null ? (lastKey ?? sweptTo) : null;
 
     // One query serves both of this page's questions: which of its objects
     // the library already holds, and which rows in the stretch of the key
@@ -298,7 +298,7 @@ export async function runScan(
       }
 
       extractions++;
-      const read = await readMetadata(env, planned.object, counts);
+      const read = await readMetadata(storage, planned.object, counts);
       if (!read.read) {
         // Only bytes that will read the same way for ever are worth
         // remembering; a bucket that failed says nothing about them.
@@ -340,7 +340,7 @@ export async function runScan(
         writes.push(lyrics);
       }
     }
-    for (const [albumId, coverKey] of await storeCovers(env, db, extracted, counts)) {
+    for (const [albumId, coverKey] of await storeCovers(covers, db, extracted, counts)) {
       writes.push(setAlbumCoverStatement(db, albumId, coverKey, now));
     }
 
@@ -368,7 +368,7 @@ export async function runScan(
       }
 
       skip = 0;
-      if (listing.truncated) {
+      if (listing.cursor !== null) {
         cursor = listing.cursor;
         sweptTo = lastKey ?? sweptTo;
       } else {
@@ -405,7 +405,7 @@ export async function runScan(
   }
 
   if (completed) {
-    await prune(env, db, counts);
+    await prune(covers, db, counts);
     const totals = addedCounts(before, counts);
     await runBatch(db, [
       writeLastScanSummaryStatement(db, { startedAt, finishedAt: now.getTime(), counts: totals }),
@@ -419,7 +419,11 @@ export async function runScan(
 }
 
 /** What this object needs, before any of it is done. */
-function planFor(object: R2Object, held: Map<string, StoredTrack>, broken: BrokenObjects): Plan {
+function planFor(
+  object: StoredObject,
+  held: Map<string, StoredTrack>,
+  broken: BrokenObjects,
+): Plan {
   if (!isTrackObject(object)) {
     return { work: "ignore" };
   }
@@ -468,13 +472,13 @@ type MetadataRead =
  * again.
  */
 async function readMetadata(
-  env: Env,
+  storage: LibraryStorage,
   object: LibraryObject,
   counts: ScanCounts,
 ): Promise<MetadataRead> {
   try {
     const metadata = await extractMetadata(
-      r2Source(env.MUSIC, object.key, object.size),
+      storageSource(storage, object.key, object.size),
       suffixOf(object.key),
     );
 
@@ -518,7 +522,7 @@ async function readMetadata(
  * anyway, so concurrency would buy latency the cron does not care about.
  */
 async function storeCovers(
-  env: Env,
+  covers: LibraryStorage,
   db: Database,
   extracted: readonly Extracted[],
   counts: ScanCounts,
@@ -554,14 +558,14 @@ async function storeCovers(
       continue;
     }
 
-    await env.MUSIC.put(key, cover.bytes, { httpMetadata: { contentType: cover.mimeType } });
+    await covers.put(key, cover.bytes, { contentType: cover.mimeType });
     counts.coversWritten++;
     written.set(albumId, key);
 
     // A picture in a new format is stored under a new name, so the old object
     // would otherwise sit in the bucket with nothing pointing at it.
     if (current !== null && current !== key) {
-      await env.MUSIC.delete(current);
+      await covers.delete([current]);
     }
   }
 
@@ -573,16 +577,15 @@ async function storeCovers(
  * to are removed, together with the cover objects those albums owned, and the
  * playlist entries the sweep left pointing at nothing.
  */
-async function prune(env: Env, db: Database, counts: ScanCounts): Promise<void> {
+async function prune(covers: LibraryStorage, db: Database, counts: ScanCounts): Promise<void> {
   const albums = await pruneEmptyAlbums(db);
   counts.albumsRemoved += albums.length;
 
   const orphanedCovers = albums
     .map((row) => row.coverKey)
     .filter((key): key is string => key !== null);
-  for (const chunk of chunked(orphanedCovers, KEYS_PER_BULK_DELETE)) {
-    await env.MUSIC.delete(chunk);
-  }
+  // One bulk delete a thousand keys, none for none.
+  await covers.delete(orphanedCovers);
 
   counts.artistsRemoved += (await pruneEmptyArtists(db)).length;
 
@@ -595,11 +598,11 @@ async function prune(env: Env, db: Database, counts: ScanCounts): Promise<void> 
  * allowlist that also gives a track its content type - so `.m3u` playlists,
  * artwork and stray files are never mistaken for music.
  */
-function isTrackObject(object: R2Object): boolean {
+function isTrackObject(object: StoredObject): boolean {
   return !isCoverKey(object.key) && isAudioKey(object.key);
 }
 
-function asLibraryObject(object: R2Object): LibraryObject {
+function asLibraryObject(object: StoredObject): LibraryObject {
   return {
     key: object.key,
     size: object.size,
@@ -608,6 +611,6 @@ function asLibraryObject(object: R2Object): LibraryObject {
   };
 }
 
-function keyOf(object: R2Object): string {
+function keyOf(object: StoredObject): string {
   return object.key;
 }

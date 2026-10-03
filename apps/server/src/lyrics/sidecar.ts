@@ -3,11 +3,11 @@
  *
  * Nothing is indexed. As Navidrome's `fromExternalFile`
  * (core/lyrics/sources.go) opens the file at request time, this reads the
- * sidecar from R2 when a client asks, so the scan keeps ignoring sidecars and
+ * sidecar from the bucket when a client asks, so the scan keeps ignoring sidecars and
  * serving lyrics writes nothing to D1.
  */
 
-import type { Env } from "../env";
+import type { LibraryStorage } from "../storage/storage";
 import { decodeLyrics, type ParsedLyrics, parseLrc, UNKNOWN_LANGUAGE } from "./lrc";
 
 /**
@@ -44,9 +44,12 @@ export function sidecarKey(trackKey: string, suffix: string): string {
  * wins, so an empty `.lrc` does not hide a `.txt`: one R2 read per suffix at
  * most, two in all.
  */
-export async function readSidecarLyrics(env: Env, trackKey: string): Promise<ParsedLyrics | null> {
+export async function readSidecarLyrics(
+  storage: LibraryStorage,
+  trackKey: string,
+): Promise<ParsedLyrics | null> {
   for (const suffix of SIDECAR_SUFFIXES) {
-    const lyrics = await readSidecarLyricsWithSuffix(env, trackKey, suffix);
+    const lyrics = await readSidecarLyricsWithSuffix(storage, trackKey, suffix);
 
     if (lyrics !== null) {
       return lyrics;
@@ -65,11 +68,11 @@ export async function readSidecarLyrics(env: Env, trackKey: string): Promise<Par
  * the next source, so it walks the suffixes itself.
  */
 export async function readSidecarLyricsWithSuffix(
-  env: Env,
+  storage: LibraryStorage,
   trackKey: string,
   suffix: string,
 ): Promise<ParsedLyrics | null> {
-  const text = await readSidecarText(env, sidecarKey(trackKey, suffix));
+  const text = await readSidecarText(storage, sidecarKey(trackKey, suffix));
 
   return text === null ? null : parseLrc(text, UNKNOWN_LANGUAGE);
 }
@@ -77,13 +80,13 @@ export async function readSidecarLyricsWithSuffix(
 /**
  * The text of one sidecar, or null when there is none to read.
  *
- * An object R2 fails to produce is logged and treated as absent, as a missing
+ * An object the bucket fails to produce is logged and treated as absent, as a missing
  * file is: lyrics are an extra, and a client asking for them must get an
  * empty answer rather than an error it would show the listener.
  */
-async function readSidecarText(env: Env, key: string): Promise<string | null> {
+async function readSidecarText(storage: LibraryStorage, key: string): Promise<string | null> {
   try {
-    const object = await env.MUSIC.get(key);
+    const object = await storage.get(key);
     if (object === null) {
       return null;
     }
@@ -92,12 +95,12 @@ async function readSidecarText(env: Env, key: string): Promise<string | null> {
       // The body is let go unread rather than left for the runtime to drain.
       // Local runs (workerd) log the cancelled transfer as "pump canceled".
       console.warn(`lyrics: ignoring ${key}, which is ${object.size} bytes`);
-      await object.body.cancel();
+      await object.cancel();
 
       return null;
     }
 
-    return decodeLyrics(new Uint8Array(await object.arrayBuffer()));
+    return decodeLyrics(await object.bytes());
   } catch (error) {
     console.warn(`lyrics: could not read ${key}; answering without it`, error);
 
