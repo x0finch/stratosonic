@@ -98,6 +98,32 @@ from tracks or albums to `library` and D1 caps a day's writes, the row is
 marked `removing` at once (invisible to every reader) and the scan driver
 deletes the rest in bounded steps.
 
+**Rolling back to v0.5.0 needs an index back.** Migration 0009 replaces the
+unique index on `track.r2_key` with one on `(library_id, r2_key)`, which
+v0.5.0's queries cannot use: they name no library. Against a 0009 database,
+v0.5.0's scan walk (`findTracksInRange`: `r2_key > ? and r2_key <= ? order by
+r2_key limit 90`) and its lookup by key (`findTracksByKeys`) table-scan
+`track`, the walk with a temporary B-tree for its order: about 5,090 rows read
+per page instead of 90 at 5,000 tracks, tens of millions a day at the
+15-minute cron (about 33 million, as measured in review) against the free
+tier's 5 million, after which D1 refuses every query.
+So a rollback also runs
+
+```sql
+CREATE INDEX track_r2_key_idx ON track (r2_key);
+```
+
+which turns both plans back into index searches, and rolling forward again
+drops it (`DROP INDEX track_r2_key_idx`). It is not part of 0009 because every
+track write would pay for a second key index. The alternative is
+`PRAGMA optimize` (or `ANALYZE`): with statistics SQLite reaches the new index
+by a skip-scan over `library_id`, although the walk still sorts the rest of
+its range rather than stopping at 90 rows, so the index is the better remedy.
+`playlist` loses its key index the same way, but holds a handful of rows.
+Either way the rollback is safe only while one library exists: v0.5.0 knows
+nothing of `library_id`, and its scan would sweep every other library's
+tracks.
+
 ## Considered options
 
 - **A binding per bucket.** Rejected: bindings are declared in

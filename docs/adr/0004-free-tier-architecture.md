@@ -46,3 +46,8 @@ named below, because a cron invocation now only pokes.
 _Supersedes the earlier plan to run ingestion in a local CLI: Workers cron
 triggers make server-side scheduled ingestion possible, which is both simpler
 and closer to Navidrome._
+
+_Amended by ADR-0009: the Worker binds one bucket, which is library 1.
+Further R2 buckets are reached through the S3 API with credentials stored
+in D1, at the same per-step subrequest budget, and the scan spends at most
+`SCAN_DAILY_WRITE_BUDGET` D1 rows a day._
