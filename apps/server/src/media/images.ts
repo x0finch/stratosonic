@@ -53,8 +53,8 @@ export async function coverContentType(
     return declared;
   }
 
-  // The range is clamped to the object: R2 throws on a range that reaches past
-  // its end (error 10039), and an empty object has no signature to read at all.
+  // The range is kept within the object, so the read is one the bucket serves
+  // as asked, and an empty object has no signature to read at all.
   const length = Math.min(SIGNATURE_LENGTH, head.size);
   if (length === 0) {
     return UNKNOWN_IMAGE_TYPE;

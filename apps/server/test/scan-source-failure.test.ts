@@ -18,7 +18,7 @@ import { testEnv } from "./support";
  * it again, and indexes it.
  *
  * The failure is injected at the binding rather than simulated further down,
- * so what is exercised is the scan's real path through `r2Source`.
+ * so what is exercised is the scan's real path through `storageSource`.
  */
 
 const UNAVAILABLE = fixtureTrack("hushed-interlude.flac");

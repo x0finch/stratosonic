@@ -27,8 +27,8 @@ interface ContractSubject {
     readonly bucket: string;
     readonly secretAccessKey: string;
   };
-  /** The same bucket with uploads not configured. */
-  readonly unconfigured: () => LibraryStorage;
+  /** The same bucket with uploads not configured, when it has such a form. */
+  readonly unconfigured?: () => LibraryStorage;
   /** How many keys each bulk delete call so far carried, when it can be counted. */
   readonly deleteCalls?: () => readonly number[];
 }
@@ -248,6 +248,36 @@ function storageContract(name: string, subject: ContractSubject): void {
       expect(await text(storage, key)).toBe("second");
     });
 
+    it("stores the content type of a put onlyIfAbsent", async () => {
+      const storage = subject.storage();
+      const key = `${freshPrefix()}cover.jpg`;
+
+      const stored = await storage.put(key, encoder.encode("jpeg"), {
+        contentType: "image/jpeg",
+        onlyIfAbsent: true,
+      });
+      expect(stored?.size).toBe(4);
+      expect((await storage.head(key))?.contentType).toBe("image/jpeg");
+      expect(
+        await storage.put(key, encoder.encode("png"), {
+          contentType: "image/png",
+          onlyIfAbsent: true,
+        }),
+      ).toBeNull();
+      expect((await storage.head(key))?.contentType).toBe("image/jpeg");
+    });
+
+    it("refuses a range that is negative or not whole", async () => {
+      const storage = subject.storage();
+      const key = `${freshPrefix()}ten`;
+      await storage.put(key, encoder.encode("0123456789"));
+
+      await expect(storage.get(key, { offset: -1, length: 4 })).rejects.toThrow(RangeError);
+      await expect(storage.get(key, { offset: 0, length: -4 })).rejects.toThrow(RangeError);
+      await expect(storage.get(key, { offset: 1.5, length: 4 })).rejects.toThrow(RangeError);
+      await expect(storage.get(key, { offset: 0, length: 2.5 })).rejects.toThrow(RangeError);
+    });
+
     it("deletes 1,500 keys, a thousand a call, and a missing key", async () => {
       const storage = subject.storage();
       const prefix = freshPrefix();
@@ -317,13 +347,18 @@ function storageContract(name: string, subject: ContractSubject): void {
       }
     });
 
-    it("presigns nothing where uploads are not configured", async () => {
-      expect(
-        await subject
-          .unconfigured()
-          .presignPut({ key: "a.flac", size: 1, contentType: "audio/flac", replace: false }, NOW),
-      ).toBeNull();
-    });
+    it.skipIf(subject.unconfigured === undefined)(
+      "presigns nothing where uploads are not configured",
+      async () => {
+        const unconfigured = subject.unconfigured?.();
+        expect(
+          await unconfigured?.presignPut(
+            { key: "a.flac", size: 1, contentType: "audio/flac", replace: false },
+            NOW,
+          ),
+        ).toBeNull();
+      },
+    );
   });
 }
 

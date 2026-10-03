@@ -102,6 +102,14 @@ export async function serveStoredObject(
     // Deleted between the head and the get.
     throw new SubsonicError(SubsonicErrorCode.NotFound);
   }
+  if (object.size < offset + length) {
+    // Shortened between the head and the get: the bytes read cannot fill the
+    // `Content-Length` already decided, so nothing is sent as if they could.
+    // A read starting past the new end failed here before the storage
+    // clamped ranges, and this keeps that answer.
+    await object.cancel();
+    throw new Error(`${key} changed size between its head and its read`);
+  }
 
   return new Response(object.body, { status, headers });
 }

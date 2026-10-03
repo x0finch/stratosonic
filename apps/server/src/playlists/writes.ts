@@ -32,7 +32,6 @@ import { DEFAULT_LIBRARY_ID, newRandomId, playlistId } from "@stratosonic/db";
 import type { Database } from "../db";
 import type { Env } from "../env";
 import { bindingStorage } from "../storage/binding";
-import { DELETE_KEYS_PER_CALL } from "../storage/storage";
 import { playlistNameForFile, renderM3u } from "./m3u";
 import {
   deletePlaylistRow,
@@ -135,12 +134,6 @@ export async function erasePlaylist(
   await bindingStorage(env).delete([r2Key]);
   await deletePlaylistRow(db, id);
 }
-
-/**
- * The most keys one R2 `delete` takes (the Workers R2 API reference,
- * `R2Bucket.delete`), which the storage's `delete` splits its keys by.
- */
-export const R2_DELETE_KEYS_PER_CALL = DELETE_KEYS_PER_CALL;
 
 /**
  * Removes many playlists' files, in one R2 binding call per thousand keys,

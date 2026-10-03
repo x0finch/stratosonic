@@ -1,3 +1,4 @@
+import { DEFAULT_LIBRARY_ID } from "@stratosonic/db";
 import type { Env } from "../env";
 import { uploadsStatus } from "../files/config";
 import { presignUpload } from "../files/sign";
@@ -37,8 +38,11 @@ import {
  * they are configured.
  */
 
-/** The library the bound bucket is: the first, which can never be removed. */
-export const BOUND_LIBRARY_ID = 1;
+/**
+ * The library the bound bucket is: the first, which can never be removed
+ * (ADR-0009).
+ */
+export const BOUND_LIBRARY_ID = DEFAULT_LIBRARY_ID;
 
 /** The bound bucket, `MUSIC`, as library 1's storage. */
 export function bindingStorage(env: Env): LibraryStorage {
@@ -204,7 +208,13 @@ function checkRange({ offset, length }: ByteRange): void {
 /**
  * Whether R2 refused a read for its range: code 10039, "The requested range
  * is not satisfiable", at the end of the message as R2's Workers API puts
- * it. Local runs (miniflare) answer code 0 for any range of an empty object.
+ * it.
+ *
+ * It also matches code 0, which is what local runs (miniflare) answer for
+ * any range of an empty object, so the contract's empty-object cases pass
+ * there. That makes 10039 itself, the production path, one the tests do not
+ * reach locally. In production, a `(0)` error on a ranged read costs one
+ * extra `head()` before it is rethrown.
  */
 function isRangeRefusal(error: unknown): boolean {
   return error instanceof Error && /\((?:10039|0)\)$/.test(error.message);
