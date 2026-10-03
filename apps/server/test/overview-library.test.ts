@@ -68,6 +68,7 @@ interface LibraryOverview {
     durationSec: number;
     changedAt: string;
   }[];
+  libraries: { id: number; name: string }[];
 }
 
 let owner: CookieJar;
@@ -98,6 +99,7 @@ describe("GET /api/overview/library on an empty library", () => {
       genres: [],
       recentAlbums: [],
       playlists: [],
+      libraries: [{ id: 1, name: "Music Library" }],
     });
   });
 });
@@ -229,17 +231,22 @@ describe("GET /api/overview/library on a seeded library", () => {
     expect(body.playlists.filter((entry) => entry.owner === null)).toHaveLength(1);
   });
 
-  it("costs one round trip of four statements, and writes nothing", async () => {
+  it("costs one round trip of five statements, and writes nothing", async () => {
     d1.reset();
     await libraryOf(owner);
     const spent = cost(d1.statements);
 
-    expect(spent).toMatchObject({ statements: 4, roundTrips: 1, rowsWritten: 0 });
+    expect(spent).toMatchObject({ statements: 5, roundTrips: 1, rowsWritten: 0 });
     expect(d1.statements.map(shape)).toEqual([
       "select album",
       "select track",
       "select album",
       "select playlist",
+      "select library",
     ]);
+    // Every library is v0.5.0's SQL, with no library predicate.
+    expect(
+      d1.statements.slice(0, 4).some((statement) => /library_id"? in \(/.test(statement.sql)),
+    ).toBe(false);
   });
 });

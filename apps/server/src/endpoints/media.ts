@@ -5,6 +5,7 @@ import type { Env } from "../env";
 import { NO_USER } from "../library/annotations";
 import { audioContentType } from "../library/audio-formats";
 import { findTrack } from "../library/repository";
+import { ALL_LIBRARIES } from "../library/scope";
 import type { SongView } from "../library/serializers";
 import { attachmentDisposition, baseName } from "../media/content-disposition";
 import { coverContentType, declaredCoverContentType } from "../media/images";
@@ -156,11 +157,14 @@ async function serveCover(env: Env, entity: EntityId, raw: Request): Promise<Res
  *
  * The track is read as `NO_USER`: the answer is the bytes of a file, and no
  * element is rendered from it, so there is no annotation to decorate it with.
+ * Every library is read until #148 keeps `stream` and `download` to the
+ * caller's.
  */
 async function requireTrack(request: AuthenticatedSubsonicRequest): Promise<SongView> {
   const id = parseIdOfType("track", requiredParameter(request.params, "id"));
 
-  const found = id === null ? null : await findTrack(database(request.env), id, NO_USER);
+  const found =
+    id === null ? null : await findTrack(database(request.env), id, NO_USER, ALL_LIBRARIES);
   if (found === null) {
     throw new SubsonicError(SubsonicErrorCode.NotFound);
   }

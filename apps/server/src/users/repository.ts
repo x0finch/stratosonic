@@ -16,22 +16,71 @@ import type { Database } from "../db";
  * column names live in one place.
  */
 
+/** A library as the user's row carries it: what `getMusicFolders` answers. */
+export interface UserLibrary {
+  readonly id: number;
+  readonly name: string;
+}
+
+/** A user as authentication reads them: the row, and the libraries they see. */
+export interface UserWithLibraries extends SubsonicUser {
+  /** The active libraries the user sees, by id. */
+  readonly libraries: readonly UserLibrary[];
+  /** Every library, `removing` ones included, for the fast path. */
+  readonly libraryCount: number;
+}
+
+/**
+ * The libraries a user sees, as a JSON array in the user's own row: the
+ * active ones, every one for an admin and those `user_library` grants
+ * otherwise (#84, "Who sees what"). Navidrome's `selectUserWithLibraries`
+ * aggregates the user's libraries into the user row the same way
+ * (persistence/user_repository.go), names included, so `getMusicFolders`
+ * needs no statement of its own.
+ *
+ * The user's columns are named with their table, by hand, as
+ * `playlistCount`'s are: Drizzle writes a column of a one-table statement
+ * bare, and a bare `"id"` in here would be the library's.
+ */
+const userLibraries = sql<string>`(select json_group_array(json_object('id', l.id, 'name', l.name))
+  from library l where l.state = 'active' and (${subsonicUser}.${sql.identifier(subsonicUser.isAdmin.name)}
+    or exists (select 1 from user_library ul
+      where ul.user_id = ${subsonicUser}.${sql.identifier(subsonicUser.id.name)} and ul.library_id = l.id)))`.as(
+  "libraries",
+);
+
+/** Every library, `removing` ones included: Navidrome's `count(*) from library`. */
+const libraryCount = sql<number>`(select count(*) from library)`
+  .mapWith(Number)
+  .as("library_count");
+
 /**
  * Finds a user by name, ignoring case — Navidrome matches `user_name` with
  * `COLLATE NOCASE` (persistence/user_repository.go). The comparison is written
  * the same way as the table's unique index so the index can serve it.
+ *
+ * It runs on every Subsonic request, and reads the user's libraries in the
+ * same statement (`userLibraries`, `libraryCount`): one row per library and
+ * the user's own `user_library` rows, and no round trip of its own.
  */
 export async function findUserByUsername(
   db: Database,
   userName: string,
-): Promise<SubsonicUser | null> {
+): Promise<UserWithLibraries | null> {
   const rows = await db
-    .select()
+    .select({ ...getTableColumns(subsonicUser), libraries: userLibraries, libraryCount })
     .from(subsonicUser)
     .where(sql`lower(${subsonicUser.userName}) = lower(${userName})`)
     .limit(1);
 
-  return rows[0] ?? null;
+  const row = rows[0];
+  if (row === undefined) {
+    return null;
+  }
+
+  const libraries = (JSON.parse(row.libraries) as UserLibrary[]).sort((a, b) => a.id - b.id);
+
+  return { ...row, libraries };
 }
 
 /**

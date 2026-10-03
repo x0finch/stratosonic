@@ -1,10 +1,13 @@
-import { prefixedId } from "@stratosonic/db";
+import { library, prefixedId } from "@stratosonic/db";
+import { asc, eq } from "drizzle-orm";
+import type { Context } from "hono";
 import { requireFreshSession, requirePermission, requireSession } from "../console-auth/middleware";
 import { roleGrants } from "../console-auth/permissions";
 import { database } from "../db";
 import { NO_USER } from "../library/annotations";
 import { albumsQuery, toAlbumViews } from "../library/lists";
 import { genresQuery, libraryTotalsQuery, toGenreViews } from "../library/repository";
+import { ALL_LIBRARIES, type LibraryScope, librariesScope } from "../library/scope";
 import {
   type NowPlayingEntry,
   nowPlayingQuery,
@@ -42,22 +45,44 @@ const RECENT_ALBUMS = 12;
 
 export function registerOverviewRoutes(api: ApiApp): void {
   /**
-   * `GET /api/overview/library`: counts, genres, the newest albums and every
-   * playlist, in one batch of four statements. Fetched on page load and when
-   * a pass ends, never polled.
+   * `GET /api/overview/library?library=`: counts, genres, the newest albums,
+   * every playlist and the libraries, in one batch of five statements.
+   * Fetched on page load and when a pass ends, never polled.
    *
    * The genres are `getGenres`' (Navidrome's `GetGenres`), every one, in its
    * order; the albums are the first page of `getAlbumList2?type=newest`, read
    * for no caller, so the annotation join matches nothing (`NO_USER`).
+   *
+   * `library` (#84, "Console") narrows the counts, the genres and the albums
+   * to one library, with its artists counted from its albums
+   * (`libraryTotalsQuery`); without it they are every library's, as v0.5.0
+   * answered them. The playlists are never narrowed. `libraries` lists the
+   * active ones, by id, for the console's library switch. A library that is
+   * not one of them, or a value that names none, is `404 library_not_found`,
+   * found after the batch from `libraries` so the check costs no round trip.
    */
   api.get("/overview/library", requireSession, requirePermission("library:read"), async (c) => {
     const db = database(c.env);
-    const [[totals], genreRows, albumRows, playlists] = await db.batch([
-      libraryTotalsQuery(db),
-      genresQuery(db),
-      albumsQuery(db, NO_USER, { type: "newest" }, { size: RECENT_ALBUMS, offset: 0 }),
+    const asked = requestedLibrary(c.req.query("library"));
+    if (asked === "invalid") {
+      return libraryNotFound(c);
+    }
+
+    const scope: LibraryScope = asked === null ? ALL_LIBRARIES : librariesScope([asked]);
+    const [[totals], genreRows, albumRows, playlists, libraries] = await db.batch([
+      libraryTotalsQuery(db, scope),
+      genresQuery(db, scope),
+      albumsQuery(db, NO_USER, scope, { type: "newest" }, { size: RECENT_ALBUMS, offset: 0 }),
       playlistSummariesQuery(db),
+      db
+        .select({ id: library.id, name: library.name })
+        .from(library)
+        .where(eq(library.state, "active"))
+        .orderBy(asc(library.id)),
     ]);
+    if (asked !== null && !libraries.some((entry) => entry.id === asked)) {
+      return libraryNotFound(c);
+    }
     const genres = toGenreViews(genreRows);
 
     return c.json({
@@ -89,6 +114,7 @@ export function registerOverviewRoutes(api: ApiApp): void {
         durationSec: entry.duration,
         changedAt: entry.changedAt.toISOString(),
       })),
+      libraries: libraries.map(({ id, name }) => ({ id, name })),
     });
   });
 
@@ -167,6 +193,29 @@ export function registerOverviewRoutes(api: ApiApp): void {
       return c.json({ outcome, scan: scanView(report, true, scheduled) });
     },
   );
+}
+
+/**
+ * The `library` the overview was asked for: null when absent (every library),
+ * its id when it is a positive integer, or `"invalid"` for anything else,
+ * which names no library.
+ */
+function requestedLibrary(value: string | undefined): number | null | "invalid" {
+  if (value === undefined) {
+    return null;
+  }
+  if (!/^[1-9][0-9]{0,15}$/.test(value)) {
+    return "invalid";
+  }
+
+  const id = Number(value);
+
+  return Number.isSafeInteger(id) ? id : "invalid";
+}
+
+/** `404 library_not_found`: the library asked for is not one the console can show. */
+function libraryNotFound(c: Context) {
+  return c.json({ error: "library_not_found" }, 404);
 }
 
 /**

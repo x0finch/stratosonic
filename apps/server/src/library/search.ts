@@ -50,6 +50,11 @@
  * Each kind is ordered by its name and then its id, so paging one kind with
  * `offset` never repeats a row or skips one — the same stability the album
  * lists get from ending every ordering on the id.
+ *
+ * Every kind is kept to the caller's `LibraryScope` (library/scope.ts),
+ * narrowed by any `musicFolderId`, as Navidrome's searches apply its library
+ * filter. The scope's ids are bound parameters, so they are charged to a
+ * statement's budget before its words are (`wordsThatFit`).
  */
 
 import { album, annotation, artist, track } from "@stratosonic/db";
@@ -58,6 +63,7 @@ import { D1_MAX_BOUND_PARAMETERS } from "../d1-limits";
 import type { Database } from "../db";
 import { annotationColumns, annotationJoin } from "./annotations";
 import { selectAlbums, selectArtists, toAlbumView, toArtistView, toSongView } from "./repository";
+import { type LibraryScope, libraryFilter, scopeParameters } from "./scope";
 import type { AlbumView, ArtistView, SongView } from "./serializers";
 
 /** One kind's slice of a search: how many rows, and where to start. */
@@ -95,29 +101,35 @@ export async function searchLibrary(
   db: Database,
   query: SearchQuery,
   userId: string,
+  scope: LibraryScope,
 ): Promise<SearchResults> {
   const [artists, albums, tracks] = await Promise.all([
-    searchArtists(db, query.words, query.artists, userId),
-    searchAlbums(db, query.words, query.albums, userId),
-    searchTracks(db, query.words, query.songs, userId),
+    searchArtists(db, query.words, query.artists, userId, scope),
+    searchAlbums(db, query.words, query.albums, userId, scope),
+    searchTracks(db, query.words, query.songs, userId, scope),
   ]);
 
   return { artists, albums, tracks };
 }
 
-/** Artists whose name matches every word, by name then id. */
+/**
+ * Artists whose name matches every word, by name then id. The scope is bound
+ * three times: in the artist's membership, its `albumCount` and its cover
+ * (`artistColumns`).
+ */
 async function searchArtists(
   db: Database,
   words: readonly string[],
   window: SearchWindow,
   userId: string,
+  scope: LibraryScope,
 ): Promise<ArtistView[]> {
   if (window.count <= 0) {
     return [];
   }
 
-  const rows = await selectArtists(db, userId)
-    .where(matchesEveryWord([artist.name], words))
+  const filter = matchesEveryWord([artist.name], words, 3 * scopeParameters(scope));
+  const rows = await selectArtists(db, userId, scope, filter)
     .orderBy(byName(artist.name), asc(artist.id))
     .limit(window.count)
     .offset(window.offset);
@@ -136,13 +148,14 @@ async function searchAlbums(
   words: readonly string[],
   window: SearchWindow,
   userId: string,
+  scope: LibraryScope,
 ): Promise<AlbumView[]> {
   if (window.count <= 0) {
     return [];
   }
 
-  const rows = await selectAlbums(db, userId)
-    .where(matchesEveryWord([album.name, album.albumArtist], words))
+  const filter = matchesEveryWord([album.name, album.albumArtist], words, scopeParameters(scope));
+  const rows = await selectAlbums(db, userId, scope, filter)
     .orderBy(byName(album.name), byName(album.albumArtist), asc(album.id))
     .limit(window.count)
     .offset(window.offset);
@@ -163,6 +176,7 @@ async function searchTracks(
   words: readonly string[],
   window: SearchWindow,
   userId: string,
+  scope: LibraryScope,
 ): Promise<SongView[]> {
   if (window.count <= 0) {
     return [];
@@ -173,7 +187,16 @@ async function searchTracks(
     .from(track)
     .leftJoin(album, eq(album.id, track.albumId))
     .leftJoin(annotation, annotationJoin(userId, "track", track.id))
-    .where(matchesEveryWord([track.title, album.name, track.artist, track.albumArtist], words))
+    .where(
+      and(
+        matchesEveryWord(
+          [track.title, album.name, track.artist, track.albumArtist],
+          words,
+          scopeParameters(scope),
+        ),
+        libraryFilter(scope, track.libraryId),
+      ),
+    )
     .orderBy(byName(track.title), asc(track.id))
     .limit(window.count)
     .offset(window.offset);
@@ -187,13 +210,15 @@ async function searchTracks(
  * Each word may match any of the columns (OR); all words are required (AND).
  *
  * A query longer than the statement can bind loses its surplus words rather
- * than failing: see `wordsThatFit`.
+ * than failing: see `wordsThatFit`. `scoped` is what the statement's scope
+ * binds.
  */
 function matchesEveryWord(
   columns: readonly SQLWrapper[],
   words: readonly string[],
+  scoped: number,
 ): SQL | undefined {
-  const matched = wordsThatFit(columns, words);
+  const matched = wordsThatFit(columns, words, scoped);
 
   if (matched.length === 0) {
     return undefined;
@@ -207,15 +232,21 @@ function matchesEveryWord(
  * fewer than were typed.
  *
  * Every word binds one parameter per column, and the rest of the statement
- * binds `FIXED_BOUND_PARAMETERS` more, so the track query — four columns —
- * could otherwise exceed D1's hundred at twenty-five words and fail the whole
- * read, on a statement Miniflare's SQLite runs happily. Dropping the surplus
- * words only widens what matches, which is a better answer to a client that
- * pasted a paragraph into its search box than an error is. Navidrome, with one
- * bound `full_text` pattern per term, has no such ceiling.
+ * binds `FIXED_BOUND_PARAMETERS` more, plus `scoped` for the caller's
+ * libraries (at most `MAX_LISTED_LIBRARIES` per use of the scope,
+ * library/scope.ts), so the track query — four columns — could otherwise
+ * exceed D1's hundred at twenty-five words and fail the whole read, on a
+ * statement Miniflare's SQLite runs happily. Dropping the surplus words only
+ * widens what matches, which is a better answer to a client that pasted a
+ * paragraph into its search box than an error is. Navidrome, with one bound
+ * `full_text` pattern per term, has no such ceiling.
  */
-function wordsThatFit(columns: readonly SQLWrapper[], words: readonly string[]): readonly string[] {
-  const budget = D1_MAX_BOUND_PARAMETERS - FIXED_BOUND_PARAMETERS;
+function wordsThatFit(
+  columns: readonly SQLWrapper[],
+  words: readonly string[],
+  scoped: number,
+): readonly string[] {
+  const budget = D1_MAX_BOUND_PARAMETERS - FIXED_BOUND_PARAMETERS - scoped;
 
   return words.slice(0, Math.floor(budget / columns.length));
 }

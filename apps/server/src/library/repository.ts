@@ -11,10 +11,15 @@
  *
  * Ids taken by these functions are bare, as they are stored; parsing the
  * prefix off a client's id belongs to the endpoint.
+ *
+ * Every read that serves a caller takes the libraries it may see, a
+ * `LibraryScope` (library/scope.ts), beside its user: an album or a track
+ * outside it is not there, and an artist is there while one of its albums
+ * is. On the fast path the scope adds nothing, and the SQL is v0.5.0's.
  */
 
 import { type Album, album, annotation, artist, type Track, track } from "@stratosonic/db";
-import { asc, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, type SQL, sql } from "drizzle-orm";
 import type { Database } from "../db";
 import { chunked } from "../scanner/repository";
 import {
@@ -23,6 +28,7 @@ import {
   annotationJoin,
   toCallerAnnotation,
 } from "./annotations";
+import { albumOfArtistInScope, artistInScope, type LibraryScope, libraryFilter } from "./scope";
 import type { AlbumView, ArtistView, GenreView, SongView } from "./serializers";
 
 /**
@@ -49,27 +55,43 @@ const ALBUMS_OF_ARTIST_ORDER = [asc(album.year), asc(album.name), asc(album.id)]
  * builds names one table, and an unqualified `id` inside these subqueries
  * would bind to the album's own id instead of the artist's — a correlation
  * that silently matches nothing.
+ *
+ * **Both count only the albums in scope** (#84): an artist shared by two
+ * libraries has, for a caller who sees one, that library's albums and a
+ * cover from among them.
  */
-export const artistColumns = {
-  id: artist.id,
-  name: artist.name,
-  albumCount: sql<number>`(select count(*) from album where album.artist_id = artist.id)`,
-  coverAlbumId: sql<string | null>`(select album.id from album
-    where album.artist_id = artist.id and album.cover_key is not null
-    order by album.year, album.name, album.id limit 1)`,
-};
+export function artistColumns(scope: LibraryScope) {
+  return {
+    id: artist.id,
+    name: artist.name,
+    albumCount: sql<number>`(select count(*) from album
+      where album.artist_id = artist.id${albumOfArtistInScope(scope)})`,
+    coverAlbumId: coverAlbumOf(scope),
+  };
+}
+
+/** The artist's cover album among the albums in scope (`artistColumns`). */
+export function coverAlbumOf(scope: LibraryScope) {
+  return sql<string | null>`(select album.id from album
+    where album.artist_id = artist.id and album.cover_key is not null${albumOfArtistInScope(scope)}
+    order by album.year, album.name, album.id limit 1)`;
+}
 
 /**
  * An artist select with the caller's annotation left-joined, for the reads
  * that list or find artists. Sharing it keeps the join — and so the `starred`
  * and `userRating` an `<artist>` carries — identical wherever an artist is
  * read (browsing, the folder index, starred, search).
+ *
+ * The select is filtered here, to `filter` and the scope's artists, so no
+ * caller can leave the scope out; callers order and page it.
  */
-export function selectArtists(db: Database, userId: string) {
+export function selectArtists(db: Database, userId: string, scope: LibraryScope, filter?: SQL) {
   return db
-    .select({ ...artistColumns, ...annotationColumns })
+    .select({ ...artistColumns(scope), ...annotationColumns })
     .from(artist)
-    .leftJoin(annotation, annotationJoin(userId, "artist", artist.id));
+    .leftJoin(annotation, annotationJoin(userId, "artist", artist.id))
+    .where(and(filter, artistInScope(scope)));
 }
 
 /** An artist row from `selectArtists`, as the `<artist>` element needs it. */
@@ -94,12 +116,15 @@ type ArtistColumns = {
  * An album select with the caller's annotation left-joined. `getAlbumList2`
  * builds its own decorated select (it needs the annotation for its ordering
  * too), but every place that reads a plain album goes through this one.
+ * It is filtered to `filter` and the scope's libraries, as `selectArtists`
+ * is.
  */
-export function selectAlbums(db: Database, userId: string) {
+export function selectAlbums(db: Database, userId: string, scope: LibraryScope, filter?: SQL) {
   return db
     .select({ album, ...annotationColumns })
     .from(album)
-    .leftJoin(annotation, annotationJoin(userId, "album", album.id));
+    .leftJoin(annotation, annotationJoin(userId, "album", album.id))
+    .where(and(filter, libraryFilter(scope, album.libraryId)));
 }
 
 /** An album row from `selectAlbums`, as the `<album>` elements need it. */
@@ -119,49 +144,62 @@ export function toSongView(
   };
 }
 
-/** Every artist, for `getArtists` to bucket into indexes. */
-export async function listArtists(db: Database, userId: string): Promise<ArtistView[]> {
-  const rows = await selectArtists(db, userId).orderBy(asc(artist.name));
+/**
+ * Every artist in scope, for `getArtists` and `getIndexes` to bucket into
+ * indexes. A shared artist is one row, whatever libraries its albums are in.
+ */
+export async function listArtists(
+  db: Database,
+  userId: string,
+  scope: LibraryScope,
+): Promise<ArtistView[]> {
+  const rows = await selectArtists(db, userId, scope).orderBy(asc(artist.name));
 
   return rows.map(toArtistView);
 }
 
 /**
- * One artist, or null when no artist has this id. The user is required: a read
- * that serves a caller decorates the artist with that caller's annotation, and
- * an internal read that only needs the row (cover resolution) says so by
- * passing `NO_USER`.
+ * One artist, or null when no artist has this id, or none of its albums is
+ * in scope. The user is required: a read that serves a caller decorates the
+ * artist with that caller's annotation, and an internal read that only needs
+ * the row (cover resolution) says so by passing `NO_USER`.
  */
 export async function findArtist(
   db: Database,
   id: string,
   userId: string,
+  scope: LibraryScope,
 ): Promise<ArtistView | null> {
-  const rows = await selectArtists(db, userId).where(eq(artist.id, id)).limit(1);
+  const rows = await selectArtists(db, userId, scope, eq(artist.id, id)).limit(1);
 
   return rows[0] ? toArtistView(rows[0]) : null;
 }
 
-/** An artist's albums, in the order `getArtist` lists them. */
+/** An artist's albums in scope, in the order `getArtist` lists them. */
 export async function listAlbumsOfArtist(
   db: Database,
   artistId: string,
   userId: string,
+  scope: LibraryScope,
 ): Promise<AlbumView[]> {
-  const rows = await selectAlbums(db, userId)
-    .where(eq(album.artistId, artistId))
-    .orderBy(...ALBUMS_OF_ARTIST_ORDER);
+  const rows = await selectAlbums(db, userId, scope, eq(album.artistId, artistId)).orderBy(
+    ...ALBUMS_OF_ARTIST_ORDER,
+  );
 
   return rows.map(toAlbumView);
 }
 
-/** One album, or null when no album has this id; `NO_USER` reads it plain. */
+/**
+ * One album, or null when no album has this id or it is out of scope;
+ * `NO_USER` reads it plain.
+ */
 export async function findAlbum(
   db: Database,
   id: string,
   userId: string,
+  scope: LibraryScope,
 ): Promise<AlbumView | null> {
-  const rows = await selectAlbums(db, userId).where(eq(album.id, id)).limit(1);
+  const rows = await selectAlbums(db, userId, scope, eq(album.id, id)).limit(1);
 
   return rows[0] ? toAlbumView(rows[0]) : null;
 }
@@ -175,18 +213,20 @@ export async function findAlbum(
  * order rather than whatever the database happens to return.
  *
  * The album is passed rather than looked up: the endpoint has already read it,
- * and its name and cover are what each `<song>` needs from it.
+ * and its name and cover are what each `<song>` needs from it. Its tracks are
+ * in its library, so the scope only restates what reading the album checked.
  */
 export async function listTracksOfAlbum(
   db: Database,
   of: Album,
   userId: string,
+  scope: LibraryScope,
 ): Promise<SongView[]> {
   const rows = await db
     .select({ track, ...annotationColumns })
     .from(track)
     .leftJoin(annotation, annotationJoin(userId, "track", track.id))
-    .where(eq(track.albumId, of.id))
+    .where(and(eq(track.albumId, of.id), libraryFilter(scope, track.libraryId)))
     .orderBy(
       asc(track.discNumber),
       asc(track.trackNumber),
@@ -203,18 +243,20 @@ export async function listTracksOfAlbum(
  * id. The album is joined in rather than fetched after, so `getSong` is one
  * query; the join is left, so a track whose album row is missing — a state a
  * half-finished scan can leave behind — is still served, without a cover.
+ * A track out of scope is not found.
  */
 export async function findTrack(
   db: Database,
   id: string,
   userId: string,
+  scope: LibraryScope,
 ): Promise<SongView | null> {
   const rows = await db
     .select({ track, albumName: album.name, albumCoverKey: album.coverKey, ...annotationColumns })
     .from(track)
     .leftJoin(album, eq(album.id, track.albumId))
     .leftJoin(annotation, annotationJoin(userId, "track", track.id))
-    .where(eq(track.id, id))
+    .where(and(eq(track.id, id), libraryFilter(scope, track.libraryId)))
     .limit(1);
 
   return rows[0] ? toSongView(rows[0]) : null;
@@ -229,9 +271,13 @@ export async function findTrack(
  * The order is Navidrome's — most songs first, then most albums, then the name
  * (`GetGenres` asks for `song_count, album_count, name desc` descending, which
  * its sort builder turns into descending counts and an ascending name).
+ *
+ * Only the tracks in scope count, so a genre none of them carries is not
+ * listed. Navidrome filters its `library_tag` counts the same way; the
+ * tracks are what those counts are made from here.
  */
-export async function listGenres(db: Database): Promise<GenreView[]> {
-  return toGenreViews(await genresQuery(db));
+export async function listGenres(db: Database, scope: LibraryScope): Promise<GenreView[]> {
+  return toGenreViews(await genresQuery(db, scope));
 }
 
 /**
@@ -239,14 +285,14 @@ export async function listGenres(db: Database): Promise<GenreView[]> {
  * with others (the console's overview, api/overview.ts); `toGenreViews` reads
  * what it returns.
  */
-export function genresQuery(db: Database) {
+export function genresQuery(db: Database, scope: LibraryScope) {
   const songCount = sql<number>`count(*)`;
   const albumCount = sql<number>`count(distinct ${track.albumId})`;
 
   return db
     .select({ name: track.genre, songCount, albumCount })
     .from(track)
-    .where(isNotNull(track.genre))
+    .where(and(isNotNull(track.genre), libraryFilter(scope, track.libraryId)))
     .groupBy(track.genre)
     .orderBy(desc(songCount), desc(albumCount), asc(track.genre));
 }
@@ -265,17 +311,25 @@ export function toGenreViews(rows: Awaited<ReturnType<typeof genresQuery>>): Gen
  * and `size`, which the scan recomputes (scanner/repository.ts) - so the
  * statement reads the album rows and none of the far more numerous tracks.
  * `coalesce` makes an empty library zeros rather than nulls.
+ *
+ * For some libraries (the console's library filter, #84) the albums are
+ * theirs, and the artists are counted from those albums, since an artist is
+ * shared and is in a library through its albums (ADR-0009). For every
+ * library the artist table is counted, as v0.5.0 counted it.
  */
-export function libraryTotalsQuery(db: Database) {
+export function libraryTotalsQuery(db: Database, scope: LibraryScope) {
   return db
     .select({
-      artists: sql<number>`(select count(*) from artist)`,
+      artists: scope.all
+        ? sql<number>`(select count(*) from artist)`
+        : sql<number>`count(distinct ${album.artistId})`,
       albums: sql<number>`count(*)`,
       tracks: sql<number>`coalesce(sum(${album.songCount}), 0)`,
       duration: sql<number>`coalesce(sum(${album.duration}), 0)`,
       size: sql<number>`coalesce(sum(${album.size}), 0)`,
     })
-    .from(album);
+    .from(album)
+    .where(libraryFilter(scope, album.libraryId));
 }
 
 /**
