@@ -43,6 +43,19 @@ export const limitFileDeleteBody = bodyLimit({
   onError: payloadTooLarge,
 });
 
+/**
+ * The largest body of `POST /api/files/uploads/check` (#141): its 1,000 keys
+ * of up to 1,024 bytes each are 1 MiB, and JSON may escape a key's
+ * characters, so twice that leaves room, as the delete's cap does.
+ */
+export const MAX_FILE_CHECK_BODY_BYTES = 2 * 1024 * 1024;
+
+/** `limitJsonBody` for the upload check, with the same answer. */
+export const limitFileCheckBody = bodyLimit({
+  maxSize: MAX_FILE_CHECK_BODY_BYTES,
+  onError: payloadTooLarge,
+});
+
 function payloadTooLarge(c: Context) {
   return c.json({ error: "payload_too_large" }, 413);
 }

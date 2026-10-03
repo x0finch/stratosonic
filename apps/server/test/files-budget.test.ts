@@ -1,7 +1,7 @@
 import { SELF } from "cloudflare:test";
 import { playlistTrack } from "@stratosonic/db";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { SIGN_BATCH, SPELLING_LISTINGS } from "../src/api/files";
+import { CHECK_LISTINGS, SIGN_BATCH, SPELLING_LISTINGS } from "../src/api/files";
 import { database } from "../src/db";
 import {
   type CookieJar,
@@ -316,6 +316,39 @@ describe("the Files routes' budget", () => {
     expect(result.route).toEqual([]);
     expect(result.r2).toEqual([]);
     expect(subrequests(result)).toBe(0);
+  });
+
+  it("POST /api/files/uploads/check, a 25-file album with 3 that exist: one listing, nothing else", async () => {
+    const keys = Array.from(
+      { length: 25 },
+      (_, index) => `Album/${String(index + 1).padStart(2, "0")}.flac`,
+    );
+    await seedObjects(keys.slice(0, 3));
+
+    const result = await measured("POST", "/files/uploads/check", { keys });
+
+    expect(result.status).toBe(200);
+    expect((result.body as { existing: unknown[] }).existing).toHaveLength(3);
+    expect(result.session).toEqual(["select session", "select user"]);
+    expect(result.route).toEqual([]);
+    expect(result.r2).toEqual(["list"]);
+    expect(result.driver).toEqual([]);
+    expect(subrequests(result)).toBe(1);
+  });
+
+  it("POST /api/files/uploads/check at the bound: 40 listings, 42 subrequests with the session", async () => {
+    // A folder each: one listing each, until the bound.
+    const keys = Array.from({ length: CHECK_LISTINGS + 5 }, (_, index) => `F${index}/a.flac`);
+
+    const result = await measured("POST", "/files/uploads/check", { keys });
+
+    expect(result.status).toBe(200);
+    expect((result.body as { unchecked: unknown[] }).unchecked).toHaveLength(5);
+    expect(result.route).toEqual([]);
+    expect(result.r2).toEqual(Array.from({ length: CHECK_LISTINGS }, () => "list"));
+    expect(result.driver).toEqual([]);
+    expect(subrequests(result) + result.session.length).toBe(42);
+    expect(subrequests(result) + result.session.length).toBeLessThanOrEqual(50);
   });
 
   it("POST /api/files/uploads/complete, 10 keys: 1 statement, 1 driver call, no R2 call", async () => {

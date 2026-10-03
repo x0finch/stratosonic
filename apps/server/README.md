@@ -239,12 +239,43 @@ refused file never fails the others:
 | `exists` | The key exists (with `existing: {size, uploadedAt}`); sign again with `overwrite: true` to Replace |
 | `replace_unavailable` | A Replace whose stored spelling cannot be found for certain: replace this file with rclone |
 
+**A pick is checked before anything is signed.** The console asks which of
+the picked keys already exist, then asks the owner once whether to replace
+or skip them, before any upload starts:
+
+```jsonc
+// POST /api/files/uploads/check: 1–1,000 keys, the same optional prefix
+{ "prefix": "Björk/Homogenic/", "keys": ["Björk/Homogenic/01 Jóga.flac", "…"] }
+// 200
+{ "existing": [{ "key": "Björk/Homogenic/01 Jóga.flac",   // as asked
+                 "storedKey": "Björk/Homogenic/01 Jóga.flac", // as R2 lists it
+                 "size": 41234567, "uploadedAt": "2026-09-30T12:00:00.000Z" }],
+  "unchecked": [] }
+```
+
+- It goes through the same checks as the other writes (same origin, a
+  2 MiB body cap, a fresh session, `files:write`, `FILE_WRITES`), but it
+  needs no R2 API token: it reads the bucket through the binding.
+- A key the upload rules refuse is simply not reported. The others are
+  grouped by folder, exactly as given; each folder is listed (with a
+  delimiter, a page of 1,000 at a time) and the names compared in NFC, so
+  a file stored in another Unicode spelling is found too.
+- At most 40 listings a request, and 10 pages a folder. A key whose folder
+  was not listed to its end comes back in `unchecked`, never as new; the
+  console then treats it as new, and the `PUT`'s `If-None-Match: *` still
+  refuses it if it exists. So does a folder stored in another spelling
+  than the one given, whose listing finds nothing.
+- It costs one Class A operation per page listed (a 25-file album in one
+  folder: one), no D1 statement past the session check's two, and no scan
+  driver call: at most 42 subrequests.
+
 An expired URL fails with `403` and no CORS headers, so the browser sees a
 network error. The console signs just before each upload and signs again if
 needed. After a successful `PUT`, the console reports the file
 (`POST /api/files/uploads/complete`), and the debounced scan picks it up. A
 report that never arrives is covered by the next cron pass. So one file
-costs its share of one sign request (the console signs 1–3 files at a
+costs its share of one check request (up to 1,000 keys), its share of one
+sign request (the console signs 1–3 files at a
 time) and of one complete request (it reports up to 10 landed files
 together), which are Worker requests, and one `OPTIONS` and one `PUT` to R2, which are not.
 
