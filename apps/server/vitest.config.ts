@@ -30,6 +30,9 @@ export default defineConfig(async () => {
           // migrates it part of the way, writes the rows a deployed server
           // would have, then applies the rest (test/migration-0008.test.ts).
           d1Databases: ["MIGRATION_DB"],
+          // A second bucket, which the fake S3 endpoint serves a connected
+          // library from (test/fake-s3.ts).
+          r2Buckets: ["LIBRARY_TEST"],
         },
       }),
     ],

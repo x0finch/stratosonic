@@ -17,7 +17,7 @@ import type { Env } from "../env";
  * ## Uploads
  *
  * The browser uploads straight to the bucket's S3 endpoint, with URLs the
- * Worker presigns (files/sign.ts) with an R2 API token. Uploads are
+ * Worker presigns (storage/presign.ts) with an R2 API token. Uploads are
  * configured only when the token's two secrets, `CF_ACCOUNT_ID` and
  * `R2_BUCKET_NAME` are all set (`uploadsStatus`); otherwise
  * `GET /api/files/config` reports `uploads.configured: false` with the

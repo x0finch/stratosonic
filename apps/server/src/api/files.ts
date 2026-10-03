@@ -23,9 +23,9 @@ import {
 } from "../files/keys";
 import { RESCAN_QUIET_MS, recordLibraryChange, type ScanSchedule } from "../files/library-change";
 import { folderListing, playlistKeysOf } from "../files/listing";
-import type { PresignedUpload } from "../files/sign";
 import { deletePlaylistRowsByKeys } from "../playlists/repository";
 import { bindingStorage } from "../storage/binding";
+import type { PresignedUpload } from "../storage/presign";
 import type { LibraryStorage, StorageListing } from "../storage/storage";
 import type { ApiApp } from "./app";
 import {
@@ -42,7 +42,7 @@ import { requireSameOrigin } from "./same-origin";
  * folder at a time, files and folders deleted from it, and files uploaded to
  * it, all through its storage (storage/binding.ts). An upload's bytes go from
  * the browser straight to R2, with a URL the storage presigns
- * (`presignPut`, files/sign.ts), and never through the Worker.
+ * (`presignPut`, storage/presign.ts), and never through the Worker.
  *
  * R2 has no folders: a folder is a common key prefix ending in `/`, as a
  * delimited listing reports it. Keys are used exactly as R2 lists them, never
