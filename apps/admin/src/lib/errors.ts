@@ -125,7 +125,7 @@ const MESSAGES: Record<string, ErrorMessage> = {
   },
   exists: {
     title: "The file already exists",
-    description: "Replace it, or skip it.",
+    description: "Upload it again to replace it.",
   },
   replace_unavailable: {
     title: "The file cannot be replaced from here",

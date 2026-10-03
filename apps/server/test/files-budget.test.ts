@@ -1,7 +1,7 @@
 import { SELF } from "cloudflare:test";
 import { playlistTrack } from "@stratosonic/db";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { SIGN_BATCH, SPELLING_LISTINGS } from "../src/api/files";
+import { CHECK_CALLS, CHECK_LISTINGS, SIGN_BATCH, SPELLING_LISTINGS } from "../src/api/files";
 import { database } from "../src/db";
 import {
   type CookieJar,
@@ -41,6 +41,13 @@ const ORIGIN = "https://files-budget.stratosonic.test";
  * Auth instance, and with it the session check, reads its D1 binding.
  */
 const harness = filesHarness(ORIGIN, { uploads: UPLOADS_ENV, scanDriver: inertDriver() });
+
+/**
+ * The most D1 statements a write's session check makes: the session and
+ * its user, and, a day on (Better Auth's `updateAge`), an update of the
+ * session row (test/console-auth-sessions.test.ts).
+ */
+const WORST_SESSION_STATEMENTS = 3;
 
 /** Entries in the one playlist each delete takes with it. */
 const ENTRIES = 25;
@@ -316,6 +323,47 @@ describe("the Files routes' budget", () => {
     expect(result.route).toEqual([]);
     expect(result.r2).toEqual([]);
     expect(subrequests(result)).toBe(0);
+  });
+
+  it("POST /api/files/uploads/check, a 25-file album with 3 that exist: one listing, nothing else", async () => {
+    const keys = Array.from(
+      { length: 25 },
+      (_, index) => `Album/${String(index + 1).padStart(2, "0")}.flac`,
+    );
+    await seedObjects(keys.slice(0, 3));
+
+    const result = await measured("POST", "/files/uploads/check", { keys });
+
+    expect(result.status).toBe(200);
+    expect((result.body as { existing: unknown[] }).existing).toHaveLength(3);
+    expect(result.session).toEqual(["select session", "select user"]);
+    expect(result.route).toEqual([]);
+    expect(result.r2).toEqual(["list"]);
+    expect(result.driver).toEqual([]);
+    expect(subrequests(result)).toBe(1);
+  });
+
+  it("POST /api/files/uploads/check at the bound: 40 listings and 7 head(), 50 subrequests with a 3-statement session check", async () => {
+    // A folder each: one listing each, until the bound, then a head() each
+    // for as many as the calls left allow.
+    const keys = Array.from({ length: CHECK_CALLS + 5 }, (_, index) => `F${index}/a.flac`);
+
+    const result = await measured("POST", "/files/uploads/check", { keys });
+
+    expect(result.status).toBe(200);
+    expect((result.body as { unchecked: unknown[] }).unchecked).toHaveLength(5);
+    expect(result.route).toEqual([]);
+    expect(result.r2).toEqual([
+      ...Array.from({ length: CHECK_LISTINGS }, () => "list"),
+      ...Array.from({ length: CHECK_CALLS - CHECK_LISTINGS }, () => "head"),
+    ]);
+    expect(result.driver).toEqual([]);
+    expect(subrequests(result)).toBe(CHECK_CALLS);
+    // A fresh session reads 2 statements here; one past Better Auth's
+    // updateAge also updates it (test/console-auth-sessions.test.ts): the
+    // bound holds against that worst case.
+    expect(result.session.length).toBeLessThanOrEqual(WORST_SESSION_STATEMENTS);
+    expect(subrequests(result) + WORST_SESSION_STATEMENTS).toBeLessThanOrEqual(50);
   });
 
   it("POST /api/files/uploads/complete, 10 keys: 1 statement, 1 driver call, no R2 call", async () => {

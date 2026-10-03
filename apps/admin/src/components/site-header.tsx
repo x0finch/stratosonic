@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/breadcrumb";
 import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
+import { UploadsPopover } from "@/components/uploads-popover";
 
 /**
  * The breadcrumb's current page is the page's title, and so its level-one
@@ -19,7 +20,8 @@ const PAGE_HEADING = { role: "heading", "aria-level": 1, "aria-disabled": undefi
 
 /**
  * The sidebar-08 block's header: the sidebar trigger, a breadcrumb naming the
- * page, and the theme toggle at the other end.
+ * page, and the theme toggle at the other end, with the Uploads trigger
+ * before it while the session's upload queue holds a file (#141).
  */
 export function SiteHeader() {
   // The deepest route on screen that names itself; the not-found page names none.
@@ -42,7 +44,8 @@ export function SiteHeader() {
             </BreadcrumbItem>
           </BreadcrumbList>
         </Breadcrumb>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex min-w-0 items-center gap-2">
+          <UploadsPopover />
           <ModeToggle />
         </div>
       </div>

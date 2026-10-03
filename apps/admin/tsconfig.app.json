@@ -17,7 +17,11 @@
 
     /* Linting */
     "strict": true,
-    "noUnusedLocals": true,
+    /* Unused imports and variables are Biome's errors instead (biome.json,
+       the apps/admin override), which skips the shadcn CLI's output: its
+       scroll-area.tsx imports React without using it, and stays as
+       generated. */
+    "noUnusedLocals": false,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true,

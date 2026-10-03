@@ -9,28 +9,30 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
-import { countOf } from "@/lib/files";
 
 /**
  * **Upload** (#83, "Layout", item 3): a menu of "Files…", which picks any
  * number of files, and "Folder…", which picks a folder with everything in
  * it (`webkitdirectory`), each file then carrying its path under the folder
  * picked (`webkitRelativePath`). The pickers are the browser's own, behind
- * two hidden inputs. While a large pick is being prepared, the button says
- * so, with a spinner, and takes no other pick.
+ * two hidden inputs. While a pick is being prepared ("Preparing 2,000
+ * files…", a large one) or checked against the bucket ("Checking 25
+ * files…"), the button says so, with a spinner, and takes no other pick.
  */
 export function UploadMenu({
   onPick,
   variant = "default",
-  preparing = null,
+  busy = null,
 }: {
   onPick: (files: File[]) => void;
   variant?: "default" | "outline";
-  /** The files of a pick being prepared, or null. */
-  preparing?: number | null;
+  /** What the pick in hand is going through, in words, or null. */
+  busy?: string | null;
 }) {
   const filesInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const wasBusy = useRef(false);
 
   useEffect(() => {
     // Not a React attribute: set on the element itself.
@@ -38,6 +40,23 @@ export function UploadMenu({
       folderInput.current.webkitdirectory = true;
     }
   }, []);
+
+  // The button is disabled while busy, which drops its focus to the page:
+  // once it is done, focus comes back to it, unless something else took
+  // it meanwhile (the conflict dialog).
+  useEffect(() => {
+    if (busy !== null) {
+      wasBusy.current = true;
+      return;
+    }
+    if (wasBusy.current) {
+      wasBusy.current = false;
+      const active = document.activeElement;
+      if (active === null || active === document.body) {
+        trigger.current?.focus();
+      }
+    }
+  }, [busy]);
 
   const take = (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.currentTarget.files ?? []);
@@ -52,15 +71,17 @@ export function UploadMenu({
     <>
       <DropdownMenu>
         <DropdownMenuTrigger
-          // The page finds it here to give it focus back (routes/_shell/files.tsx).
+          ref={trigger}
+          // The Uploads popover finds it here to give it focus back once the
+          // queue empties (components/uploads-popover.tsx).
           data-upload-trigger=""
-          disabled={preparing !== null}
+          disabled={busy !== null}
           render={<Button variant={variant} size="sm" />}
         >
-          {preparing !== null ? (
+          {busy !== null ? (
             <>
               <Spinner data-icon="inline-start" aria-hidden="true" />
-              Preparing {countOf(preparing, "file")}…
+              {busy}
             </>
           ) : (
             <>

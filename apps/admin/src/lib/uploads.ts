@@ -1,11 +1,13 @@
 import {
   ApiError,
   type CompleteUploadsResult,
+  type ExistingUpload,
   type FilesConfig,
   type FolderEntry,
   type PresignedUpload,
   type ServerClock,
   type SignUploadsResult,
+  type UploadCheckResult,
   type UploadKind,
   type UploadRefusalCode,
   type UploadToSign,
@@ -16,8 +18,8 @@ import { formatBytes, formatCount } from "@/lib/format";
 /**
  * The Files page's uploads (#83, "Upload queue", ticket E): which key each
  * picked file takes, the client's mirror of the allow-list, and the queue, a
- * plain state machine that signs, sends and reports each file. The page only
- * draws it (components/files/uploads-section.tsx).
+ * plain state machine that signs, sends and reports each file. The console
+ * only draws it (components/uploads-popover.tsx, in the header).
  *
  * ## One file's way
  *
@@ -25,17 +27,26 @@ import { formatBytes, formatCount } from "@/lib/format";
  *    (`checkUpload`, the server's rules for a new key and its kind's size),
  *    so a refused type or size never reaches the server, and its row says
  *    why. The server stays the authority: it checks again when it signs.
- * 2. **Waiting**, in the order picked.
- * 3. **Signing**, just in time: as uploads finish, the next files are signed
+ * 2. **Checked against the bucket** (#141), before anything is signed:
+ *    `POST /api/files/uploads/check` (`findConflicts`, at most
+ *    `CHECK_BATCH` keys a request, one request per folder prefix) says
+ *    which picked keys already exist; the keys it could not check yet are
+ *    asked again, each request with a fresh budget, and those it cannot
+ *    check at all (a folder too large to list) may exist. If any exist or
+ *    may, the owner decides once, for all of them, in one dialog:
+ *    **Replace** (they are signed with `overwrite: true`), **Skip** (only
+ *    the rest go), or **Cancel** (nothing goes); `decideConflicts`.
+ * 3. **Waiting**, in the order picked.
+ * 4. **Signing**, just in time: as uploads finish, the next files are signed
  *    with `POST /api/files/uploads`, as many as there are free places, at
  *    most `UPLOADS_AT_ONCE` (3) and never more than `limits.signBatch`, in
  *    one request whose `prefix` is the folder they go into, exactly as
  *    browse listed it (`uploadTarget`).
- * 4. **Uploading**, with `XMLHttpRequest` (`xhrPut`), the only way a browser
+ * 5. **Uploading**, with `XMLHttpRequest` (`xhrPut`), the only way a browser
  *    reports an upload's progress, sending exactly the headers the server
  *    signed. A URL that would be within 30 s of its expiry is signed again
  *    instead (once), on the server's clock.
- * 5. **Uploaded** on a 2xx. Landed keys are held, and reported in one
+ * 6. **Uploaded** on a 2xx. Landed keys are held, and reported in one
  *    `POST /api/files/uploads/complete` (with `keepalive`) once
  *    `limits.signBatch` (10) of them wait, or once `COMPLETE_QUIET_MS`
  *    (2 s) pass with nothing new landing. The scan line shows the `scan` it
@@ -45,22 +56,22 @@ import { formatBytes, formatCount } from "@/lib/format";
  *
  * Or else:
  *
- * - **Already exists**: the server's `exists`, or R2's `412` for a file
- *   that appeared after it looked. **Replace** signs it again with
- *   `overwrite: true`; **Skip** leaves it. Replace is always the owner's
- *   choice, never automatic.
  * - **Failed**: a refusal (`replace_unavailable` says to use rclone), or a
  *   `PUT` that failed twice: a network error or a `403` (an expired URL has
  *   no CORS headers, so it reads as a network error) is signed again and
- *   tried once more first.
- * - **Canceled** by the owner, or **Skipped**.
+ *   tried once more first. A key that appeared between the check and the
+ *   upload (the server's `exists`, or R2's `412`) fails too, with
+ *   "uploaded elsewhere just now": nothing asks again, and the owner
+ *   uploads it again to replace it (`exists_now`).
+ * - **Canceled** by the owner.
  *
  * Two uploads to one key never run at once (R2 takes one write per key per
  * second): a file waits while another to the same key is in flight.
  *
  * ## What it costs
  *
- * Per file: its share of one sign request (1–3 files), one `PUT` straight
+ * Per file: its share of one check request (up to 1,000 files), its share
+ * of one sign request (1–3 files), one `PUT` straight
  * to R2 (no Worker request), and its share of one complete request (up to
  * 10 landed files). Each `PUT` also has its
  * own CORS preflight (`OPTIONS`, to R2, no Worker request): a browser
@@ -150,8 +161,13 @@ function listedFolder(
   return same.length === 1 ? same[0] : undefined;
 }
 
-/** Why a file is refused before any request: the server's own codes. */
-export type ClientRefusal = Exclude<UploadRefusalCode, "replace_unavailable">;
+/**
+ * Why a file is refused before any request: the server's own codes, and
+ * `same_name`, a second file of one pick whose key another file of it
+ * takes already (in either Unicode spelling), so two uploads to one key
+ * never both go.
+ */
+export type ClientRefusal = Exclude<UploadRefusalCode, "replace_unavailable"> | "same_name";
 
 /** The server's prefix for the covers it extracts, which no upload may write under. */
 const RESERVED_PREFIX = "_covers/";
@@ -219,6 +235,8 @@ export interface PlannedUpload {
   prefix: string;
   key: string;
   refusal: ClientRefusal | null;
+  /** Replace what is at the key: the owner's answer to the conflict dialog, never a default. */
+  overwrite?: boolean;
 }
 
 /**
@@ -280,11 +298,28 @@ function planOne(
   return [{ file, prefix, key, refusal: checkUpload(key, file.size, config) }];
 }
 
+/**
+ * The plan in path order, the second file of any key refused as
+ * `same_name`: a folder picked from a disk that keeps both Unicode
+ * spellings of a name (`Café.flac` composed and decomposed) maps both to
+ * one key, and only the first may go.
+ */
 function inPathOrder(planned: readonly PlannedUpload[]): PlannedUpload[] {
+  const seen = new Set<string>();
   return planned
     .map((upload) => ({ upload, order: pathOrder(upload.key) }))
     .sort((a, b) => comparePathOrder(a.order, b.order))
-    .map(({ upload }) => upload);
+    .map(({ upload }) => {
+      if (upload.refusal !== null) {
+        return upload;
+      }
+      const key = sameKey(upload.key);
+      if (seen.has(key)) {
+        return { ...upload, refusal: "same_name" as const };
+      }
+      seen.add(key);
+      return upload;
+    });
 }
 
 /**
@@ -319,29 +354,213 @@ function comparePathOrder(
   return a.length - b.length;
 }
 
-/* --------------------------------------------------------------- queue -- */
-
-export type UploadState =
-  | "waiting"
-  | "signing"
-  | "uploading"
-  | "uploaded"
-  | "exists"
-  | "failed"
-  | "skipped"
-  | "canceled";
+/* --------------------------------------------------------------- check -- */
 
 /**
- * Why an upload failed: a refusal (the mirror's or the server's), a `PUT`
- * that failed twice (`status` 0 for a network error), or a sign request
- * that failed as a whole.
+ * The most keys one `POST /api/files/uploads/check` takes: the server's own
+ * most, which keeps its CPU well inside 10 ms (bench-files.ts).
+ */
+export const CHECK_BATCH = 500;
+
+/**
+ * The most rounds of check requests one pick makes, however the server
+ * answers: a backstop, since every round already checks more or sets a
+ * folder aside.
+ */
+export const CHECK_ROUNDS = 20;
+
+/** A key to check, and the folder prefix its request names. */
+interface CheckKey {
+  prefix: string;
+  key: string;
+}
+
+/** The check requests for these keys: by folder prefix, `CHECK_BATCH` keys at most each. */
+function batchesOf(keys: readonly CheckKey[]): { prefix: string; keys: string[] }[] {
+  const byPrefix = new Map<string, string[]>();
+  for (const { prefix, key } of keys) {
+    const same = byPrefix.get(prefix);
+    if (same === undefined) {
+      byPrefix.set(prefix, [key]);
+    } else {
+      same.push(key);
+    }
+  }
+  const batches: { prefix: string; keys: string[] }[] = [];
+  for (const [prefix, all] of byPrefix) {
+    for (let start = 0; start < all.length; start += CHECK_BATCH) {
+      batches.push({ prefix, keys: all.slice(start, start + CHECK_BATCH) });
+    }
+  }
+  return batches;
+}
+
+/** The distinct keys of the files the mirror took, each once, in the order picked. */
+function keysToCheck(planned: readonly PlannedUpload[]): CheckKey[] {
+  const seen = new Set<string>();
+  const keys: CheckKey[] = [];
+  for (const { prefix, key, refusal } of planned) {
+    if (refusal === null && !seen.has(key)) {
+      seen.add(key);
+      keys.push({ prefix, key });
+    }
+  }
+  return keys;
+}
+
+/** The check requests a pick makes first: its files the mirror took, by folder prefix. */
+export function checkBatches(
+  planned: readonly PlannedUpload[],
+): { prefix: string; keys: string[] }[] {
+  return batchesOf(keysToCheck(planned));
+}
+
+/** A planned file whose key already exists, with what is stored there. */
+export interface UploadConflict {
+  upload: PlannedUpload;
+  existing: ExistingUpload;
+}
+
+/** What the check found: the files that exist, and those it could not check. */
+export interface CheckOutcome {
+  conflicts: UploadConflict[];
+  /** Files whose folder the server could not list to its end: they may exist. */
+  unchecked: PlannedUpload[];
+}
+
+/** A key's folder, as the server groups keys to list them. */
+function folderOf(key: string): string {
+  return key.slice(0, key.lastIndexOf("/") + 1);
+}
+
+/**
+ * Which planned files already exist, asked before anything is signed, in
+ * the order picked (#141). Each distinct key is asked about once a round.
+ * The server checks at most so much a request and answers the rest
+ * `unchecked`, so those are asked again, each request with a fresh budget,
+ * while every round checks some more. A round that checks none means the
+ * first folder of each request took the whole budget: its keys are set
+ * aside as unchecked, and the rest asked again, so a large folder never
+ * keeps the others from being checked. After `CHECK_ROUNDS` rounds, what
+ * is left is unchecked too. The files left unchecked may exist, so the
+ * conflict dialog asks about them; they are never taken as new.
+ */
+export async function findConflicts(
+  planned: readonly PlannedUpload[],
+  check: (prefix: string, keys: readonly string[]) => Promise<UploadCheckResult>,
+): Promise<CheckOutcome> {
+  const found = new Map<string, ExistingUpload>();
+  const unchecked = new Set<string>();
+  let asking = keysToCheck(planned);
+  for (let round = 0; asking.length > 0; round++) {
+    if (round === CHECK_ROUNDS) {
+      for (const { key } of asking) {
+        unchecked.add(key);
+      }
+      break;
+    }
+    const batches = batchesOf(asking);
+    const asked = new Set(asking.map(({ key }) => key));
+    const left = new Set<string>();
+    for (const { prefix, keys } of batches) {
+      const result = await check(prefix, keys);
+      for (const entry of result.existing) {
+        found.set(entry.key, entry);
+      }
+      for (const key of result.unchecked) {
+        // Only what was asked: an answer naming another key changes nothing.
+        if (asked.has(key)) {
+          left.add(key);
+        }
+      }
+    }
+    if (left.size === asked.size) {
+      // Nothing more was checked: each request's first folder took the
+      // whole budget. Those folders stay unchecked; the rest go again.
+      const stuck = new Set(batches.map(({ keys }) => folderOf(keys[0] ?? "")));
+      for (const key of left) {
+        if (stuck.has(folderOf(key))) {
+          unchecked.add(key);
+          left.delete(key);
+        }
+      }
+    }
+    asking = asking.filter(({ key }) => left.has(key));
+  }
+
+  const conflicts: UploadConflict[] = [];
+  const notChecked: PlannedUpload[] = [];
+  for (const upload of planned) {
+    if (upload.refusal !== null) {
+      continue;
+    }
+    const existing = found.get(upload.key);
+    if (existing) {
+      conflicts.push({ upload, existing });
+    } else if (unchecked.has(upload.key)) {
+      notChecked.push(upload);
+    }
+  }
+  return { conflicts, unchecked: notChecked };
+}
+
+/** The owner's one answer to the conflict dialog. */
+export type ConflictDecision = "replace" | "skip" | "cancel";
+
+/**
+ * What goes to the queue after the conflict dialog: every planned file,
+ * those asked about (that exist, or could not be checked) signed with
+ * `overwrite: true` (Replace); the rest only (Skip); or nothing (Cancel).
+ * A Replace of a key that turns out not to exist is signed as a new file.
+ */
+export function decideConflicts(
+  planned: readonly PlannedUpload[],
+  asked: readonly PlannedUpload[],
+  decision: ConflictDecision,
+): PlannedUpload[] {
+  if (decision === "cancel") {
+    return [];
+  }
+  const set = new Set(asked);
+  return decision === "skip"
+    ? planned.filter((upload) => !set.has(upload))
+    : planned.map((upload) => (set.has(upload) ? { ...upload, overwrite: true } : upload));
+}
+
+/**
+ * The conflict dialog's title: `3 of 25 files already exist`, or, when
+ * none was found but some could not be checked, `2 of 25 files could not
+ * be checked`.
+ */
+export function describeConflicts(conflicts: number, unchecked: number, total: number): string {
+  return conflicts > 0
+    ? `${formatCount(conflicts)} of ${countOf(total, "file")} already ${conflicts === 1 ? "exists" : "exist"}`
+    : `${formatCount(unchecked)} of ${countOf(total, "file")} could not be checked`;
+}
+
+/** The dialog's line for the files it could not check, beside conflicts: `2 files could not be checked`. */
+export function describeUnchecked(unchecked: number): string {
+  return `${countOf(unchecked, "file")} could not be checked, and may already exist.`;
+}
+
+/* --------------------------------------------------------------- queue -- */
+
+export type UploadState = "waiting" | "signing" | "uploading" | "uploaded" | "failed" | "canceled";
+
+/**
+ * Why an upload failed: a refusal (the mirror's or the server's), a key
+ * that appeared after the check (`exists_now`: the server's `exists`, or
+ * R2's `412`), a `PUT` that failed twice (`status` 0 for a network error),
+ * or a sign request that failed as a whole.
  */
 export type UploadFailure =
   | { code: UploadRefusalCode }
+  | { code: "same_name" }
+  | { code: "exists_now" }
   | { code: "put_failed"; status: number }
   | { code: "sign_failed"; error: unknown };
 
-/** One row of the Uploads section. */
+/** One row of the upload list. */
 export interface UploadView {
   id: number;
   /** The key: as asked for, then as the server signed it. */
@@ -351,8 +570,6 @@ export interface UploadView {
   loaded: number;
   state: UploadState;
   failure?: UploadFailure;
-  /** What the server said is already at the key, when it said. */
-  existing?: { size: number; uploadedAt: string };
 }
 
 /** What the queue holds, as the page draws it. */
@@ -367,10 +584,8 @@ export interface QueueSnapshot {
 /** What a run of the queue did, from its first file to the last one settled. */
 export interface RunSummary {
   uploaded: number;
-  /** Failed, or waiting for Replace or Skip. */
+  /** Failed. */
   notUploaded: number;
-  /** Of `notUploaded`, the files that already exist. */
-  conflicts: number;
   /** Whether a completion answered `scan: null`, or failed: the cron's next pass indexes the files. */
   scanUnknown: boolean;
 }
@@ -412,7 +627,6 @@ interface Entry {
   overwrite: boolean;
   loaded: number;
   failure?: UploadFailure;
-  existing?: { size: number; uploadedAt: string };
   /** Signed again after a failed `PUT` already. */
   retried: boolean;
   /** Signed again for a URL too close to its expiry already. */
@@ -421,7 +635,8 @@ interface Entry {
   reported: boolean;
   /**
    * A `PUT` of it ended in a network error, so R2 may have taken it with
-   * the answer lost: a later Already exists may be this very upload.
+   * the answer lost: a key found existing on its retry may be this very
+   * upload.
    */
   maybeLanded: boolean;
   abort?: AbortController;
@@ -434,7 +649,7 @@ export const NOTIFY_EVERY_MS = 100;
 
 const ACTIVE: ReadonlySet<UploadState> = new Set(["waiting", "signing", "uploading"]);
 const IN_FLIGHT: ReadonlySet<UploadState> = new Set(["signing", "uploading"]);
-const FINISHED: ReadonlySet<UploadState> = new Set(["uploaded", "failed", "skipped", "canceled"]);
+const FINISHED: ReadonlySet<UploadState> = new Set(["uploaded", "failed", "canceled"]);
 
 /** R2 takes NFC-equivalent keys as one object, so two such keys are one key here too. */
 function sameKey(key: string): string {
@@ -544,16 +759,18 @@ export class UploadQueue {
   }
 
   /**
-   * Queues the planned files, in order. A file the mirror refused is
-   * Failed at once, with its reason, and never reaches the server.
-   * `signBatch` is the server's `limits.signBatch`.
+   * Queues the planned files, in order, as the conflict dialog left them
+   * (`decideConflicts`): a file is signed with `overwrite` only when the
+   * owner chose Replace them. A file the mirror refused is Failed at once,
+   * with its reason, and never reaches the server. `signBatch` is the
+   * server's `limits.signBatch`.
    */
   add(planned: readonly PlannedUpload[], signBatch: number): void {
     if (this.#disposed) {
       return;
     }
     this.#signBatch = Math.max(1, Math.floor(signBatch));
-    for (const { file, prefix, key, refusal } of planned) {
+    for (const { file, prefix, key, refusal, overwrite } of planned) {
       const entry: Entry = {
         id: this.#nextId++,
         file,
@@ -561,7 +778,7 @@ export class UploadQueue {
         key,
         size: file.size,
         state: "waiting",
-        overwrite: false,
+        overwrite: overwrite === true,
         loaded: 0,
         retried: false,
         resigned: false,
@@ -577,24 +794,6 @@ export class UploadQueue {
     this.#settle();
   }
 
-  /** Replace: signs the file again with `overwrite: true`. Only ever the owner's choice. */
-  replace(id: number): void {
-    this.#replace(this.#entries.filter((entry) => entry.id === id));
-  }
-
-  /** Replace all: every file that already exists, after the owner confirmed it. */
-  replaceAll(): void {
-    this.#replace(this.#entries);
-  }
-
-  skip(id: number): void {
-    this.#skip(this.#entries.filter((entry) => entry.id === id));
-  }
-
-  skipAll(): void {
-    this.#skip(this.#entries);
-  }
-
   /** Cancels a file that is waiting, being signed or being sent (its `PUT` is aborted). */
   cancel(id: number): void {
     this.#cancel(this.#entries.filter((entry) => entry.id === id));
@@ -604,7 +803,12 @@ export class UploadQueue {
     this.#cancel(this.#entries);
   }
 
-  /** Takes the uploaded, failed, skipped and canceled rows away. */
+  /** The failed rows the queue holds, this run's and earlier ones, as the header's trigger counts them. */
+  get failed(): number {
+    return this.#entries.filter((entry) => entry.state === "failed").length;
+  }
+
+  /** Takes the uploaded, failed and canceled rows away. */
   clearFinished(): void {
     this.#entries = this.#entries.filter((entry) => !FINISHED.has(entry.state));
     this.#emit();
@@ -617,37 +821,6 @@ export class UploadQueue {
    */
   flush(): void {
     this.#reportHeld();
-  }
-
-  #replace(entries: readonly Entry[]): void {
-    for (const entry of entries) {
-      if (entry.state === "exists") {
-        Object.assign(entry, {
-          state: "waiting",
-          overwrite: true,
-          retried: false,
-          resigned: false,
-        });
-        entry.reported = false;
-        entry.existing = undefined;
-      }
-    }
-    this.#settle();
-  }
-
-  #skip(entries: readonly Entry[]): void {
-    for (const entry of entries) {
-      if (entry.state === "exists") {
-        entry.state = "skipped";
-        entry.reported = true;
-        // An answer lost after R2 took the file: what exists may be this
-        // upload, which the server has not heard of yet.
-        if (entry.maybeLanded) {
-          this.#hold(entry.key);
-        }
-      }
-    }
-    this.#settle();
   }
 
   #cancel(entries: readonly Entry[]): void {
@@ -740,8 +913,12 @@ export class UploadQueue {
       if ("url" in answer) {
         signed.push([entry, answer]);
       } else if (answer.error === "exists") {
-        entry.state = "exists";
-        entry.existing = answer.existing;
+        if (entry.maybeLanded && answer.existing.size === entry.size) {
+          // Its own earlier `PUT`, whose answer was lost: R2 took it.
+          this.#land(entry);
+        } else {
+          this.#existsNow(entry);
+        }
       } else {
         this.#fail(entry, { code: answer.error });
       }
@@ -788,14 +965,10 @@ export class UploadQueue {
           return;
         }
         if (status >= 200 && status < 300) {
-          entry.state = "uploaded";
-          entry.loaded = entry.size;
-          this.#hold(entry.key);
-          this.#landed.push(entry.key);
-          this.#refreshSoon();
+          this.#land(entry);
         } else if (status === 412) {
           // The key appeared after the server looked: If-None-Match held.
-          entry.state = "exists";
+          this.#existsNow(entry);
         } else if ((status === 0 || status === 403) && !entry.retried) {
           // A network error (an expired URL has no CORS headers) or a 403:
           // signed again and tried once more.
@@ -812,6 +985,28 @@ export class UploadQueue {
   #fail(entry: Entry, failure: UploadFailure): void {
     entry.state = "failed";
     entry.failure = failure;
+  }
+
+  /** R2 took the file: held for the next report, and its folder read again soon. */
+  #land(entry: Entry): void {
+    entry.state = "uploaded";
+    entry.loaded = entry.size;
+    this.#hold(entry.key);
+    this.#landed.push(entry.key);
+    this.#refreshSoon();
+  }
+
+  /**
+   * The key appeared between the check and the upload (the race fallback,
+   * #141): Failed, with no prompt; the owner uploads it again to replace
+   * it. If an earlier `PUT` of it lost its answer, what exists may be that
+   * upload, so its key is reported anyway.
+   */
+  #existsNow(entry: Entry): void {
+    this.#fail(entry, { code: "exists_now" });
+    if (entry.maybeLanded) {
+      this.#hold(entry.key);
+    }
   }
 
   /**
@@ -900,20 +1095,16 @@ export class UploadQueue {
       this.#completing > 0;
     if (!running) {
       const settled = this.#entries.filter(
-        (entry) =>
-          !entry.reported &&
-          (entry.state === "uploaded" || entry.state === "failed" || entry.state === "exists"),
+        (entry) => !entry.reported && (entry.state === "uploaded" || entry.state === "failed"),
       );
       if (settled.length > 0) {
         for (const entry of settled) {
           entry.reported = true;
         }
-        const conflicts = settled.filter((entry) => entry.state === "exists").length;
         const uploaded = settled.filter((entry) => entry.state === "uploaded").length;
         const summary: RunSummary = {
           uploaded,
           notUploaded: settled.length - uploaded,
-          conflicts,
           scanUnknown: this.#scanUnknown,
         };
         this.#scanUnknown = false;
@@ -966,8 +1157,7 @@ function viewOf(entry: Entry): UploadView {
     view.key === entry.key &&
     view.loaded === entry.loaded &&
     view.state === entry.state &&
-    view.failure === entry.failure &&
-    view.existing === entry.existing
+    view.failure === entry.failure
   ) {
     return view;
   }
@@ -978,7 +1168,6 @@ function viewOf(entry: Entry): UploadView {
     loaded: entry.loaded,
     state: entry.state,
     ...(entry.failure ? { failure: entry.failure } : {}),
-    ...(entry.existing ? { existing: entry.existing } : {}),
   };
   return entry.view;
 }
@@ -1052,24 +1241,29 @@ export function watchPage(
 
 /* ---------------------------------------------------------------- rows -- */
 
-/** The most finished rows the Uploads section shows: the latest ones. */
+/** The most finished rows the upload list shows: the latest ones. */
 export const SHOWN_FINISHED = 50;
 
-/** The most waiting rows the Uploads section shows: the next ones. */
+/** The most waiting rows the upload list shows: the next ones. */
 export const SHOWN_WAITING = 50;
 
-/** The rows the Uploads section shows, and how many of each kind it leaves out. */
+/** The rows the upload list shows, and how many of each kind it leaves out. */
 export interface ShownRows {
+  /** The files still to go: those being signed or sent first, then the next waiting ones. */
+  active: UploadView[];
+  /** The files settled: every failure and the latest finished ones, in queue order. */
+  settled: UploadView[];
+  /** `active`, then `settled`: every row drawn, in the order drawn. */
   rows: UploadView[];
-  hidden: { uploaded: number; skipped: number; canceled: number; waiting: number };
+  hidden: { uploaded: number; canceled: number; waiting: number };
 }
 
 /**
- * Which rows to draw, in queue order: every file being signed or sent,
- * every failure and every conflict (they need the owner), the next
- * `SHOWN_WAITING` waiting files and the latest `SHOWN_FINISHED` uploaded,
- * skipped or canceled ones. The rest are counted, so a pick of 2,000 files
- * draws about a hundred rows.
+ * Which rows to draw: every file being signed or sent, at the top (#142
+ * review), then the next `SHOWN_WAITING` waiting files, then every failure
+ * (it needs the owner) and the latest `SHOWN_FINISHED` uploaded or
+ * canceled ones, in queue order. The rest are counted, so a pick of 2,000
+ * files draws about a hundred rows.
  */
 export function shownRows(
   items: readonly UploadView[],
@@ -1078,66 +1272,141 @@ export function shownRows(
     waiting: SHOWN_WAITING,
   },
 ): ShownRows {
-  const done = items.filter(
-    (item) => item.state === "uploaded" || item.state === "skipped" || item.state === "canceled",
-  );
+  const done = items.filter((item) => item.state === "uploaded" || item.state === "canceled");
   const kept = new Set(done.slice(Math.max(done.length - limits.finished, 0)));
-  const hidden = { uploaded: 0, skipped: 0, canceled: 0, waiting: 0 };
-  let waiting = 0;
-  const rows = items.filter((item) => {
+  const hidden = { uploaded: 0, canceled: 0, waiting: 0 };
+  const inFlight: UploadView[] = [];
+  const waiting: UploadView[] = [];
+  const settled: UploadView[] = [];
+  for (const item of items) {
     switch (item.state) {
+      case "signing":
+      case "uploading":
+        inFlight.push(item);
+        break;
       case "waiting":
-        waiting++;
-        if (waiting <= limits.waiting) {
-          return true;
+        if (waiting.length < limits.waiting) {
+          waiting.push(item);
+        } else {
+          hidden.waiting++;
         }
-        hidden.waiting++;
-        return false;
+        break;
       case "uploaded":
-      case "skipped":
       case "canceled":
         if (kept.has(item)) {
-          return true;
+          settled.push(item);
+        } else {
+          hidden[item.state]++;
         }
-        hidden[item.state]++;
-        return false;
-      default:
-        return true;
+        break;
+      case "failed":
+        settled.push(item);
+        break;
     }
-  });
-  return { rows, hidden };
+  }
+  const active = [...inFlight, ...waiting];
+  return { active, settled, rows: [...active, ...settled], hidden };
 }
 
 /**
- * The lines that count the rows left out. `earlier` stands for the older
- * finished files, so it goes above the rows (`1,950 more uploaded
- * earlier`, with skipped and canceled ones); `later` for the waiting files
- * past the shown ones, below them (`and 300 more waiting`).
+ * The lines that count the rows left out. `later` stands for the waiting
+ * files past the shown ones, below them (`and 300 more waiting`);
+ * `earlier` for the older finished files, so it goes above the settled
+ * rows (`1,950 more uploaded earlier`, with canceled ones).
  */
 export function describeHidden(hidden: ShownRows["hidden"]): {
   earlier: string | null;
   later: string | null;
 } {
-  const parts = (["uploaded", "skipped", "canceled"] as const)
+  const parts = (["uploaded", "canceled"] as const)
     .filter((state) => hidden[state] > 0)
     .map((state, index) => `${formatCount(hidden[state])}${index === 0 ? " more" : ""} ${state}`);
-  const last = parts.pop();
   return {
-    earlier:
-      last === undefined
-        ? null
-        : `${parts.length > 0 ? `${parts.join(", ")} and ${last}` : last} earlier`,
+    earlier: parts.length === 0 ? null : `${parts.join(" and ")} earlier`,
     later: hidden.waiting > 0 ? `and ${formatCount(hidden.waiting)} more waiting` : null,
   };
 }
 
 /* --------------------------------------------------------------- words -- */
 
-/** The Uploads section's description: `4 of 12 uploaded`, skipped and canceled files left out. */
+/** The upload list's description: `4 of 12 uploaded`, canceled files left out. */
 export function describeQueue(items: readonly UploadView[]): string {
-  const counted = items.filter((item) => item.state !== "skipped" && item.state !== "canceled");
+  const counted = items.filter((item) => item.state !== "canceled");
   const uploaded = counted.filter((item) => item.state === "uploaded").length;
   return `${uploaded.toLocaleString("en")} of ${counted.length.toLocaleString("en")} uploaded`;
+}
+
+/**
+ * What the header's Uploads trigger shows (#141), while the queue holds a
+ * file: `running` while a file waits or is sent, then `attention` while a
+ * failure waits for the owner, then `done`. Conflicts never reach the
+ * queue: the conflict dialog settles them before anything is signed.
+ */
+export type UploadsStatus = "running" | "attention" | "done";
+
+/** The trigger's state, or null for an empty queue (no trigger). */
+export function uploadsStatus(items: readonly UploadView[]): UploadsStatus | null {
+  if (items.length === 0) {
+    return null;
+  }
+  if (items.some((item) => ACTIVE.has(item.state))) {
+    return "running";
+  }
+  return items.some((item) => item.state === "failed") ? "attention" : "done";
+}
+
+/**
+ * The trigger's label, its state in words: `Uploading 3 of 12` (the file
+ * the run is on: one past those settled, with canceled files left out as
+ * `describeQueue` leaves them), `2 need attention` (failures), `Uploads
+ * done`.
+ */
+export function describeUploadsStatus(items: readonly UploadView[]): string {
+  switch (uploadsStatus(items)) {
+    case "running": {
+      const counted = items.filter((item) => item.state !== "canceled");
+      const settled = counted.filter((item) => !ACTIVE.has(item.state)).length;
+      return `Uploading ${formatCount(Math.min(settled + 1, counted.length))} of ${formatCount(counted.length)}`;
+    }
+    case "attention":
+      return describeAttention(items.filter((item) => item.state === "failed").length);
+    case "done":
+      return "Uploads done";
+    case null:
+      return "";
+  }
+}
+
+/** `2 need attention`, `1 needs attention`: the trigger's words for failures. */
+export function describeAttention(failed: number): string {
+  return `${formatCount(failed)} ${failed === 1 ? "needs" : "need"} attention`;
+}
+
+/**
+ * What the trigger's accessible name adds after its visible words, so the
+ * name says what they are about while the words stay its contiguous start
+ * (WCAG 2.5.3, label in name): ` files` (`Uploading 3 of 12 files`),
+ * ` in uploads` (`2 need attention in uploads`), or nothing (`Uploads
+ * done` says it already).
+ */
+export function uploadsStatusSuffix(items: readonly UploadView[]): string {
+  switch (uploadsStatus(items)) {
+    case "running":
+      return items.filter((item) => item.state !== "canceled").length === 1 ? " file" : " files";
+    case "attention":
+      return " in uploads";
+    default:
+      return "";
+  }
+}
+
+/**
+ * A row's key as its two lines: the file's name, and the folder it goes
+ * to (`Artist/Album`, with no trailing slash; empty at the bucket's root).
+ */
+export function splitKey(key: string): { name: string; folder: string } {
+  const slash = key.lastIndexOf("/");
+  return { name: key.slice(slash + 1), folder: slash < 0 ? "" : key.slice(0, slash) };
 }
 
 /** Why a file failed, for its row: short, after `Failed: `. */
@@ -1165,8 +1434,12 @@ export function describeFailure(
         : "the path or a name in it is too long";
     case "reserved_path":
       return "_covers/ is the scanner's own folder";
+    case "same_name":
+      return "another file in this pick has the same name";
     case "replace_unavailable":
       return "it cannot be replaced from here; replace it with rclone";
+    case "exists_now":
+      return "uploaded elsewhere just now. Upload it again to replace it.";
     case "put_failed":
       return failure.status === 0
         ? "the upload did not reach the bucket"
@@ -1191,13 +1464,15 @@ export function uploadedToast(summary: RunSummary): { title: string; description
 }
 
 /** The toast after a run that left files out. */
-export function notUploadedToast(summary: RunSummary): { title: string; description: string } {
+export function notUploadedToast(
+  summary: RunSummary,
+  /** The failed rows the queue holds now, which the header's trigger counts. */
+  failed: number,
+): { title: string; description: string } {
   const verb = summary.notUploaded === 1 ? "was" : "were";
   return {
     title: `${countOf(summary.notUploaded, "file")} ${verb} not uploaded`,
-    description:
-      summary.conflicts > 0
-        ? "Uploads lists why. Replace or skip the files that already exist."
-        : "Uploads lists why.",
+    // Names the trigger by the words it shows (#142 review).
+    description: `Open “${describeAttention(failed)}” in the header to see why.`,
   };
 }

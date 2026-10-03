@@ -16,8 +16,10 @@ import {
 
 /**
  * The console's one upload queue (lib/uploads.ts), made the first time the
- * Files page needs it and kept for the session, so uploads carry on while
- * the owner opens other folders or other pages. Its toasts go to the
+ * shell needs it (the header's Uploads trigger, components/uploads-popover.tsx)
+ * and kept for the session, so uploads carry on while the owner opens
+ * other folders or other pages, and the trigger shows them on every page.
+ * Only the Files page adds files to it. Its toasts go to the
  * root's toaster, so a run that ends on another page still says so. It
  * ends with the session (lib/sign-out.ts, `whenSignedOut`): what is still
  * to go is canceled, every row goes, and the next session starts a new one.
@@ -36,7 +38,7 @@ function createQueue(queryClient: QueryClient): UploadQueue {
           toastSuccess(title, description);
         }
         if (summary.notUploaded > 0) {
-          const { title, description } = notUploadedToast(summary);
+          const { title, description } = notUploadedToast(summary, queue.failed);
           toastFailure(title, description);
         }
       },

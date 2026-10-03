@@ -77,12 +77,22 @@
  * scratch bucket named in `UPLOADS_BUCKET` (and the CORS rule for
  * `BASE_URL`'s origin, apps/server README "File uploads"), and are skipped
  * otherwise. In `FILES_PREFIX` they upload a folder (two FLACs, their
- * `.lrc` and a cover, from the server's test fixtures), seeing each file's
- * progress row, the toast and the scan line; upload one of its files again,
- * which already exists, and replace it; and delete the folder again. On
- * any Worker with uploads configured (fake credentials will do), they pick
- * a `.pdf` and see it refused before any request. Each step's note gives
- * the requests its run made (sign, complete and `PUT`), for the budget.
+ * `.lrc` and a cover, from the server's test fixtures), seeing the toast,
+ * the scan line, the header's Uploads trigger ("Uploads done") and one row
+ * a file in its popover; pick one of its files again, which already
+ * exists, see the conflict dialog ("1 of 1 file already exists") before
+ * anything is signed, and choose Replace it, which signs it with
+ * `overwrite`; and delete the folder again. On any Worker with uploads
+ * configured (fake credentials will do), they pick a `.pdf` and see it
+ * refused before any request, the check's included: the trigger says
+ * "1 needs attention" while the popover stays closed and the folder stays
+ * the page's one block, the keyboard opens the popover with focus on its
+ * heading, Escape closes it with focus back on the trigger, and Clear
+ * finished takes the trigger away with focus on Upload. Each step's note
+ * gives the requests its run made (check, sign, complete and `PUT`), for
+ * the budget. Signing out from the Files page, with a refused `.pdf` still
+ * in the queue, then reads nothing more from the files API, and the next
+ * session has no queue (#141).
  *
  * Any console error or uncaught exception on a page fails the walkthrough,
  * except the browser's own "Failed to load resource" line for a response the
@@ -491,19 +501,52 @@ async function pick(page, item, paths) {
 }
 
 /**
- * Counts the requests an upload run makes from now on: sign and complete
- * requests to the Worker, and `PUT`s to R2. A CORS preflight is not a
- * request Playwright reports; there is one before each `PUT`, since a
- * browser caches a preflight by its full URL and every presigned URL
- * differs.
+ * The header's Uploads trigger (#141), on every page while the upload queue
+ * holds a file, by its accessible name ("1 needs attention in uploads", where
+ * it shows "1 needs attention"): this one, or whichever it has.
+ */
+function uploadsTrigger(page, label) {
+  return page.getByRole("button", {
+    name:
+      label ??
+      /^(Uploading [\d,]+ of [\d,]+ files?|[\d,]+ needs? attention in uploads|Uploads done)$/,
+    exact: true,
+  });
+}
+
+/** The upload list, in the popover the trigger opens. */
+function uploadsPopover(page) {
+  return page.getByRole("dialog", { name: "Uploads" });
+}
+
+/** Clear finished in the Uploads popover, when there is a queue: the trigger goes. */
+async function clearUploads(page) {
+  if ((await uploadsTrigger(page).count()) === 0) {
+    return;
+  }
+  await uploadsTrigger(page).click();
+  await uploadsPopover(page).getByRole("button", { name: "Clear finished" }).click();
+  await uploadsTrigger(page).waitFor({ state: "detached" });
+}
+
+/**
+ * Counts the requests an upload run makes from now on: check, sign and
+ * complete requests to the Worker (and the files signed with `overwrite`),
+ * and `PUT`s to R2. A CORS preflight is not a request Playwright reports;
+ * there is one before each `PUT`, since a browser caches a preflight by
+ * its full URL and every presigned URL differs.
  */
 function countUploadRequests(page) {
-  const counted = { sign: 0, complete: 0, put: 0, files: 0 };
+  const counted = { check: 0, sign: 0, complete: 0, put: 0, files: 0, overwrite: 0 };
   page.on("request", (request) => {
     const path = pathOf(request);
-    if (path === "/api/files/uploads") {
+    if (path === "/api/files/uploads/check") {
+      counted.check++;
+    } else if (path === "/api/files/uploads") {
+      const files = JSON.parse(request.postData() ?? "{}").files ?? [];
       counted.sign++;
-      counted.files += JSON.parse(request.postData() ?? "{}").files?.length ?? 0;
+      counted.files += files.length;
+      counted.overwrite += files.filter((file) => file.overwrite === true).length;
     } else if (path === "/api/files/uploads/complete") {
       counted.complete++;
     } else if (
@@ -514,6 +557,7 @@ function countUploadRequests(page) {
     }
   });
   counted.note = () =>
+    `${counted.check} check request(s), ` +
     `${counted.sign} sign request(s) for ${counted.files} file(s), ${counted.put} PUT(s), ` +
     `${counted.complete} complete request(s)`;
   return counted;
@@ -1191,22 +1235,48 @@ async function main() {
       const counted = countUploadRequests(page);
       await markToasts(page);
       await pick(page, "Files…", join(uploads.dir, "notes.pdf"));
-      await page.getByRole("heading", { level: 2, name: "Uploads" }).waitFor();
-      // The folder's block is a region of its own now, named after it.
-      await page.getByRole("region", { name: FILES_PREFIX.split("/").at(-2) }).waitFor();
-      await page.getByText("Failed: not a type the server reads").waitFor();
+      // The header's trigger says so; the popover never opens by itself.
+      await uploadsTrigger(page, "1 needs attention in uploads").waitFor();
       await expectToast(page, "1 file was not uploaded");
+      check((await uploadsPopover(page).count()) === 0, "the Uploads popover opened by itself");
+      // The folder stays the page's one block: no h2, no region.
       check(
-        counted.sign === 0 && counted.put === 0,
+        (await page.getByRole("main").getByRole("region").count()) === 0,
+        "the Files page shows a region beside its folder",
+      );
+      check(
+        counted.check === 0 && counted.sign === 0 && counted.put === 0,
         `a refused .pdf made requests: ${counted.note()}`,
       );
+      // The keyboard opens it, Escape closes it, and focus returns to the trigger.
+      await uploadsTrigger(page).focus();
+      await page.keyboard.press("Enter");
+      await uploadsPopover(page).getByText("Failed: not a type the server reads").waitFor();
+      // Focus lands on the popover's heading, never on Cancel all, so a
+      // second Enter cancels nothing (#142 review).
+      check(
+        await uploadsPopover(page)
+          .getByRole("heading", { name: "Uploads" })
+          .evaluate((element) => element === document.activeElement),
+        "opening the Uploads popover did not put focus on its heading",
+      );
       await shot(page, "files-upload-refused");
-      await page.getByRole("button", { name: "Clear finished" }).click();
-      await page.getByRole("heading", { level: 2, name: "Uploads" }).waitFor({ state: "detached" });
+      await page.keyboard.press("Escape");
+      await uploadsPopover(page).waitFor({ state: "detached" });
+      check(
+        await uploadsTrigger(page).evaluate((element) => element === document.activeElement),
+        "Escape did not return focus to the Uploads trigger",
+      );
+      // Clear finished empties the queue: the trigger goes, and focus goes to Upload.
+      await clearUploads(page);
+      check(
+        await page.evaluate(() => document.activeElement?.hasAttribute("data-upload-trigger")),
+        "emptying the queue did not return focus to Upload",
+      );
     });
 
     await step(
-      "Files: upload a folder, with each file's progress, the toast and the scan line",
+      "Files: upload a folder, with the toast, the scan line and a row a file in the popover",
       async () => {
         if (!uploads.on) {
           if (uploads.configured) {
@@ -1221,16 +1291,25 @@ async function main() {
         const counted = countUploadRequests(page);
         await markToasts(page);
         await pick(page, "Folder…", join(uploads.dir, "walkthrough upload"));
-        await page.getByRole("heading", { level: 2, name: "Uploads" }).waitFor();
-        // One row a file; a progress bar shows only while a file is sent.
+        // "Checking 5 files…" ends with no conflict: Upload has its focus back.
+        await page.getByRole("button", { name: "Upload", exact: true }).first().waitFor();
         check(
-          (await page.getByRole("region", { name: "Uploads" }).getByRole("listitem").count()) === 5,
-          "the Uploads section does not show one row a file",
+          await page.evaluate(() => document.activeElement?.hasAttribute("data-upload-trigger")),
+          "Upload lost its focus to the check",
         );
         await expectToast(page, "Uploaded 5 files");
-        await page.getByText("5 of 5 uploaded").waitFor();
+        await uploadsTrigger(page, "Uploads done").waitFor();
         await page.getByText(SCAN_LINE).first().waitFor();
+        // One row a file; a progress bar shows only while a file is sent.
+        await uploadsTrigger(page).click();
+        await uploadsPopover(page).getByText("5 of 5 uploaded").waitFor();
+        check(
+          (await uploadsPopover(page).getByRole("listitem").count()) === 5,
+          "the upload list does not show one row a file",
+        );
         await shot(page, "files-uploaded");
+        await page.keyboard.press("Escape");
+        await uploadsPopover(page).waitFor({ state: "detached" });
         const listed = await listFolder(page, uploads.album);
         check(
           listed.files.length === 5,
@@ -1240,29 +1319,42 @@ async function main() {
       },
     );
 
-    await step("Files: a file that exists is Already exists, and Replace replaces it", async () => {
-      if (!uploads.on) {
-        return "skipped";
-      }
-      await page.goto(filesUrl(uploads.album));
-      await inFolder(page, uploads.album);
-      await page.getByRole("button", { name: "Clear finished" }).click();
-      const counted = countUploadRequests(page);
-      await markToasts(page);
-      await pick(
-        page,
-        "Files…",
-        join(uploads.dir, "walkthrough upload", "01 Hushed Interlude.flac"),
-      );
-      await page.getByText("Already exists").waitFor();
-      await expectToast(page, "1 file was not uploaded");
-      await shot(page, "files-upload-exists");
-      await markToasts(page);
-      await page.getByRole("button", { name: "Replace", exact: true }).click();
-      await expectToast(page, "Uploaded 1 file");
-      await page.getByRole("button", { name: "Clear finished" }).click();
-      return counted.note();
-    });
+    await step(
+      "Files: picking a file that exists asks first, and Replace it replaces it",
+      async () => {
+        if (!uploads.on) {
+          return "skipped";
+        }
+        await page.goto(filesUrl(uploads.album));
+        await inFolder(page, uploads.album);
+        await clearUploads(page);
+        const counted = countUploadRequests(page);
+        await markToasts(page);
+        await pick(
+          page,
+          "Files…",
+          join(uploads.dir, "walkthrough upload", "01 Hushed Interlude.flac"),
+        );
+        // Checked before anything is signed, and asked once, in a dialog.
+        const dialog = page.getByRole("alertdialog", { name: "1 of 1 file already exists" });
+        await dialog.waitFor();
+        check(
+          counted.check === 1 && counted.sign === 0,
+          `the conflict was not asked before signing: ${counted.note()}`,
+        );
+        await shot(page, "files-upload-exists");
+        await markToasts(page);
+        await dialog.getByRole("button", { name: "Replace it" }).click();
+        await expectToast(page, "Uploaded 1 file");
+        check(
+          counted.overwrite === 1,
+          `Replace it signed ${counted.overwrite} file(s) with overwrite, not 1`,
+        );
+        await uploadsTrigger(page, "Uploads done").waitFor();
+        await clearUploads(page);
+        return counted.note();
+      },
+    );
 
     await step("Files: the uploaded folder is deleted again", async () => {
       if (uploads.dir !== "") {
@@ -1320,6 +1412,48 @@ async function main() {
       );
       const after = await listFolder(page, FILES_PREFIX);
       check(after.files.length === listed.length, "a refused delete deleted something");
+    });
+
+    await step("Files: signing out from the Files page reads nothing more", async () => {
+      if (!files.present) {
+        return "skipped";
+      }
+      await page.goto(filesUrl(FILES_PREFIX));
+      await inFolder(page, FILES_PREFIX);
+      // Sign out while the queue still holds a file, as when the page used
+      // to read its folder and the files config again as the queue ended
+      // and the cache was cleared, both refused (#141). A .pdf fills it
+      // with no request at all.
+      const queued = uploads.configured;
+      if (queued) {
+        const dir = mkdtempSync(join(tmpdir(), "walkthrough-sign-out-"));
+        writeFileSync(join(dir, "notes.pdf"), "%PDF-1.4\n");
+        try {
+          await pick(page, "Files…", join(dir, "notes.pdf"));
+          await uploadsTrigger(page, "1 needs attention in uploads").waitFor();
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
+      const read = [];
+      let signedOut = false;
+      const onRequest = (request) => {
+        if (signedOut && pathOf(request).startsWith("/api/files")) {
+          read.push(`${request.method()} ${pathOf(request)}`);
+        }
+      };
+      page.on("request", onRequest);
+      await openUserMenu(page);
+      signedOut = true;
+      await clickSignOut(page);
+      await page.getByLabel("Username", { exact: true }).waitFor();
+      await page.waitForTimeout(1000);
+      page.off("request", onRequest);
+      check(read.length === 0, `signing out read the files API: ${read.join(", ")}`);
+      await signIn(page, password, { expectAt: "/" });
+      // The queue ended with the session: no trigger for the next one.
+      check((await uploadsTrigger(page).count()) === 0, "the queue outlived the session");
+      return queued ? "signed out with a file in the queue" : "signed out with an empty queue";
     });
 
     await step("dark mode", async () => {

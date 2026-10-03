@@ -4,13 +4,13 @@ import { FolderIcon, FolderPlusIcon, InfoIcon, Trash2Icon } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 
 import { ErrorAlert } from "@/components/error-alert";
+import { ConflictDialog } from "@/components/files/conflict-dialog";
 import { DeleteDialog } from "@/components/files/delete-dialog";
 import { FilesTable } from "@/components/files/files-table";
 import { FolderPath, folderSearch } from "@/components/files/folder-path";
 import { NewFolderDialog } from "@/components/files/new-folder-dialog";
 import { ScanLine } from "@/components/files/scan-line";
 import { UploadMenu } from "@/components/files/upload-menu";
-import { UploadsSection } from "@/components/files/uploads-section";
 import { Section } from "@/components/section";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -26,14 +26,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { useClock } from "@/hooks/use-clock";
 import { useUploadQueue, useUploads } from "@/hooks/use-upload-queue";
-import { ApiError, type Me, meQuery } from "@/lib/api";
+import { ApiError, checkUploads, type Me, meQuery } from "@/lib/api";
 import {
   BUCKET_FALLBACK,
+  countOf,
   type DeleteTarget,
   describeListing,
   filesConfigQuery,
   folderQuery,
-  folderTrail,
   latestView,
   leaveFolder,
   NO_SELECTION,
@@ -52,8 +52,19 @@ import {
 import { formatCount } from "@/lib/format";
 import { liveQuery } from "@/lib/overview";
 import { can } from "@/lib/roles";
+import { signOutWhenUnauthenticated } from "@/lib/sign-out";
 import { toastError, toastFailure } from "@/lib/toasts";
-import { PLAN_SLICE, planUploads, planUploadsInSlices } from "@/lib/uploads";
+import {
+  type CheckOutcome,
+  type ConflictDecision,
+  decideConflicts,
+  findConflicts,
+  PLAN_SLICE,
+  type PlannedUpload,
+  planUploads,
+  planUploadsInSlices,
+  type UploadConflict,
+} from "@/lib/uploads";
 
 export const Route = createFileRoute("/_shell/files")({
   validateSearch: validateFilesSearch,
@@ -91,13 +102,34 @@ interface DialogState {
   targets: readonly DeleteTarget[];
 }
 
+/** A pick with conflicts, and what the conflict dialog says of it. */
+interface AskingState {
+  open: boolean;
+  planned: readonly PlannedUpload[];
+  conflicts: readonly UploadConflict[];
+  /** The files the server could not check, which may exist. */
+  unchecked: readonly PlannedUpload[];
+  /** The files checked: the pick less what the mirror refused. */
+  checked: number;
+  /** The folder the pick went into, which every key starts with. */
+  folder: string;
+}
+
 function FilesPage({ me }: { me: Me | null }) {
   const { prefix = "" } = Route.useSearch();
   const navigate = Route.useNavigate();
   const queryClient = useQueryClient();
 
-  const config = useQuery(filesConfigQuery);
-  const folder = useInfiniteQuery(folderQuery(prefix));
+  // The page reads only while signed in. Signing out clears the cache
+  // while the page is still on screen, until the sign-in screen replaces
+  // it (lib/sign-out.ts, `leaveSignedOut`): any redraw then, such as the
+  // upload queue ending, would build these queries again and read them
+  // without a session, two 401s (#141). The session is read here, not
+  // from `me`, which such a redraw does not renew.
+  const { data: session } = useQuery(meQuery);
+  const signedIn = session != null;
+  const config = useQuery({ ...filesConfigQuery, enabled: signedIn });
+  const folder = useInfiniteQuery({ ...folderQuery(prefix), enabled: signedIn });
   const [selection, setSelection] = useState<Selection>(NO_SELECTION);
   // Leaving a folder cuts its listing back to its first page, so that a
   // return to it once stale reads one page, not every page loaded, and
@@ -119,15 +151,11 @@ function FilesPage({ me }: { me: Me | null }) {
   // Uploads, where the server can presign them too: R2 API credentials.
   const uploadable = writable && config.data?.uploads.configured === true;
   const uploadsMissing = writable && config.data?.uploads.configured === false;
-  // The page redraws for the queue only when it starts or stops holding
-  // files, or a completion brings a new schedule; the rows are the Uploads
-  // section's own.
+  // The page redraws for the queue only when a completion brings a new
+  // schedule; the rows are the header's Uploads popover's own.
   const queue = useUploadQueue();
-  const queued = useUploads(queue, (snapshot) => snapshot.items.length > 0);
   const uploadSchedule = useUploads(queue, (snapshot) => snapshot.schedule);
   const uploadView = uploadSchedule && viewOfWrite(uploadSchedule);
-  // The Uploads section is for a role that may write files.
-  const showUploads = mayWrite && queued;
 
   // The scan line: the last write's schedule, or the live route's, whichever
   // came last. The live route is read only while a pass is scheduled or
@@ -138,6 +166,7 @@ function FilesPage({ me }: { me: Me | null }) {
   const live = useQuery({
     ...liveQuery,
     enabled: (query) =>
+      signedIn &&
       canReadLibrary &&
       scanActive(latestView(written, uploadView, query.state.data && viewOfLive(query.state.data))),
   });
@@ -146,8 +175,19 @@ function FilesPage({ me }: { me: Me | null }) {
   const [dialog, setDialog] = useState<DialogState>({ open: null, targets: [] });
   // The folders made with New folder, which exist only once a file lands.
   const [made, setMade] = useState<ReadonlySet<string>>(new Set());
-  // The files of a large pick being prepared, or null.
-  const [preparing, setPreparing] = useState<number | null>(null);
+  // What the pick in hand is going through, in the Upload button's words:
+  // "Preparing 2,000 files…" (a large pick), "Checking 25 files…", or null.
+  const [busy, setBusy] = useState<string | null>(null);
+  // A pick with conflicts, waiting for the owner's one answer; it stays
+  // while the dialog closes.
+  const [asking, setAsking] = useState<AskingState>({
+    open: false,
+    planned: [],
+    conflicts: [],
+    unchecked: [],
+    checked: 0,
+    folder: "",
+  });
 
   const now = Math.max(useClock(), folder.dataUpdatedAt);
   const bucket = config.data?.bucket ?? BUCKET_FALLBACK;
@@ -159,11 +199,12 @@ function FilesPage({ me }: { me: Me | null }) {
   // header's box, the Delete button's count and the delete itself all read
   // this (deletes are permanent).
   const selected = selectedIn(selection, prefix, shownIds(folder.data));
-  const folderName = folderTrail(prefix).at(-1)?.name ?? bucket;
 
   /**
    * The picked files go into the folder on screen, each key in the deepest
-   * folder the loaded listings show (lib/uploads.ts, `uploadTarget`).
+   * folder the loaded listings show (lib/uploads.ts, `uploadTarget`). They
+   * are checked against the bucket first (#141): a pick with no conflict
+   * goes at once, and one with conflicts asks once, in the conflict dialog.
    */
   async function upload(picked: readonly File[]) {
     const settings = config.data;
@@ -172,14 +213,14 @@ function FilesPage({ me }: { me: Me | null }) {
     }
     const listed = (at: string) =>
       queryClient.getQueryData(folderQuery(at).queryKey)?.pages.flatMap((page) => page.folders);
-    let planned: ReturnType<typeof planUploads>;
+    let planned: PlannedUpload[];
     if (picked.length > PLAN_SLICE) {
       // A large pick is prepared in slices, with the button saying so.
-      setPreparing(picked.length);
+      setBusy(`Preparing ${countOf(picked.length, "file")}…`);
       try {
         planned = await planUploadsInSlices(picked, prefix, settings, listed);
       } finally {
-        setPreparing(null);
+        setBusy(null);
       }
     } else {
       planned = planUploads(picked, prefix, settings, listed);
@@ -193,22 +234,47 @@ function FilesPage({ me }: { me: Me | null }) {
       );
       return;
     }
-    queue.add(planned, settings.limits.signBatch);
-  }
 
-  /**
-   * Clear finished emptied the queue, and its section went with the focus:
-   * focus goes to the folder's Upload, or else to the page's h1.
-   */
-  function focusAfterUploads() {
-    const trigger = document.querySelector<HTMLElement>("[data-upload-trigger]");
-    if (trigger) {
-      trigger.focus();
+    // The files the mirror took are checked; the refused ones fail in the
+    // list without a request.
+    const checked = planned.filter((upload) => upload.refusal === null).length;
+    let outcome: CheckOutcome = { conflicts: [], unchecked: [] };
+    if (checked > 0) {
+      setBusy(`Checking ${countOf(checked, "file")}…`);
+      try {
+        outcome = await findConflicts(planned, checkUploads);
+      } catch (error) {
+        // Nothing is uploaded without the check: the owner picks again.
+        if (!signOutWhenUnauthenticated(queryClient, error)) {
+          toastError(error, "The files could not be checked");
+        }
+        return;
+      } finally {
+        setBusy(null);
+      }
+    }
+    const { conflicts, unchecked } = outcome;
+    if (conflicts.length === 0 && unchecked.length === 0) {
+      queue.add(planned, settings.limits.signBatch);
       return;
     }
-    const heading = document.querySelector<HTMLElement>('[role="heading"][aria-level="1"]');
-    heading?.setAttribute("tabindex", "-1");
-    heading?.focus();
+    setAsking({ open: true, planned, conflicts, unchecked, checked, folder: prefix });
+  }
+
+  /** The owner's one answer to the conflict dialog: what goes, if anything. */
+  function decide(decision: ConflictDecision) {
+    if (!asking.open || !config.data) {
+      return;
+    }
+    setAsking((state) => ({ ...state, open: false }));
+    const going = decideConflicts(
+      asking.planned,
+      [...asking.conflicts.map((conflict) => conflict.upload), ...asking.unchecked],
+      decision,
+    );
+    if (going.length > 0) {
+      queue.add(going, config.data.limits.signBatch);
+    }
   }
 
   function select(targets: readonly DeleteTarget[], checked: boolean) {
@@ -263,9 +329,7 @@ function FilesPage({ me }: { me: Me | null }) {
         <FolderPlusIcon data-icon="inline-start" />
         New folder
       </Button>
-      {uploadable ? (
-        <UploadMenu onPick={(files) => void upload(files)} preparing={preparing} />
-      ) : null}
+      {uploadable ? <UploadMenu onPick={(files) => void upload(files)} busy={busy} /> : null}
     </>
   ) : readOnlyHere ? (
     <p className="text-sm text-muted-foreground">Read-only on this deployment</p>
@@ -275,85 +339,73 @@ function FilesPage({ me }: { me: Me | null }) {
     <div className="@container flex min-w-0 flex-col gap-4">
       <FolderPath prefix={prefix} bucket={bucket} />
       <ScanLine view={view} />
-      {/* The folder and the Uploads section are two blocks: `gap-6` between
-          sections (DESIGN.md, "Spacing and layout"). */}
-      <div className="flex min-w-0 flex-col gap-6">
-        {/* The folder has no h2: the path's current page names it. While it
-          is the page's one block, it is no named region either (DESIGN.md,
-          "A page with a single block has no section heading"); once the
-          Uploads section joins it, it is a region named after the folder. */}
-        <Section
-          aria-label={showUploads ? folderName : undefined}
-          description={
-            uploadsMissing
-              ? "Uploads need R2 API credentials on the server (see the server README)."
-              : // An empty folder says so in its `Empty` below, once.
-                empty
-                ? undefined
-                : folder.data
-                  ? describeListing(folders.length, files.length, folder.hasNextPage)
-                  : folder.isPending
-                    ? "Reading the folder…"
-                    : undefined
-          }
-          action={actions}
-        >
-          {folder.isPending ? (
-            <div className="flex flex-col gap-2" aria-busy="true">
-              <span className="sr-only">Loading the folder…</span>
-              <Skeleton className="h-8 w-full" />
-              <Skeleton className="h-8 w-full" />
-              <Skeleton className="h-8 w-full" />
-            </div>
-          ) : folder.data === undefined ? (
-            <ErrorAlert error={folder.error} />
-          ) : empty ? (
-            <FolderEmpty
-              prefix={prefix}
-              made={made.has(prefix)}
-              upload={
-                uploadable ? (
-                  <UploadMenu
-                    variant="outline"
-                    onPick={(files) => void upload(files)}
-                    preparing={preparing}
-                  />
-                ) : null
+      {/* The folder is the page's one block: it has no h2, since the path's
+          current page names it, and is no named region (DESIGN.md, "A page
+          with a single block has no section heading"). The upload list is
+          the header's (components/uploads-popover.tsx). */}
+      <Section
+        description={
+          uploadsMissing
+            ? "Uploads need R2 API credentials on the server (see the server README)."
+            : // An empty folder says so in its `Empty` below, once.
+              empty
+              ? undefined
+              : folder.data
+                ? describeListing(folders.length, files.length, folder.hasNextPage)
+                : folder.isPending
+                  ? "Reading the folder…"
+                  : undefined
+        }
+        action={actions}
+      >
+        {folder.isPending ? (
+          <div className="flex flex-col gap-2" aria-busy="true">
+            <span className="sr-only">Loading the folder…</span>
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-full" />
+            <Skeleton className="h-8 w-full" />
+          </div>
+        ) : folder.data === undefined ? (
+          <ErrorAlert error={folder.error} />
+        ) : empty ? (
+          <FolderEmpty
+            prefix={prefix}
+            made={made.has(prefix)}
+            upload={
+              uploadable ? (
+                <UploadMenu variant="outline" onPick={(files) => void upload(files)} busy={busy} />
+              ) : null
+            }
+          />
+        ) : (
+          <>
+            <FilesTable
+              folders={folders}
+              files={files}
+              now={now}
+              actions={
+                writable
+                  ? {
+                      selected,
+                      onSelect: select,
+                      onDelete: (target) => openDialog("delete", [target]),
+                    }
+                  : undefined
               }
             />
-          ) : (
-            <>
-              <FilesTable
-                folders={folders}
-                files={files}
-                now={now}
-                actions={
-                  writable
-                    ? {
-                        selected,
-                        onSelect: select,
-                        onDelete: (target) => openDialog("delete", [target]),
-                      }
-                    : undefined
-                }
-              />
-              {folder.hasNextPage ? (
-                <div className="flex justify-center">
-                  <Button variant="outline" disabled={folder.isFetchingNextPage} onClick={loadMore}>
-                    {folder.isFetchingNextPage ? (
-                      <Spinner data-icon="inline-start" aria-hidden="true" />
-                    ) : null}
-                    Load more
-                  </Button>
-                </div>
-              ) : null}
-            </>
-          )}
-        </Section>
-        {showUploads ? (
-          <UploadsSection queue={queue} config={config.data} onEmptied={focusAfterUploads} />
-        ) : null}
-      </div>
+            {folder.hasNextPage ? (
+              <div className="flex justify-center">
+                <Button variant="outline" disabled={folder.isFetchingNextPage} onClick={loadMore}>
+                  {folder.isFetchingNextPage ? (
+                    <Spinner data-icon="inline-start" aria-hidden="true" />
+                  ) : null}
+                  Load more
+                </Button>
+              </div>
+            ) : null}
+          </>
+        )}
+      </Section>
       {writable && config.data ? (
         <>
           <NewFolderDialog
@@ -365,6 +417,14 @@ function FilesPage({ me }: { me: Me | null }) {
               setMade((current) => new Set(current).add(next));
               void navigate({ search: folderSearch(next) });
             }}
+          />
+          <ConflictDialog
+            open={asking.open}
+            conflicts={asking.conflicts}
+            unchecked={asking.unchecked}
+            total={asking.checked}
+            folder={asking.folder}
+            onDecide={decide}
           />
           <DeleteDialog
             targets={dialog.targets}
