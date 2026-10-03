@@ -26,7 +26,8 @@
  */
 
 import { database } from "../db";
-import { checkMusicFolderIds } from "../library/music-folder";
+import { selectedLibraries } from "../library/libraries";
+import type { LibraryScope } from "../library/scope";
 import { type SearchQuery, type SearchWindow, searchLibrary } from "../library/search";
 import {
   albumChildElement,
@@ -48,11 +49,8 @@ const MAX_COUNT = 500;
 
 /** `search3` — matches rendered as ID3 elements. */
 export const search3: SubsonicHandler = async (request) => {
-  const results = await searchLibrary(
-    database(request.env),
-    requestedSearch(request),
-    request.user.id,
-  );
+  const { query, scope } = requestedSearch(request);
+  const results = await searchLibrary(database(request.env), query, request.user.id, scope);
 
   return {
     searchResult3: {
@@ -65,11 +63,8 @@ export const search3: SubsonicHandler = async (request) => {
 
 /** `search2` — the same matches rendered as the folder view's elements. */
 export const search2: SubsonicHandler = async (request) => {
-  const results = await searchLibrary(
-    database(request.env),
-    requestedSearch(request),
-    request.user.id,
-  );
+  const { query, scope } = requestedSearch(request);
+  const results = await searchLibrary(database(request.env), query, request.user.id, scope);
 
   return {
     searchResult2: {
@@ -81,26 +76,31 @@ export const search2: SubsonicHandler = async (request) => {
 };
 
 /**
- * The words to match and each kind's window, read in Navidrome's order: the
- * query, then the folder the client says it is searching, then the windows.
+ * The words to match, the libraries to search and each kind's window, read in
+ * Navidrome's order: the query, then the folders the client says it is
+ * searching, then the windows.
  *
- * `musicFolderId` is checked although this server has only ever one folder, as
- * every other endpoint that accepts it checks it: a client asking to search a
- * folder that is not here has asked for something that does not exist, and
- * searching the whole library instead would answer with music it did not ask
- * for. An unknown id is error 70, the same one those endpoints give.
+ * The libraries are the caller's, narrowed by `musicFolderId` as Navidrome's
+ * `Search2` and `Search3` narrow them (`selectedMusicFolderIds`): a folder the
+ * caller cannot see is error 70, the same one every endpoint that takes the
+ * parameter gives.
  */
-function requestedSearch(request: AuthenticatedSubsonicRequest): SearchQuery {
+function requestedSearch(request: AuthenticatedSubsonicRequest): {
+  readonly query: SearchQuery;
+  readonly scope: LibraryScope;
+} {
   const { params } = request;
   const words = searchWords(params);
-
-  checkMusicFolderIds(params);
+  const scope = selectedLibraries(request);
 
   return {
-    words,
-    artists: window(params, "artistCount", "artistOffset"),
-    albums: window(params, "albumCount", "albumOffset"),
-    songs: window(params, "songCount", "songOffset"),
+    query: {
+      words,
+      artists: window(params, "artistCount", "artistOffset"),
+      albums: window(params, "albumCount", "albumOffset"),
+      songs: window(params, "songCount", "songOffset"),
+    },
+    scope,
   };
 }
 

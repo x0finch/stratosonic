@@ -2,7 +2,7 @@ import { database } from "../db";
 import type { Env } from "../env";
 import { requiredParameter } from "../subsonic/params";
 import { SubsonicError, SubsonicErrorCode } from "../subsonic/response";
-import { findUserByUsername } from "../users/repository";
+import { findUserByUsername, type UserLibrary } from "../users/repository";
 import { constantTimeEquals, decodeHex, decryptPassword, subsonicToken } from "./crypto";
 
 /**
@@ -18,6 +18,19 @@ export interface AuthenticatedUser {
   /** Empty when the account has no address; `getUser` then omits the attribute. */
   readonly email: string;
   readonly isAdmin: boolean;
+  /**
+   * The active libraries the user sees, by id: every one for an admin, the
+   * granted ones otherwise (#84, "Who sees what"). `getMusicFolders` answers
+   * them, and `getUser` lists their ids.
+   */
+  readonly libraries: readonly UserLibrary[];
+  /** `libraries`' ids, ascending. */
+  readonly libraryIds: readonly number[];
+  /**
+   * Whether the user sees every library while none is `removing`: the fast
+   * path, on which no read adds a library predicate (library/scope.ts).
+   */
+  readonly seesAllLibraries: boolean;
 }
 
 /**
@@ -64,6 +77,12 @@ export async function authenticate(env: Env, params: URLSearchParams): Promise<A
     userName: found.userName,
     email: found.email,
     isAdmin: found.isAdmin,
+    libraries: found.libraries,
+    libraryIds: found.libraries.map((library) => library.id),
+    // Navidrome's `userSeesAllLibraries`: the visible set is the whole
+    // library table. A `removing` library is in the count and never visible,
+    // so while one exists nobody, an admin included, takes the fast path.
+    seesAllLibraries: found.libraryCount > 0 && found.libraries.length === found.libraryCount,
   };
 }
 

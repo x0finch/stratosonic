@@ -18,6 +18,9 @@
  * - Every ordering ends with the album's or track's id. Navidrome leaves ties
  *   to the database; an id breaks them, so paging through a list with `offset`
  *   cannot show the same album twice and skip another.
+ *
+ * Every read takes the caller's `LibraryScope` (library/scope.ts), narrowed
+ * by any `musicFolderId`, beside the caller.
  */
 
 import { album, annotation, artist, track } from "@stratosonic/db";
@@ -39,6 +42,7 @@ import {
 import type { Database } from "../db";
 import { annotationColumns, annotationJoin } from "./annotations";
 import { artistColumns, toAlbumView, toArtistView, toSongView } from "./repository";
+import { artistInScope, type LibraryScope, libraryFilter } from "./scope";
 import type { AlbumView, ArtistView, SongView } from "./serializers";
 
 /**
@@ -76,10 +80,11 @@ export interface Page {
 export async function listAlbums(
   db: Database,
   userId: string,
+  scope: LibraryScope,
   query: AlbumListQuery,
   page?: Page,
 ): Promise<AlbumView[]> {
-  return toAlbumViews(await albumsQuery(db, userId, query, page));
+  return toAlbumViews(await albumsQuery(db, userId, scope, query, page));
 }
 
 /**
@@ -92,7 +97,13 @@ export async function listAlbums(
  * the album's names and the annotation's (`starred`, `rating`, `play_count`,
  * ...) never meet.
  */
-export function albumsQuery(db: Database, userId: string, query: AlbumListQuery, page?: Page) {
+export function albumsQuery(
+  db: Database,
+  userId: string,
+  scope: LibraryScope,
+  query: AlbumListQuery,
+  page?: Page,
+) {
   const statement = db
     .select({ album, ...annotationColumns })
     .from(album)
@@ -100,7 +111,7 @@ export function albumsQuery(db: Database, userId: string, query: AlbumListQuery,
     // the `starred` list narrows to the same row (albumFilter), so one join
     // serves both and no list pays a second query.
     .leftJoin(annotation, annotationJoin(userId, "album", album.id))
-    .where(albumFilter(query))
+    .where(and(albumFilter(query), libraryFilter(scope, album.libraryId)))
     .orderBy(...albumOrder(query))
     .$dynamic();
 
@@ -226,13 +237,17 @@ function starredBy(
  * makes - and the annotation is joined left so an item the caller has never
  * touched still comes back. Both ride in the one statement, so no list here
  * pays a second D1 query for a name, a cover or a play count.
+ *
+ * It is filtered here, to `filter` and the scope's tracks, so no list can
+ * leave the scope out; callers order and page it.
  */
-function selectTracks(db: Database, userId: string) {
+function selectTracks(db: Database, userId: string, scope: LibraryScope, filter?: SQL) {
   return db
     .select({ track, albumName: album.name, albumCoverKey: album.coverKey, ...annotationColumns })
     .from(track)
     .leftJoin(album, eq(album.id, track.albumId))
-    .leftJoin(annotation, annotationJoin(userId, "track", track.id));
+    .leftJoin(annotation, annotationJoin(userId, "track", track.id))
+    .where(and(filter, libraryFilter(scope, track.libraryId)));
 }
 
 /** What `getRandomSongs` was asked to pick from; `null` means "do not filter". */
@@ -251,6 +266,7 @@ export interface RandomTracksQuery {
 export async function listRandomTracks(
   db: Database,
   userId: string,
+  scope: LibraryScope,
   query: RandomTracksQuery,
 ): Promise<SongView[]> {
   const filters: SQL[] = [];
@@ -265,8 +281,7 @@ export async function listRandomTracks(
     filters.push(lte(track.year, query.toYear));
   }
 
-  const rows = await selectTracks(db, userId)
-    .where(filters.length > 0 ? and(...filters) : undefined)
+  const rows = await selectTracks(db, userId, scope, and(...filters))
     .orderBy(sql`random()`)
     .limit(query.size);
 
@@ -292,11 +307,11 @@ export async function listRandomTracks(
 export async function listTracksOfGenre(
   db: Database,
   userId: string,
+  scope: LibraryScope,
   genre: string,
   page: Page,
 ): Promise<SongView[]> {
-  const rows = await selectTracks(db, userId)
-    .where(like(track.genre, genre))
+  const rows = await selectTracks(db, userId, scope, like(track.genre, genre))
     .orderBy(byName(track.title), asc(track.id))
     .limit(page.size)
     .offset(page.offset);
@@ -330,11 +345,11 @@ export async function listTracksOfGenre(
 export async function listTopTracks(
   db: Database,
   userId: string,
+  scope: LibraryScope,
   artistName: string,
   count: number,
 ): Promise<SongView[]> {
-  const rows = await selectTracks(db, userId)
-    .where(like(track.albumArtist, artistName))
+  const rows = await selectTracks(db, userId, scope, like(track.albumArtist, artistName))
     .orderBy(
       desc(annotation.playCount),
       desc(annotation.rating),
@@ -360,33 +375,51 @@ export interface StarredLibrary {
  * Navidrome asks them in parallel (`getStarredItems`). Nobody else's rows can
  * come back: each statement names the user, so a library shared by two
  * accounts still gives each of them only its own list.
+ *
+ * A starred item out of scope is left out, and its star kept: it comes back
+ * when the caller can see its library again, or names it in
+ * `musicFolderId`.
  */
-export async function listStarred(db: Database, userId: string): Promise<StarredLibrary> {
+export async function listStarred(
+  db: Database,
+  userId: string,
+  scope: LibraryScope,
+): Promise<StarredLibrary> {
   const [artists, albums, tracks] = await Promise.all([
-    listStarredArtists(db, userId),
-    listAlbums(db, userId, { type: "starred" }),
-    listStarredTracks(db, userId),
+    listStarredArtists(db, userId, scope),
+    listAlbums(db, userId, scope, { type: "starred" }),
+    listStarredTracks(db, userId, scope),
   ]);
 
   return { artists, albums, tracks };
 }
 
-async function listStarredArtists(db: Database, userId: string): Promise<ArtistView[]> {
+async function listStarredArtists(
+  db: Database,
+  userId: string,
+  scope: LibraryScope,
+): Promise<ArtistView[]> {
   const rows = await db
-    .select({ ...artistColumns, ...annotationColumns })
+    .select({ ...artistColumns(scope), ...annotationColumns })
     .from(artist)
     .innerJoin(annotation, starredBy(userId, "artist", artist.id))
+    .where(artistInScope(scope))
     .orderBy(desc(annotation.starredAt), desc(artist.id));
 
   return rows.map(toArtistView);
 }
 
-async function listStarredTracks(db: Database, userId: string): Promise<SongView[]> {
+async function listStarredTracks(
+  db: Database,
+  userId: string,
+  scope: LibraryScope,
+): Promise<SongView[]> {
   const rows = await db
     .select({ track, albumName: album.name, albumCoverKey: album.coverKey, ...annotationColumns })
     .from(track)
     .innerJoin(annotation, starredBy(userId, "track", track.id))
     .leftJoin(album, eq(album.id, track.albumId))
+    .where(libraryFilter(scope, track.libraryId))
     .orderBy(desc(annotation.starredAt), desc(track.id));
 
   return rows.map(toSongView);

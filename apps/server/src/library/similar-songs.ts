@@ -41,6 +41,12 @@
  * seed and merges them. Both keep `count` tracks when that many qualify and
  * every qualifying track otherwise, so what differs is only how likely each
  * track is — and a per-seed sample would read the genre once per seed.
+ *
+ * Every pool keeps to the caller's `LibraryScope` (library/scope.ts): the
+ * entity itself (a track, an album, an artist with an album in scope; a
+ * playlist is visible as playlists are, unscoped), the seeds drawn from it,
+ * the genre sample and the top songs. A playlist entry out of scope is no
+ * seed, as Navidrome's playlist tracks query leaves it out.
  */
 
 import {
@@ -54,12 +60,13 @@ import {
   type Track,
   track,
 } from "@stratosonic/db";
-import { and, eq, type SQL, sql } from "drizzle-orm";
+import { and, eq, type SQL, type SQLWrapper, sql } from "drizzle-orm";
 import type { Database } from "../db";
 import { type PlaylistViewer, visibleTo } from "../playlists/repository";
 import { UNKNOWN_ARTIST, VARIOUS_ARTISTS } from "../scanner/derive";
 import { type AnnotationRow, annotationColumns, annotationJoin } from "./annotations";
 import { findTrack, toSongView } from "./repository";
+import { artistInScope, type LibraryScope, libraryFilter } from "./scope";
 import type { SongView } from "./serializers";
 
 /** Navidrome's `maxSeeds`: how many tracks of an album, artist or playlist seed the mix. */
@@ -100,12 +107,13 @@ function topSongsArtist(id: string): string | null {
 export async function similarSongs(
   db: Database,
   caller: PlaylistViewer,
+  scope: LibraryScope,
   entity: EntityId,
   count: number,
 ): Promise<SongView[] | null> {
   switch (entity.type) {
     case "track": {
-      const seed = await findTrack(db, entity.id, caller.id);
+      const seed = await findTrack(db, entity.id, caller.id, scope);
       if (seed === null) {
         return null;
       }
@@ -113,6 +121,7 @@ export async function similarSongs(
       const candidates = await readCandidates(
         db,
         caller.id,
+        scope,
         count,
         [seed],
         topSongsArtist(seed.artistId),
@@ -123,7 +132,7 @@ export async function similarSongs(
       ]);
     }
     case "artist": {
-      const seeds = await readArtistSeeds(db, caller.id, entity.id);
+      const seeds = await readArtistSeeds(db, caller.id, scope, entity.id);
       if (seeds === null) {
         return null;
       }
@@ -131,6 +140,7 @@ export async function similarSongs(
       const candidates = await readCandidates(
         db,
         caller.id,
+        scope,
         count,
         seeds,
         topSongsArtist(entity.id),
@@ -145,13 +155,13 @@ export async function similarSongs(
     case "playlist": {
       const seeds =
         entity.type === "album"
-          ? await readAlbumSeeds(db, caller.id, entity.id)
-          : await readPlaylistSeeds(db, caller, entity.id);
+          ? await readAlbumSeeds(db, caller.id, scope, entity.id)
+          : await readPlaylistSeeds(db, caller, scope, entity.id);
       if (seeds === null) {
         return null;
       }
 
-      const candidates = await readCandidates(db, caller.id, count, seeds, null);
+      const candidates = await readCandidates(db, caller.id, scope, count, seeds, null);
 
       return topUp([], count, [() => seedMix(seeds, candidates.genre, count)]);
     }
@@ -281,13 +291,15 @@ function seedsOf(rows: readonly SeedRow[]): SongView[] {
 }
 
 /**
- * Up to five random tracks of an album, or null when there is no such album.
- * Reading from the album and joining its tracks left is what tells the two
- * apart in one statement: an album with no tracks is one row with no track.
+ * Up to five random tracks of an album, or null when there is no such album
+ * in scope. Reading from the album and joining its tracks left is what tells
+ * the two apart in one statement: an album with no tracks is one row with no
+ * track. Its tracks are in its library, so scoping the album scopes them.
  */
 async function readAlbumSeeds(
   db: Database,
   userId: string,
+  scope: LibraryScope,
   albumId: string,
 ): Promise<SongView[] | null> {
   const rows = await db
@@ -295,7 +307,7 @@ async function readAlbumSeeds(
     .from(album)
     .leftJoin(track, eq(track.albumId, album.id))
     .leftJoin(annotation, annotationJoin(userId, "track", track.id))
-    .where(eq(album.id, albumId))
+    .where(and(eq(album.id, albumId), libraryFilter(scope, album.libraryId)))
     .orderBy(sql`random()`)
     .limit(MAX_SEEDS);
 
@@ -303,23 +315,25 @@ async function readAlbumSeeds(
 }
 
 /**
- * Up to five random tracks of an artist, or null when there is no such
- * artist. Navidrome samples the tracks the artist is credited on as artist or
- * album artist (`sampleArtistTracks`); a track's artist id here is its album
- * artist's, which is what an artist is in this library (CONTEXT.md).
+ * Up to five random tracks of an artist in scope, or null when there is no
+ * such artist. Navidrome samples the tracks the artist is credited on as
+ * artist or album artist (`sampleArtistTracks`); a track's artist id here is
+ * its album artist's, which is what an artist is in this library
+ * (CONTEXT.md). Only its tracks in scope are joined.
  */
 async function readArtistSeeds(
   db: Database,
   userId: string,
+  scope: LibraryScope,
   id: string,
 ): Promise<SongView[] | null> {
   const rows = await db
     .select({ track, albumName: album.name, albumCoverKey: album.coverKey, ...annotationColumns })
     .from(artist)
-    .leftJoin(track, eq(track.artistId, artist.id))
+    .leftJoin(track, and(eq(track.artistId, artist.id), libraryFilter(scope, track.libraryId)))
     .leftJoin(album, eq(album.id, track.albumId))
     .leftJoin(annotation, annotationJoin(userId, "track", track.id))
-    .where(eq(artist.id, id))
+    .where(and(eq(artist.id, id), artistInScope(scope)))
     .orderBy(sql`random()`)
     .limit(MAX_SEEDS);
 
@@ -328,19 +342,24 @@ async function readArtistSeeds(
 
 /**
  * Up to five random, distinct tracks of a playlist the caller may see, or
- * null when there is none. Entries whose track has gone sort last, so they
- * take no seed's place, but the playlist's own row still proves it exists.
+ * null when there is none. Entries whose track has gone, or is out of scope,
+ * sort last, so they take no seed's place, but the playlist's own row still
+ * proves it exists.
  */
 async function readPlaylistSeeds(
   db: Database,
   caller: PlaylistViewer,
+  scope: LibraryScope,
   playlistId: string,
 ): Promise<SongView[] | null> {
   const rows = await db
     .select({ track, albumName: album.name, albumCoverKey: album.coverKey, ...annotationColumns })
     .from(playlist)
     .leftJoin(playlistTrack, eq(playlistTrack.playlistId, playlist.id))
-    .leftJoin(track, eq(track.id, playlistTrack.trackId))
+    .leftJoin(
+      track,
+      and(eq(track.id, playlistTrack.trackId), libraryFilter(scope, track.libraryId)),
+    )
     .leftJoin(album, eq(album.id, track.albumId))
     .leftJoin(annotation, annotationJoin(caller.id, "track", track.id))
     .where(and(eq(playlist.id, playlistId), visibleTo(caller)))
@@ -366,16 +385,19 @@ const TOP_BRANCH = 1;
  * Every candidate the mix can draw on, in one statement: a union of the genre
  * sample of these seeds and the top songs of this artist, each branch with its
  * own order and limit, joined back to the tracks for what a `<song>` needs.
- * No statement at all when neither branch has anything to ask.
+ * Both branches keep to the scope. No statement at all when neither branch
+ * has anything to ask.
  */
 async function readCandidates(
   db: Database,
   userId: string,
+  scope: LibraryScope,
   count: number,
   seeds: readonly SongView[],
   topArtistId: string | null,
 ): Promise<Candidates> {
   const branches: SQL[] = [];
+  const scoped = trackInScope(scope);
 
   const genre = genreCondition(seeds);
   if (genre !== null) {
@@ -383,7 +405,7 @@ async function readCandidates(
     // seed; excluding the seed in the query and asking for `count` is the
     // same sample. For several seeds, see the module comment.
     branches.push(sql`select * from (select track.id as id, ${GENRE_BRANCH} as branch, 0 as rank
-      from track where ${genre} order by random() limit ${count})`);
+      from track where ${genre}${scoped} order by random() limit ${count})`);
   }
 
   if (topArtistId !== null) {
@@ -396,7 +418,7 @@ async function readCandidates(
       from track join annotation on annotation.user_id = ${userId}
         and annotation.item_type = 'track' and annotation.item_id = track.id
       where track.artist_id = ${topArtistId}
-        and (annotation.starred = 1 or annotation.rating = 5)
+        and (annotation.starred = 1 or annotation.rating = 5)${scoped}
       order by annotation.play_count desc, track.id limit ${topCount})`);
   }
 
@@ -425,6 +447,14 @@ async function readCandidates(
       .map(({ branch: _branch, rank: _rank, ...row }) => toSongView(row));
 
   return { genre: inBranch(GENRE_BRANCH), top: inBranch(TOP_BRANCH) };
+}
+
+/** ` and track.library_id in (...)` for a candidate branch, or nothing on the fast path. */
+function trackInScope(scope: LibraryScope): SQL {
+  const column: SQLWrapper = sql.raw("track.library_id");
+  const filter = libraryFilter(scope, column);
+
+  return filter === undefined ? sql`` : sql` and ${filter}`;
 }
 
 /**

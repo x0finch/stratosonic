@@ -2,6 +2,7 @@ import { nowPlaying } from "@stratosonic/db";
 import { beforeAll, describe, expect, it } from "vitest";
 import { database } from "../src/db";
 import { albumsQuery, listAlbums, toAlbumViews } from "../src/library/lists";
+import { ALL_LIBRARIES } from "../src/library/scope";
 import { listNowPlaying, nowPlayingQuery, toNowPlayingEntries } from "../src/nowplaying/repository";
 import { readScanReport, scanReportQuery, toScanReport } from "../src/scanner/state";
 import { SEED_TIME, seedAnnotation, seedFixtureLibrary, seedUser, testEnv } from "./support";
@@ -78,7 +79,7 @@ describe("the Overview's joined reads, batched", () => {
     const page = { size: 12, offset: 0 };
 
     const [albumRows, nowPlayingRows, scanRows] = await db.batch([
-      albumsQuery(db, callerId, { type: "newest" }, page),
+      albumsQuery(db, callerId, ALL_LIBRARIES, { type: "newest" }, page),
       nowPlayingQuery(db, callerId, now),
       scanReportQuery(db),
     ]);
@@ -86,7 +87,7 @@ describe("the Overview's joined reads, batched", () => {
     const albums = toAlbumViews(albumRows);
     const listening = toNowPlayingEntries(nowPlayingRows);
 
-    expect(albums).toEqual(await listAlbums(db, callerId, { type: "newest" }, page));
+    expect(albums).toEqual(await listAlbums(db, callerId, ALL_LIBRARIES, { type: "newest" }, page));
     expect(listening).toEqual(await listNowPlaying(db, callerId, now));
     expect(toScanReport(scanRows)).toEqual(await readScanReport(db));
 

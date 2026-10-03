@@ -2,6 +2,7 @@ import type { EntityId } from "@stratosonic/db";
 import type { Database } from "../db";
 import { NO_USER } from "../library/annotations";
 import { findAlbum, findArtist, findTrack } from "../library/repository";
+import { ALL_LIBRARIES } from "../library/scope";
 
 /**
  * Which stored object a client-facing id asks for.
@@ -25,24 +26,27 @@ import { findAlbum, findArtist, findTrack } from "../library/repository";
  *
  * Nothing here answers a caller with an element, so every read is made as
  * `NO_USER`: the cover does not depend on who is asking, and the annotation
- * join is left to match nothing rather than cost a lookup.
+ * join is left to match nothing rather than cost a lookup. Every library is
+ * read: the public image URL has no caller, and `getCoverArt` is kept to the
+ * caller's libraries by #148, with the other id endpoints.
  */
 export async function findCoverKey(db: Database, entity: EntityId): Promise<string | null> {
   switch (entity.type) {
     case "album":
-      return (await findAlbum(db, entity.id, NO_USER))?.coverKey ?? null;
+      return (await findAlbum(db, entity.id, NO_USER, ALL_LIBRARIES))?.coverKey ?? null;
 
     case "track":
       // A track is read with its album's cover already joined in, so this is
       // one query rather than two.
-      return (await findTrack(db, entity.id, NO_USER))?.albumCoverKey ?? null;
+      return (await findTrack(db, entity.id, NO_USER, ALL_LIBRARIES))?.albumCoverKey ?? null;
 
     case "artist": {
-      const coverAlbumId = (await findArtist(db, entity.id, NO_USER))?.coverAlbumId ?? null;
+      const coverAlbumId =
+        (await findArtist(db, entity.id, NO_USER, ALL_LIBRARIES))?.coverAlbumId ?? null;
 
       return coverAlbumId === null
         ? null
-        : ((await findAlbum(db, coverAlbumId, NO_USER))?.coverKey ?? null);
+        : ((await findAlbum(db, coverAlbumId, NO_USER, ALL_LIBRARIES))?.coverKey ?? null);
     }
 
     default:

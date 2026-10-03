@@ -16,9 +16,14 @@
  * - **Parameters are read in Navidrome's order** — the list type and what that
  *   type needs, then `musicFolderId`, then the page — because that order
  *   decides which error a request with two problems gets.
+ *
+ * Every list keeps to the libraries the caller sees (library/scope.ts), and
+ * those that take `musicFolderId` to the ones it names
+ * (`selectedLibraries`).
  */
 
 import { database } from "../db";
+import { selectedLibraries } from "../library/libraries";
 import {
   type AlbumListQuery,
   listAlbums,
@@ -28,7 +33,7 @@ import {
   listTracksOfGenre,
   type Page,
 } from "../library/lists";
-import { checkMusicFolderIds } from "../library/music-folder";
+import { scopeOf } from "../library/scope";
 import { albumElement, artistElement, omitWhenEmpty, songElement } from "../library/serializers";
 import {
   integerParameterOr,
@@ -61,10 +66,10 @@ const MAX_SIZE = 500;
  */
 export const getAlbumList2: SubsonicHandler = async (request) => {
   const query = requestedAlbumList(request);
-  checkMusicFolderIds(request.params);
+  const scope = selectedLibraries(request);
   const page = requestedPage(request.params, "size");
 
-  const albums = await listAlbums(database(request.env), request.user.id, query, page);
+  const albums = await listAlbums(database(request.env), request.user.id, scope, query, page);
 
   return { albumList2: { album: omitWhenEmpty(albums.map(albumElement)) } };
 };
@@ -157,9 +162,9 @@ export const getRandomSongs: SubsonicHandler = async (request) => {
   const genre = params.get("genre") || null;
   const fromYear = integerParameterOr(params, "fromYear", 0) || null;
   const toYear = integerParameterOr(params, "toYear", 0) || null;
-  checkMusicFolderIds(params);
+  const scope = selectedLibraries(request);
 
-  const tracks = await listRandomTracks(database(request.env), request.user.id, {
+  const tracks = await listRandomTracks(database(request.env), request.user.id, scope, {
     genre,
     fromYear,
     toYear,
@@ -186,10 +191,16 @@ export const getRandomSongs: SubsonicHandler = async (request) => {
 export const getSongsByGenre: SubsonicHandler = async (request) => {
   const { params } = request;
   const genre = requiredParameter(params, "genre");
-  checkMusicFolderIds(params);
+  const scope = selectedLibraries(request);
   const page = requestedPage(params, "count");
 
-  const tracks = await listTracksOfGenre(database(request.env), request.user.id, genre, page);
+  const tracks = await listTracksOfGenre(
+    database(request.env),
+    request.user.id,
+    scope,
+    genre,
+    page,
+  );
 
   return { songsByGenre: { song: omitWhenEmpty(tracks.map(songElement)) } };
 };
@@ -213,13 +224,21 @@ export const getSongsByGenre: SubsonicHandler = async (request) => {
  * `count` defaults to 50 as it does there, and is capped at 500 as it is not:
  * Navidrome's list is however much last.fm returned, while this one is however
  * much of the library one artist holds, and every row of it is read from D1.
+ *
+ * Only the artist's tracks in the caller's libraries are ranked.
  */
 export const getTopSongs: SubsonicHandler = async (request) => {
   const { params } = request;
   const artist = requiredParameter(params, "artist");
   const count = boundedCount(params, "count", DEFAULT_TOP_SONGS_COUNT);
 
-  const tracks = await listTopTracks(database(request.env), request.user.id, artist, count);
+  const tracks = await listTopTracks(
+    database(request.env),
+    request.user.id,
+    scopeOf(request.user),
+    artist,
+    count,
+  );
 
   return { topSongs: { song: omitWhenEmpty(tracks.map(songElement)) } };
 };
@@ -231,12 +250,13 @@ export const getTopSongs: SubsonicHandler = async (request) => {
  * this reads only the rows of the account that authenticated. The children
  * come in Navidrome's order — `artist`, then `album`, then `song`
  * (responses.Starred2) — and an account that has starred nothing gets an
- * empty `<starred2/>`, which is the state every client starts in.
+ * empty `<starred2/>`, which is the state every client starts in. Only the
+ * starred items in the libraries asked for are listed.
  */
 export const getStarred2: SubsonicHandler = async (request) => {
-  checkMusicFolderIds(request.params);
+  const scope = selectedLibraries(request);
 
-  const starred = await listStarred(database(request.env), request.user.id);
+  const starred = await listStarred(database(request.env), request.user.id, scope);
 
   return {
     starred2: {

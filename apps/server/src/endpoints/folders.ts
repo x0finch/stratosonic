@@ -4,27 +4,30 @@
  *
  * There is nothing to walk on disk — the library is R2 objects indexed into
  * D1 — so the folder tree is synthesized the way Navidrome synthesizes it
- * (server/subsonic/browsing.go): one music folder holding every artist as a
- * directory, each artist holding its albums as sub-directories, and each
- * album holding its tracks. The rows and the element builders are the ones
- * the ID3 endpoints already use, so both views of the library agree on names,
- * ids, covers and order by construction.
+ * (server/subsonic/browsing.go): a music folder per library the caller sees,
+ * holding every artist as a directory, each artist holding its albums as
+ * sub-directories, and each album holding its tracks. The rows and the
+ * element builders are the ones the ID3 endpoints already use, so both views
+ * of the library agree on names, ids, covers and order by construction.
  *
  * Three rules this module keeps, on top of the two the ID3 module states:
  *
  * - **`isDir` is a literal `true`/`false`.** An album directory says `true`,
  *   a track says `false`, and neither says 0 or 1 (#9's client traps).
- * - **A `musicFolderId` this server does not have is error 70**, never a
- *   silent fallback to the whole library.
+ * - **A `musicFolderId` the caller cannot see is error 70**, never a silent
+ *   fallback to every library, where Navidrome's `getIndexes` swallows it
+ *   (library/libraries.ts says why).
  * - **An empty library is an empty `<indexes>`**, as it is an empty
  *   `<artists>` in the ID3 module: Navidrome answers error 70 there, and a
  *   client that meets that on its first sync can stop syncing altogether.
+ *   That holds for a library the caller can see but that has nothing in it,
+ *   and for a caller who sees no library at all.
  */
 
 import { parsePrefixedId, prefixedId } from "@stratosonic/db";
 import { type Database, database } from "../db";
 import { groupArtistsByIndex, IGNORED_ARTICLES } from "../library/artist-index";
-import { checkMusicFolderIds, musicFolderElement } from "../library/music-folder";
+import { musicFolderElements, selectedLibraries } from "../library/libraries";
 import {
   findAlbum,
   findArtist,
@@ -32,6 +35,7 @@ import {
   listArtists,
   listTracksOfAlbum,
 } from "../library/repository";
+import { scopeOf } from "../library/scope";
 import {
   albumChildElement,
   directoryAnnotationAttributes,
@@ -53,12 +57,14 @@ import type { SubsonicHandler } from "../subsonic/router";
 const DIRECTORY_NOT_FOUND = "Directory not found";
 
 /**
- * `getMusicFolders` — the library, as the one folder it is. A client asks for
- * this list before anything else and then passes an id from it back as
- * `musicFolderId`.
+ * `getMusicFolders` — the libraries the caller sees, a folder each, by id,
+ * as Navidrome's `GetMusicFolders` answers the user's libraries. A client
+ * asks for this list before anything else and then passes an id from it
+ * back as `musicFolderId`. The libraries were read with the user, so this
+ * reads nothing more.
  */
-export const getMusicFolders: SubsonicHandler = () => ({
-  musicFolders: { musicFolder: [musicFolderElement()] },
+export const getMusicFolders: SubsonicHandler = (request) => ({
+  musicFolders: { musicFolder: omitWhenEmpty(musicFolderElements(request.user)) },
 });
 
 /**
@@ -116,14 +122,18 @@ function ifModifiedSince(params: URLSearchParams): bigint {
  * Navidrome's short circuit: its `getArtist` never touches the artist
  * repository unless the last scan is strictly after the instant the client
  * sent, and renders the empty index list that follows.
+ *
+ * The artists are those of the libraries asked for (`selectedLibraries`).
+ * `lastModified` is not: it is the last scan's start, one instant for every
+ * library, as Navidrome's `LastScanStartTimeKey` is one property.
  */
 export const getIndexes: SubsonicHandler = async (request) => {
-  checkMusicFolderIds(request.params);
+  const scope = selectedLibraries(request);
 
   const db = database(request.env);
   const lastModified = await libraryLastModified(db);
   const unchanged = lastModified <= ifModifiedSince(request.params);
-  const artists = unchanged ? [] : await listArtists(db, request.user.id);
+  const artists = unchanged ? [] : await listArtists(db, request.user.id, scope);
 
   const index = groupArtistsByIndex(artists, (artist) => artist.name).map((group) => ({
     name: group.name,
@@ -147,19 +157,22 @@ export const getIndexes: SubsonicHandler = async (request) => {
  * "Directory not found" for anything that is neither an artist nor an album,
  * so a track id, a playlist id, an id of nothing, and an id that could not
  * have been minted here all get the same error 70. A *missing* `id` is error
- * 10, as it is on every other endpoint in this server.
+ * 10, as it is on every other endpoint in this server. An artist or an album
+ * out of the caller's libraries is not found either.
  */
 export const getMusicDirectory: SubsonicHandler = async (request) => {
   const db = database(request.env);
   const asked = parsePrefixedId(requiredParameter(request.params, "id"));
 
+  const scope = scopeOf(request.user);
+
   if (asked?.type === "artist") {
-    const artist = await findArtist(db, asked.id, request.user.id);
+    const artist = await findArtist(db, asked.id, request.user.id, scope);
     if (artist === null) {
       throw new SubsonicError(SubsonicErrorCode.NotFound, DIRECTORY_NOT_FOUND);
     }
 
-    const albums = await listAlbumsOfArtist(db, asked.id, request.user.id);
+    const albums = await listAlbumsOfArtist(db, asked.id, request.user.id, scope);
 
     return {
       directory: directoryElement(
@@ -175,12 +188,12 @@ export const getMusicDirectory: SubsonicHandler = async (request) => {
   }
 
   if (asked?.type === "album") {
-    const album = await findAlbum(db, asked.id, request.user.id);
+    const album = await findAlbum(db, asked.id, request.user.id, scope);
     if (album === null) {
       throw new SubsonicError(SubsonicErrorCode.NotFound, DIRECTORY_NOT_FOUND);
     }
 
-    const tracks = await listTracksOfAlbum(db, album, request.user.id);
+    const tracks = await listTracksOfAlbum(db, album, request.user.id, scope);
 
     return {
       directory: directoryElement(

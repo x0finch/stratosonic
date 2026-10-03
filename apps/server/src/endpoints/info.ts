@@ -57,12 +57,17 @@
  * Stratosonic does not — a genre here is only its name — so no id can name
  * one. `getSimilarSongs2` answers the same songs under `<similarSongs2>`.
  * Authentication plus at most two statements, and nothing written.
+ *
+ * Every one of these reads keeps to the libraries the caller sees
+ * (library/scope.ts): an id out of them is error 70, as one that names
+ * nothing is.
  */
 
 import { type EntityId, parsePrefixedId, prefixedId } from "@stratosonic/db";
 import { signPublicImageToken } from "../auth/public-token";
 import { database } from "../db";
 import { findAlbumFor, findArtistFor } from "../library/info";
+import { scopeOf } from "../library/scope";
 import { omitWhenEmpty, type SongView, songElement } from "../library/serializers";
 import { similarSongs } from "../library/similar-songs";
 import { requiredParameter } from "../subsonic/params";
@@ -118,7 +123,11 @@ export const getArtistInfo2: SubsonicHandler = async (request) => ({
  * own `ar-` artwork id; the picture behind the two is the same one.
  */
 async function artistInfo(request: AuthenticatedSubsonicRequest): Promise<SubsonicNode> {
-  const artist = await findArtistFor(database(request.env), requestedEntity(request));
+  const artist = await findArtistFor(
+    database(request.env),
+    requestedEntity(request),
+    scopeOf(request.user),
+  );
   if (artist === null) {
     throw notFound();
   }
@@ -134,7 +143,11 @@ async function artistInfo(request: AuthenticatedSubsonicRequest): Promise<Subson
  * the image URLs, since `notes` and `lastFmUrl` come from an agent.
  */
 export const getAlbumInfo: SubsonicHandler = async (request) => {
-  const album = await findAlbumFor(database(request.env), requestedEntity(request));
+  const album = await findAlbumFor(
+    database(request.env),
+    requestedEntity(request),
+    scopeOf(request.user),
+  );
   if (album === null) {
     throw notFound();
   }
@@ -172,7 +185,15 @@ async function similarSongsOf(request: AuthenticatedSubsonicRequest): Promise<So
 
   const entity = parsePrefixedId(id);
   const songs =
-    entity === null ? null : await similarSongs(database(request.env), request.user, entity, count);
+    entity === null
+      ? null
+      : await similarSongs(
+          database(request.env),
+          request.user,
+          scopeOf(request.user),
+          entity,
+          count,
+        );
   if (songs === null) {
     throw notFound();
   }

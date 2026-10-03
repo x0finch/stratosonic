@@ -26,6 +26,7 @@ import type { Env } from "../src/env";
 import { suffixOf } from "../src/library/audio-formats";
 import { type ByteSource, bytesSource } from "../src/library/byte-source";
 import { SCAN_VERSION } from "../src/scanner/version";
+import { grantLibrariesStatement } from "../src/users/repository";
 import {
   type FixtureAlbum,
   fixtureBytes,
@@ -64,7 +65,11 @@ export function encryptionKey(): string {
   return key;
 }
 
-/** Creates a user with a known password, the way the bootstrap would. */
+/**
+ * Creates a user with a known password, the way the bootstrap would, with
+ * the libraries `createUser` gives: every one for an admin, the
+ * `default_new_users` ones (library 1) for anybody else.
+ */
 export async function seedUser(
   userName: string,
   password: string,
@@ -84,6 +89,7 @@ export async function seedUser(
     createdAt: now,
     updatedAt: now,
   });
+  await grantLibrariesStatement(database(testEnv), id, isAdmin ? "all" : "defaults");
 
   return id;
 }
@@ -171,6 +177,8 @@ export interface AlbumSeed {
   readonly coverKey?: string | null;
   readonly createdAt?: Date;
   readonly updatedAt?: Date;
+  /** Library 1 unless a test says otherwise; the id hashes it (ADR-0009). */
+  readonly libraryId?: number;
 }
 
 /**
@@ -179,8 +187,9 @@ export interface AlbumSeed {
  * each other without a test having to say so.
  */
 export async function seedAlbum(seed: AlbumSeed): Promise<Album> {
+  const libraryId = seed.libraryId ?? 1;
   const row: Album = {
-    id: albumId(1, seed.albumArtist, seed.name, seed.year),
+    id: albumId(libraryId, seed.albumArtist, seed.name, seed.year),
     name: seed.name,
     artistId: artistId(seed.albumArtist),
     albumArtist: seed.albumArtist,
@@ -192,7 +201,7 @@ export async function seedAlbum(seed: AlbumSeed): Promise<Album> {
     coverKey: seed.coverKey ?? null,
     createdAt: seed.createdAt ?? SEED_TIME,
     updatedAt: seed.updatedAt ?? seed.createdAt ?? SEED_TIME,
-    libraryId: 1,
+    libraryId,
   };
 
   await database(testEnv).insert(album).values(row);
@@ -218,6 +227,8 @@ export interface TrackSeed {
   readonly scanVersion?: number;
   readonly createdAt?: Date;
   readonly updatedAt?: Date;
+  /** Library 1 unless a test says otherwise; the ids hash it (ADR-0009). */
+  readonly libraryId?: number;
 }
 
 /**
@@ -230,12 +241,13 @@ export async function seedTrack(seed: TrackSeed): Promise<Track> {
   const albumArtist = seed.albumArtist ?? segments.at(-3) ?? "Unknown Artist";
   const albumName = seed.album ?? segments.at(-2) ?? "Unknown Album";
   const year = seed.year ?? null;
+  const libraryId = seed.libraryId ?? 1;
 
   const row: Track = {
-    id: trackId(1, seed.r2Key),
+    id: trackId(libraryId, seed.r2Key),
     r2Key: seed.r2Key,
     title: seed.title ?? fileName.replace(/\.[^.]+$/, ""),
-    albumId: albumId(1, albumArtist, albumName, year),
+    albumId: albumId(libraryId, albumArtist, albumName, year),
     artistId: artistId(albumArtist),
     artist: seed.artist ?? albumArtist,
     albumArtist,
@@ -247,11 +259,11 @@ export async function seedTrack(seed: TrackSeed): Promise<Track> {
     size: seed.size ?? 1024,
     suffix: suffixOf(seed.r2Key),
     genre: seed.genre ?? null,
-    etag: seed.etag ?? `etag-${trackId(1, seed.r2Key).slice(0, 8)}`,
+    etag: seed.etag ?? `etag-${trackId(libraryId, seed.r2Key).slice(0, 8)}`,
     scanVersion: seed.scanVersion ?? SCAN_VERSION,
     createdAt: seed.createdAt ?? SEED_TIME,
     updatedAt: seed.updatedAt ?? seed.createdAt ?? SEED_TIME,
-    libraryId: 1,
+    libraryId,
   };
 
   await database(testEnv).insert(track).values(row);

@@ -155,13 +155,13 @@ function rows(statements: readonly RecordedStatement[]) {
 }
 
 describe("the overview's budget on the reference library", () => {
-  it("GET /api/overview/library: one round trip of four statements, no writes", async () => {
+  it("GET /api/overview/library: one round trip of five statements, no writes", async () => {
     const statements = await measured("/api/overview/library");
 
     expect(cost(statements)).toEqual({
-      statements: 4,
+      statements: 5,
       roundTrips: 1,
-      rowsRead: 11_900,
+      rowsRead: 11_901,
       rowsWritten: 0,
     });
     expect(rows(statements)).toEqual([
@@ -177,6 +177,31 @@ describe("the overview's budget on the reference library", () => {
       ["select album", 2 * ALBUMS, 0],
       // Each playlist, its owner by primary key, and the sorter.
       ["select playlist", 3 * PLAYLISTS, 0],
+      // The libraries for the console's switch (#84): one row each.
+      ["select library", 1, 0],
+    ]);
+  });
+
+  it("GET /api/overview/library?library=1: the same round trip, narrowed", async () => {
+    const statements = await measured("/api/overview/library?library=1");
+
+    expect(cost(statements)).toEqual({
+      statements: 5,
+      roundTrips: 1,
+      rowsRead: 11_601,
+      rowsWritten: 0,
+    });
+    expect(rows(statements)).toEqual([
+      // Every album, its artists counted from them rather than from the
+      // artist index (an artist is in a library through its albums).
+      ["select album", ALBUMS, 0],
+      // The predicate only narrows: every track is still read once for its
+      // library, the sorter sees fewer when other libraries hold some.
+      ["select track", 2 * TRACKS + GENRES, 0],
+      ["select album", 2 * ALBUMS, 0],
+      // The playlists are never narrowed.
+      ["select playlist", 3 * PLAYLISTS, 0],
+      ["select library", 1, 0],
     ]);
   });
 

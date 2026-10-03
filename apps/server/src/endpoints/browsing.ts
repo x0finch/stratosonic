@@ -19,12 +19,16 @@
  *   it has no artists; we answer with the empty container instead. A client
  *   meets this state on its very first sync, before the first scan has
  *   finished, and an error there can stop the sync altogether (#9).
+ *
+ * Every read keeps to the libraries the caller sees (library/scope.ts):
+ * `getArtists` narrows them further by `musicFolderId`, and an artist or an
+ * album out of scope is not found.
  */
 
 import { type EntityType, parseIdOfType } from "@stratosonic/db";
 import { database } from "../db";
 import { groupArtistsByIndex, IGNORED_ARTICLES } from "../library/artist-index";
-import { checkMusicFolderIds } from "../library/music-folder";
+import { selectedLibraries } from "../library/libraries";
 import {
   findAlbum,
   findArtist,
@@ -34,6 +38,7 @@ import {
   listGenres,
   listTracksOfAlbum,
 } from "../library/repository";
+import { ALL_LIBRARIES, scopeOf } from "../library/scope";
 import {
   albumElement,
   artistElement,
@@ -66,18 +71,20 @@ function requestedId(
 }
 
 /**
- * `getArtists` — every artist, bucketed into `<index>` groups by the letter
- * they sort under, with the articles that were ignored to get there.
+ * `getArtists` — every artist in the libraries asked for, bucketed into
+ * `<index>` groups by the letter they sort under, with the articles that
+ * were ignored to get there. An artist shared by two libraries is listed
+ * once, with the albums and the cover of the libraries asked for.
  *
- * A `musicFolderId` is checked even though this server has only one folder,
- * as Navidrome's `GetArtists` checks it through `selectedMusicFolderIds`
- * (server/subsonic/browsing.go): a client that asks for a folder we do not
- * have asked for something that is not there.
+ * The libraries are the caller's, narrowed by `musicFolderId` as
+ * Navidrome's `GetArtists` narrows them through `selectedMusicFolderIds`
+ * (server/subsonic/browsing.go). A folder the caller cannot see is error 70
+ * here, where Navidrome swallows it (library/libraries.ts says why).
  */
 export const getArtists: SubsonicHandler = async (request) => {
-  checkMusicFolderIds(request.params);
+  const scope = selectedLibraries(request);
 
-  const artists = await listArtists(database(request.env), request.user.id);
+  const artists = await listArtists(database(request.env), request.user.id, scope);
 
   const index = groupArtistsByIndex(artists, (artist) => artist.name).map((group) => ({
     name: group.name,
@@ -92,12 +99,14 @@ export const getArtist: SubsonicHandler = async (request) => {
   const db = database(request.env);
   const id = requestedId(request, "artist", "Artist not found");
 
-  const artist = await findArtist(db, id, request.user.id);
+  const scope = scopeOf(request.user);
+
+  const artist = await findArtist(db, id, request.user.id, scope);
   if (artist === null) {
     throw new SubsonicError(SubsonicErrorCode.NotFound, "Artist not found");
   }
 
-  const albums = await listAlbumsOfArtist(db, id, request.user.id);
+  const albums = await listAlbumsOfArtist(db, id, request.user.id, scope);
 
   return { artist: { ...artistElement(artist), album: omitWhenEmpty(albums.map(albumElement)) } };
 };
@@ -107,21 +116,26 @@ export const getAlbum: SubsonicHandler = async (request) => {
   const db = database(request.env);
   const id = requestedId(request, "album", "Album not found");
 
-  const album = await findAlbum(db, id, request.user.id);
+  const scope = scopeOf(request.user);
+
+  const album = await findAlbum(db, id, request.user.id, scope);
   if (album === null) {
     throw new SubsonicError(SubsonicErrorCode.NotFound, "Album not found");
   }
 
-  const tracks = await listTracksOfAlbum(db, album, request.user.id);
+  const tracks = await listTracksOfAlbum(db, album, request.user.id, scope);
 
   return { album: { ...albumElement(album), song: omitWhenEmpty(tracks.map(songElement)) } };
 };
 
-/** `getSong` — one track. */
+/**
+ * `getSong` — one track. Not yet kept to the caller's libraries: the id
+ * endpoints are scoped by #148, with `stream` and `download`.
+ */
 export const getSong: SubsonicHandler = async (request) => {
   const id = requestedId(request, "track", "Song not found");
 
-  const song = await findTrack(database(request.env), id, request.user.id);
+  const song = await findTrack(database(request.env), id, request.user.id, ALL_LIBRARIES);
   if (song === null) {
     throw new SubsonicError(SubsonicErrorCode.NotFound, "Song not found");
   }
@@ -129,9 +143,12 @@ export const getSong: SubsonicHandler = async (request) => {
   return { song: songElement(song) };
 };
 
-/** `getGenres` — every genre the library's tracks carry, with its counts. */
+/**
+ * `getGenres` — every genre the caller's tracks carry, with its counts,
+ * counted in the libraries the caller sees.
+ */
 export const getGenres: SubsonicHandler = async (request) => {
-  const genres = await listGenres(database(request.env));
+  const genres = await listGenres(database(request.env), scopeOf(request.user));
 
   return { genres: { genre: omitWhenEmpty(genres.map(genreElement)) } };
 };

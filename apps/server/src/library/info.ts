@@ -12,12 +12,19 @@
  *
  * The subqueries are written out, as `artistColumns`' are: they are small,
  * and a hand-written one cannot lose a table qualifier to Drizzle.
+ *
+ * Both reads keep to the caller's `LibraryScope` (library/scope.ts), at
+ * every step: an id in a library the caller cannot see names nothing, as
+ * Navidrome's `GetEntityByID` finds nothing through its library filter, and
+ * the artist an id leads to must have an album in scope, whose cover is
+ * then one of those albums'.
  */
 
 import { album, artist, type EntityId } from "@stratosonic/db";
-import { eq, type SQL, sql } from "drizzle-orm";
+import { and, eq, type SQL, sql } from "drizzle-orm";
 import type { Database } from "../db";
-import { artistColumns } from "./repository";
+import { coverAlbumOf } from "./repository";
+import { artistInScope, type LibraryScope, libraryFilter } from "./scope";
 
 /** What the info endpoints need of an artist: whether it has a cover, and whose. */
 export interface InfoArtist {
@@ -37,33 +44,47 @@ export interface InfoAlbum {
  * nothing — or names a kind Navidrome's `getArtist` does not follow, which is
  * every other kind (`default: return auxArtist{}, model.ErrNotFound`).
  */
-export async function findArtistFor(db: Database, entity: EntityId): Promise<InfoArtist | null> {
-  const artistId = artistIdOf(entity);
+export async function findArtistFor(
+  db: Database,
+  entity: EntityId,
+  scope: LibraryScope,
+): Promise<InfoArtist | null> {
+  const artistId = artistIdOf(entity, scope);
   if (artistId === null) {
     return null;
   }
 
   const rows = await db
-    .select({ id: artist.id, coverAlbumId: artistColumns.coverAlbumId })
+    .select({ id: artist.id, coverAlbumId: coverAlbumOf(scope) })
     .from(artist)
-    .where(eq(artist.id, artistId))
+    .where(and(eq(artist.id, artistId), artistInScope(scope)))
     .limit(1);
 
   return rows[0] ?? null;
 }
 
-/** The artist id an entity leads to, as a value or as a scalar subquery. */
-function artistIdOf(entity: EntityId): string | SQL | null {
+/**
+ * The artist id an entity leads to, as a value or as a scalar subquery that
+ * finds nothing for an album or a track out of scope.
+ */
+function artistIdOf(entity: EntityId, scope: LibraryScope): string | SQL | null {
   switch (entity.type) {
     case "artist":
       return entity.id;
     case "album":
-      return sql`(select album.artist_id from album where album.id = ${entity.id})`;
+      return sql`(select album.artist_id from album where album.id = ${entity.id}${inScope(scope, "album")})`;
     case "track":
-      return sql`(select track.artist_id from track where track.id = ${entity.id})`;
+      return sql`(select track.artist_id from track where track.id = ${entity.id}${inScope(scope, "track")})`;
     default:
       return null;
   }
+}
+
+/** ` and <table>.library_id in (...)` inside a subquery, or nothing on the fast path. */
+function inScope(scope: LibraryScope, table: "album" | "track"): SQL {
+  const filter = libraryFilter(scope, sql.raw(`${table}.library_id`));
+
+  return filter === undefined ? sql`` : sql` and ${filter}`;
 }
 
 /**
@@ -71,8 +92,12 @@ function artistIdOf(entity: EntityId): string | SQL | null {
  * names another kind — Navidrome's `getAlbum` follows a song to its album and
  * answers everything else, an artist included, with `ErrNotFound`.
  */
-export async function findAlbumFor(db: Database, entity: EntityId): Promise<InfoAlbum | null> {
-  const albumId = albumIdOf(entity);
+export async function findAlbumFor(
+  db: Database,
+  entity: EntityId,
+  scope: LibraryScope,
+): Promise<InfoAlbum | null> {
+  const albumId = albumIdOf(entity, scope);
   if (albumId === null) {
     return null;
   }
@@ -80,19 +105,19 @@ export async function findAlbumFor(db: Database, entity: EntityId): Promise<Info
   const rows = await db
     .select({ id: album.id, coverKey: album.coverKey })
     .from(album)
-    .where(eq(album.id, albumId))
+    .where(and(eq(album.id, albumId), libraryFilter(scope, album.libraryId)))
     .limit(1);
 
   return rows[0] ?? null;
 }
 
 /** The album id an entity leads to, as a value or as a scalar subquery. */
-function albumIdOf(entity: EntityId): string | SQL | null {
+function albumIdOf(entity: EntityId, scope: LibraryScope): string | SQL | null {
   switch (entity.type) {
     case "album":
       return entity.id;
     case "track":
-      return sql`(select track.album_id from track where track.id = ${entity.id})`;
+      return sql`(select track.album_id from track where track.id = ${entity.id}${inScope(scope, "track")})`;
     default:
       return null;
   }
