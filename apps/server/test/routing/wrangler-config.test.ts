@@ -3,7 +3,7 @@ import { experimental_readRawConfig } from "wrangler";
 
 /**
  * What wrangler.jsonc must keep consistent by hand. `R2_BUCKET_NAME` names
- * the bucket the presigned upload URLs point at (files/sign.ts), and the
+ * the bucket the presigned upload URLs point at (storage/presign.ts), and the
  * `MUSIC` binding does not expose its bucket's name, so the var repeats it:
  * if the two drift apart, the console browses one bucket and uploads into
  * another. Named environments inherit neither vars nor bindings, so each

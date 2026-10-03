@@ -1,10 +1,11 @@
 import { DEFAULT_LIBRARY_ID } from "@stratosonic/db";
 import type { Env } from "../env";
 import { uploadsStatus } from "../files/config";
-import { presignUpload } from "../files/sign";
+import { presignUpload, r2Endpoint } from "./presign";
 import {
-  type ByteRange,
+  checkRange,
   DELETE_KEYS_PER_CALL,
+  emptyBody,
   type LibraryStorage,
   type StorageListing,
   type StoredBody,
@@ -128,8 +129,21 @@ export function bindingStorage(env: Env): LibraryStorage {
 
     async presignPut(upload, now) {
       const status = uploadsStatus(env);
+      if (!status.configured) {
+        return null;
+      }
+      const { accountId, bucket, accessKeyId, secretAccessKey } = status.config;
 
-      return status.configured ? presignUpload(status.config, upload, now) : null;
+      return presignUpload(
+        {
+          libraryId: BOUND_LIBRARY_ID,
+          endpoint: r2Endpoint(accountId),
+          bucket,
+          credentials: { accessKeyId, secretAccessKey },
+        },
+        upload,
+        now,
+      );
     },
   };
 }
@@ -180,29 +194,11 @@ function toStoredBody(object: R2ObjectBody): StoredBody {
   };
 }
 
-function emptyBody(object: StoredObject): StoredBody {
-  return {
-    ...object,
-    body: new Blob([]).stream(),
-    bytes: async () => new Uint8Array(0),
-    cancel: async () => {},
-  };
-}
-
 /** No bytes of an object that exists, or null when it does not. */
 async function emptyRead(env: Env, key: string): Promise<StoredBody | null> {
   const head = await env.MUSIC.head(key);
 
   return head === null ? null : emptyBody(toStoredObject(head));
-}
-
-function checkRange({ offset, length }: ByteRange): void {
-  if (!Number.isSafeInteger(offset) || offset < 0) {
-    throw new RangeError(`a range's offset must be a non-negative integer, got ${offset}`);
-  }
-  if (!Number.isSafeInteger(length) || length < 0) {
-    throw new RangeError(`a range's length must be a non-negative integer, got ${length}`);
-  }
 }
 
 /**

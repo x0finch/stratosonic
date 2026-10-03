@@ -1,4 +1,4 @@
-import type { PresignedUpload, UploadToSign } from "../files/sign";
+import type { PresignedUpload, UploadToSign } from "./presign";
 
 /**
  * The bucket a library's files live in, as the rest of the Worker sees it
@@ -12,9 +12,11 @@ import type { PresignedUpload, UploadToSign } from "../files/sign";
  * to what those callers need: six operations, plain values in and out, and
  * nothing of the binding's own types.
  *
- * Today's implementation is the binding (`storage/binding.ts`). What every
- * implementation promises is pinned by one contract suite
- * (test/storage-contract.test.ts).
+ * It has two implementations: the bound bucket, through its binding
+ * (`storage/binding.ts`), and any other R2 bucket, through the S3 API
+ * (`storage/s3.ts`); `storageFor` (storage/for-library.ts) picks one from a
+ * library row. What every implementation promises is pinned by one contract
+ * suite, run against both (test/storage-contract.test.ts).
  */
 
 /** What a bucket says about one object. */
@@ -25,7 +27,12 @@ export interface StoredObject {
   readonly size: number;
   /** The entity tag, unquoted: equal for equal bytes written the same way. */
   readonly etag: string;
-  /** When the object was last written: the only timestamp an object has. */
+  /**
+   * When the object was last written: the only timestamp an object has. A
+   * listing gives it to the millisecond. Over the S3 API, a `head` or `get`
+   * gives it to the second (`Last-Modified`), and a `put` gives the second
+   * the bucket answered at (`Date`), so a listing is the authority for it.
+   */
   readonly uploaded: Date;
   /**
    * The content type stored with the object, when there is one. A listing
@@ -141,9 +148,9 @@ export type StorageFailure =
 
 /**
  * A bucket failure with its reason. An implementation raises one only where
- * it can tell the reason; the binding (`storage/binding.ts`) cannot, and
- * lets the binding's own exception through, which a caller reads as
- * `unavailable`.
+ * it can tell the reason. The S3 client (`storage/s3.ts`) always can; the
+ * binding (`storage/binding.ts`) cannot, and lets the binding's own
+ * exception through, which a caller reads as `unavailable`.
  */
 export class StorageError extends Error {
   readonly reason: StorageFailure;
@@ -152,5 +159,43 @@ export class StorageError extends Error {
     super(message, options);
     this.name = "StorageError";
     this.reason = reason;
+  }
+}
+
+/** Refuses a range whose offset or length is negative or not whole. */
+export function checkRange({ offset, length }: ByteRange): void {
+  if (!Number.isSafeInteger(offset) || offset < 0) {
+    throw new RangeError(`a range's offset must be a non-negative integer, got ${offset}`);
+  }
+  if (!Number.isSafeInteger(length) || length < 0) {
+    throw new RangeError(`a range's length must be a non-negative integer, got ${length}`);
+  }
+}
+
+/** No bytes of an object: what a range at or past its end reads. */
+export function emptyBody(object: StoredObject): StoredBody {
+  return {
+    ...object,
+    body: new Blob([]).stream(),
+    bytes: async () => new Uint8Array(0),
+    cancel: async () => {},
+  };
+}
+
+/**
+ * A key the storage cannot name in a request, raised before any request is
+ * made. Over the S3 API that is a key with a `.` or `..` segment, which the
+ * URL parser would collapse into another object's path, or one with a lone
+ * surrogate, which has no UTF-8 (storage/presign.ts, `isAddressableKey`).
+ * It is a property of the key, not a failure of the bucket: the scan counts
+ * such an object broken.
+ */
+export class UnaddressableKeyError extends Error {
+  readonly key: string;
+
+  constructor(key: string) {
+    super("the key cannot be carried in a path-style URL");
+    this.name = "UnaddressableKeyError";
+    this.key = key;
   }
 }

@@ -47,7 +47,7 @@ export interface Env extends Cloudflare.Env {
   /**
    * The Access Key ID of an R2 API token with Object Read & Write on the one
    * bucket `MUSIC` binds, which the console's uploads are presigned with
-   * (#83, "Configuration"; files/sign.ts). Optional: without it, its secret,
+   * (#83, "Configuration"; storage/presign.ts). Optional: without it, its secret,
    * `CF_ACCOUNT_ID` and `R2_BUCKET_NAME`, uploads are not configured and
    * `POST /api/files/uploads` answers 503. It appears in each presigned URL
    * (`X-Amz-Credential`), as SigV4 requires; it names the key, and is not it.
