@@ -367,9 +367,14 @@ credentials, **Upload**.
   "Uploading 3 of 12" (the file the run is on) while a file waits or is
   sent, "2 need attention" once only failures wait, and "Uploads done"
   once everything has finished. It redraws only when those words change.
-  It opens the upload list in the shadcn `Popover`, which never opens by
-  itself: a run's failures are told by its toast and by the label. Escape
-  closes it, and focus returns to the trigger.
+  Its accessible name says what the words are about ("Uploading 3 of 12
+  files", "2 uploads need attention"), and in a narrow header the words
+  are cut short rather than overflow. It opens the upload list in the
+  shadcn `Popover`, which never opens by itself: a run's failures are told
+  by its toast and by the label. Opening it puts focus on the popover's
+  heading, never on a button, so a second Enter cancels nothing; Escape
+  closes it, and focus returns to the trigger. The popover is never
+  taller than the room below the header (`--available-height`).
 - **The upload list**, in that popover: "4 of 12
   uploaded", **Cancel all**, **Clear finished**, and one row a file: its
   name (on one line, cut short with the whole name in its title), the
@@ -381,10 +386,11 @@ credentials, **Upload**.
   conflict, and no Replace or Skip. The popover is at most 32rem
   tall, and the rows scroll in the shadcn `ScrollArea` below the heading
   and the buttons. A pick of thousands stays
-  light: the list draws the files in flight, every failure, the next 50
-  waiting and the latest 50 finished, and counts the
-  rest: the older finished files above the rows ("1,950 more uploaded
-  earlier"), the waiting ones below ("and 300 more waiting"). A row
+  light: the list draws the files in flight (at the top), the next 50
+  waiting, then every failure and the latest 50 finished, and counts the
+  rest: the waiting ones below the waiting rows ("and 300 more waiting"),
+  the older finished files above the finished rows ("1,950 more uploaded
+  earlier"). A row
   redraws only when it changes, and the queue tells the page of progress
   at most ten times a second. A pick of more than 100 files is prepared in
   slices, with the page drawn between them, while **Upload** shows a
@@ -394,7 +400,9 @@ credentials, **Upload**.
   focus goes to the folder's **Upload** (or, on another page, to its h1).
   Each run ends in a toast:
   "Uploaded 12 files" ("The next scheduled scan will index them." when the
-  server could not schedule the scan), and "2 files were not uploaded".
+  server could not schedule the scan), and "2 files were not uploaded"
+  ("Open “2 need attention” in the header to see why.", naming the trigger
+  by the words it shows).
 - **The scan line**, under the path, shows only while a pass is scheduled or
   running: "Library scan in about 2 minutes.", "Library scan starting.", "A
   scan is running. Another follows it for your recent changes." or "A scan is
