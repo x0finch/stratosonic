@@ -20,10 +20,10 @@ const ARTIST = "Paged";
 
 /**
  * How many albums one insert carries. D1 allows at most a hundred bound
- * parameters in a statement and an album has twelve columns, so eight rows
+ * parameters in a statement and an album has thirteen columns, so seven rows
  * is the most that fits.
  */
-const ROWS_PER_INSERT = 8;
+const ROWS_PER_INSERT = 7;
 
 /** `Album 000` … `Album 500`, which sort in the order they are numbered. */
 function albumName(index: number): string {
@@ -34,7 +34,7 @@ beforeAll(async () => {
   await bootstrapAdmin();
 
   const rows: Album[] = Array.from({ length: ALBUM_COUNT }, (_, index) => ({
-    id: albumId(ARTIST, albumName(index), 2000),
+    id: albumId(1, ARTIST, albumName(index), 2000),
     name: albumName(index),
     artistId: artistId(ARTIST),
     albumArtist: ARTIST,
@@ -46,6 +46,7 @@ beforeAll(async () => {
     coverKey: null,
     createdAt: SEED_TIME,
     updatedAt: SEED_TIME,
+    libraryId: 1,
   }));
 
   const db = database(testEnv);

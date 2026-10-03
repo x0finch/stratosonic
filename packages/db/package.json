@@ -9,7 +9,7 @@
   "scripts": {
     "generate": "drizzle-kit generate",
     "typecheck": "tsc --noEmit",
-    "test": "echo \"no tests in @stratosonic/db\""
+    "test": "vitest run"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2"
@@ -17,6 +17,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260918.1",
     "drizzle-kit": "0.31.10",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "vitest": "4.1.11"
   }
 }

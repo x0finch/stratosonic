@@ -15,7 +15,7 @@ const TAGGED_ALBUM = fixtureAlbum("Quiet Album");
 const COVERLESS_ALBUM = fixtureAlbum("Fallback Album");
 
 function songUrlId(r2Key: string): string {
-  return prefixedId("track", trackId(r2Key));
+  return prefixedId("track", trackId(1, r2Key));
 }
 
 beforeAll(async () => {
@@ -35,7 +35,7 @@ describe("getSong", () => {
 
   it("describes the track, its album and its artist", async () => {
     const song = (await browse("getSong", { id: songUrlId(TAGGED.r2Key) })).song;
-    const album = albumId(TAGGED_ALBUM.albumArtist, TAGGED_ALBUM.name, TAGGED_ALBUM.year);
+    const album = albumId(1, TAGGED_ALBUM.albumArtist, TAGGED_ALBUM.name, TAGGED_ALBUM.year);
 
     expect(song).toEqual({
       id: songUrlId(TAGGED.r2Key),

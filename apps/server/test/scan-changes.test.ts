@@ -128,7 +128,7 @@ describe("a track whose object is gone", () => {
     const album = await browse("getAlbum", {
       id: prefixedId(
         "album",
-        albumId(EMPTIED_ARTIST.albumArtist, EMPTIED_ARTIST.name, EMPTIED_ARTIST.year),
+        albumId(1, EMPTIED_ARTIST.albumArtist, EMPTIED_ARTIST.name, EMPTIED_ARTIST.year),
       ),
     });
 

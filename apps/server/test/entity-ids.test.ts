@@ -1,6 +1,7 @@
 import {
   albumId,
   artistId,
+  DEFAULT_LIBRARY_ID,
   ENTITY_ID_PREFIXES,
   md5,
   newHashId,
@@ -200,26 +201,26 @@ describe("the derivation rules", () => {
   it("derives a track id from its R2 key, taken literally", () => {
     const key = "Aphex Twin/Selected Ambient Works 85-92/01 Xtal.mp3";
 
-    expect(trackId(key)).toBe(newHashId(key));
+    expect(trackId(1, key)).toBe(newHashId(key));
     // The key is an object's identity, so its case is part of it.
-    expect(trackId(key)).not.toBe(trackId(key.toLowerCase()));
+    expect(trackId(1, key)).not.toBe(trackId(1, key.toLowerCase()));
   });
 
   it("derives an album id from its album artist, name and year", () => {
-    expect(albumId("Aphex Twin", "Selected Ambient Works 85-92", 1992)).toBe(
+    expect(albumId(1, "Aphex Twin", "Selected Ambient Works 85-92", 1992)).toBe(
       newHashId("aphex twin", "selected ambient works 85-92", "1992"),
     );
   });
 
   it("gives two albums of the same name by different artists different ids", () => {
-    expect(albumId("Weezer", "Weezer", 1994)).not.toBe(albumId("Weezer", "Weezer", 2001));
-    expect(albumId("Nirvana", "Live", 1994)).not.toBe(albumId("Pixies", "Live", 1994));
+    expect(albumId(1, "Weezer", "Weezer", 1994)).not.toBe(albumId(1, "Weezer", "Weezer", 2001));
+    expect(albumId(1, "Nirvana", "Live", 1994)).not.toBe(albumId(1, "Pixies", "Live", 1994));
   });
 
   it("hashes a missing year as an empty part", () => {
-    expect(albumId("Artist", "Album")).toBe(newHashId("artist", "album", ""));
-    expect(albumId("Artist", "Album", null)).toBe(albumId("Artist", "Album"));
-    expect(albumId("Artist", "Album", 0)).not.toBe(albumId("Artist", "Album"));
+    expect(albumId(1, "Artist", "Album")).toBe(newHashId("artist", "album", ""));
+    expect(albumId(1, "Artist", "Album", null)).toBe(albumId(1, "Artist", "Album"));
+    expect(albumId(1, "Artist", "Album", 0)).not.toBe(albumId(1, "Artist", "Album"));
   });
 
   it("derives an artist id from the normalized name", () => {
@@ -228,9 +229,9 @@ describe("the derivation rules", () => {
   });
 
   it("derives a playlist id from the R2 key of its .m3u", () => {
-    expect(playlistId("playlists/favourites.m3u")).toBe(newHashId("playlists/favourites.m3u"));
-    expect(playlistId("playlists/favourites.m3u")).not.toBe(
-      playlistId("playlists/favourites.m3u8"),
+    expect(playlistId(1, "playlists/favourites.m3u")).toBe(newHashId("playlists/favourites.m3u"));
+    expect(playlistId(1, "playlists/favourites.m3u")).not.toBe(
+      playlistId(1, "playlists/favourites.m3u8"),
     );
   });
 
@@ -239,9 +240,95 @@ describe("the derivation rules", () => {
     // gives all three the same hash. Nothing depends on them differing: an id
     // only ever travels prefixed, and each kind is looked up in its own table.
     // The album hash, which takes three parts, stands apart anyway.
-    expect(trackId("name")).toBe(playlistId("name"));
-    expect(trackId("name")).toBe(artistId("name"));
-    expect(albumId("name", "name", 2000)).not.toBe(trackId("name"));
+    expect(trackId(1, "name")).toBe(playlistId(1, "name"));
+    expect(trackId(1, "name")).toBe(artistId("name"));
+    expect(albumId(1, "name", "name", 2000)).not.toBe(trackId(1, "name"));
+  });
+});
+
+describe("ids per library (ADR-0009)", () => {
+  const KEY = "Aphex Twin/Selected Ambient Works 85-92/01 Xtal.mp3";
+  const PLAYLIST_KEY = "playlists/favourites.m3u";
+
+  it.each([
+    // Recorded from v0.5.0 (`git show v0.5.0:packages/db/src/ids.ts`), and
+    // recomputed outside this repository with Python's hashlib: the ids every
+    // deployed track, album and playlist has, so every star, rating, play
+    // count, playlist entry and play queue entry keeps pointing at its item.
+    ["a track", () => trackId(1, KEY), "4uaX1IoB1jAUtkInpCNErX"],
+    [
+      "a track with non-ASCII in its key",
+      () => trackId(1, "Sigur Rós/Ágætis byrjun/04 Svefn-g-englar.flac"),
+      "2fQHO5jSWCIT2YiMMHCFWG",
+    ],
+    [
+      // The same key as a macOS upload spells it, decomposed (NFD). A key is
+      // hashed as stored, never normalized, so it is another track.
+      "a track whose key is decomposed (NFD)",
+      () => trackId(1, "Sigur Rós/Ágætis byrjun/04 Svefn-g-englar.flac"),
+      "4zSFZjjAfvgN0urr58fSPQ",
+    ],
+    [
+      "an album",
+      () => albumId(1, "Aphex Twin", "Selected Ambient Works 85-92", 1992),
+      "2QdrdJrQZQnQZiaAYJ6KYm",
+    ],
+    [
+      "an album with no year",
+      () => albumId(1, "Portishead", "Dummy", null),
+      "6iK4xudqWx9l8EV07KRNNu",
+    ],
+    ["a playlist", () => playlistId(1, PLAYLIST_KEY), "50cZ3ijthLwMEy5bJBwWmR"],
+    ["an artist", () => artistId("Aphex Twin"), "2mdKnMsw0wC3dWalkB0Ozr"],
+  ])("keeps library 1's id of %s exactly as v0.5.0 minted it", (_label, derive, golden) => {
+    expect(derive()).toBe(golden);
+  });
+
+  it("names the bound bucket's library 1", () => {
+    expect(DEFAULT_LIBRARY_ID).toBe(1);
+  });
+
+  it("hashes any other library's id in as a leading part", () => {
+    expect(trackId(2, KEY)).toBe(newHashId("2", KEY));
+    expect(trackId(2, KEY)).toBe("5uCB0V1t4vj0qlj9VHRXHW");
+    expect(albumId(2, "Aphex Twin", "Selected Ambient Works 85-92", 1992)).toBe(
+      newHashId("2", "aphex twin", "selected ambient works 85-92", "1992"),
+    );
+    expect(albumId(2, "Portishead", "Dummy")).toBe(newHashId("2", "portishead", "dummy", ""));
+    expect(playlistId(2, PLAYLIST_KEY)).toBe(newHashId("2", PLAYLIST_KEY));
+    expect(trackId(12, KEY)).toBe(newHashId("12", KEY));
+  });
+
+  it("makes the same key two tracks, and the same playlist file two playlists, in two libraries", () => {
+    expect(trackId(2, KEY)).not.toBe(trackId(1, KEY));
+    expect(trackId(2, KEY)).not.toBe(trackId(3, KEY));
+    expect(playlistId(2, PLAYLIST_KEY)).not.toBe(playlistId(1, PLAYLIST_KEY));
+  });
+
+  it("gives one album two ids in two libraries, and its artist one", () => {
+    const tags = ["Aphex Twin", "Selected Ambient Works 85-92", 1992] as const;
+
+    expect(albumId(1, ...tags)).not.toBe(albumId(2, ...tags));
+    // Artists take no library: one artist in both is one artist.
+    expect(artistId(tags[0])).toBe("2mdKnMsw0wC3dWalkB0Ozr");
+  });
+
+  it("can collide with library 1 only through a key that begins with the library's part", () => {
+    // The crafted collision the upserts guard against (scanner/repository.ts,
+    // playlists/repository.ts): a library-1 key that is library 2's id part
+    // and its separator in front of the other key.
+    expect(trackId(1, `2​${KEY}`)).toBe(trackId(2, KEY));
+    expect(playlistId(1, `2​${PLAYLIST_KEY}`)).toBe(playlistId(2, PLAYLIST_KEY));
+    // An album name cannot carry the separator: it is stripped as invisible.
+    expect(albumId(1, "2​Aphex Twin", "Selected Ambient Works 85-92", 1992)).not.toBe(
+      albumId(2, "Aphex Twin", "Selected Ambient Works 85-92", 1992),
+    );
+  });
+
+  it.each([0, -1, 1.5, Number.NaN])("refuses %d as a library id", (libraryId) => {
+    expect(() => trackId(libraryId, KEY)).toThrow(/library id/);
+    expect(() => albumId(libraryId, "a", "b")).toThrow(/library id/);
+    expect(() => playlistId(libraryId, PLAYLIST_KEY)).toThrow(/library id/);
   });
 });
 

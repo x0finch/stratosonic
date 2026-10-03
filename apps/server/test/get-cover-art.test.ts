@@ -67,11 +67,11 @@ interface NamedAlbum {
 }
 
 function idOfAlbum(album: NamedAlbum): string {
-  return prefixedId("album", albumId(album.albumArtist, album.name, album.year));
+  return prefixedId("album", albumId(1, album.albumArtist, album.name, album.year));
 }
 
 function coverKeyOf(album: NamedAlbum, extension: string): string {
-  return `_covers/${albumId(album.albumArtist, album.name, album.year)}.${extension}`;
+  return `_covers/${albumId(1, album.albumArtist, album.name, album.year)}.${extension}`;
 }
 
 /** An album with a cover, and one of its tracks. */
@@ -171,7 +171,7 @@ describe("getCoverArt", () => {
       throw new Error("the covered fixture album has no tracks");
     }
 
-    const id = prefixedId("track", trackId(fixtureTrack(file).r2Key));
+    const id = prefixedId("track", trackId(1, fixtureTrack(file).r2Key));
     const response = await coverOf(id);
 
     expect(response.headers.get("Content-Type")).toBe("image/png");
@@ -335,7 +335,7 @@ describe("getCoverArt without an image to serve", () => {
       throw new Error("the cover-less fixture album has no tracks");
     }
 
-    const id = prefixedId("track", trackId(fixtureTrack(file).r2Key));
+    const id = prefixedId("track", trackId(1, fixtureTrack(file).r2Key));
 
     expect((await errorOf(await coverOf(id, { f: "json" })))?.code).toBe(70);
   });
@@ -347,13 +347,13 @@ describe("getCoverArt without an image to serve", () => {
   });
 
   it("answers error 70 for an id no album, track or artist has", async () => {
-    const id = prefixedId("album", albumId("Nobody", "Nothing", 1999));
+    const id = prefixedId("album", albumId(1, "Nobody", "Nothing", 1999));
 
     expect((await errorOf(await coverOf(id, { f: "json" })))?.code).toBe(70);
   });
 
   it("answers error 70 for a playlist id, which names no artwork", async () => {
-    const id = prefixedId("playlist", trackId("playlists/favourites.m3u"));
+    const id = prefixedId("playlist", trackId(1, "playlists/favourites.m3u"));
 
     expect((await errorOf(await coverOf(id, { f: "json" })))?.code).toBe(70);
   });

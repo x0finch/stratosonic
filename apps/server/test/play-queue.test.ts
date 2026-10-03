@@ -33,7 +33,7 @@ const SONGS = {
   ghost: { key: `${ARTIST}/${ALBUM}/05 Ghost.mp3`, title: "Ghost" },
 } satisfies Record<string, Song>;
 
-const id = (song: Song) => prefixedId("track", trackId(song.key));
+const id = (song: Song) => prefixedId("track", trackId(1, song.key));
 
 const PASSWORD = "sesame";
 const OTHER_USER = "listener";
@@ -229,7 +229,7 @@ describe("a track that has left the library", () => {
 
     await database(testEnv)
       .delete(track)
-      .where(eq(track.id, trackId(SONGS.ghost.key)));
+      .where(eq(track.id, trackId(1, SONGS.ghost.key)));
 
     const queue = await savedQueue();
 
@@ -285,7 +285,7 @@ describe("bad requests", () => {
     await call("savePlayQueue", { id: id(SONGS.alpha) });
 
     const tooMany = Array.from({ length: 1001 }, (_, index) =>
-      prefixedId("track", trackId(`${ARTIST}/${ALBUM}/never-${index}.mp3`)),
+      prefixedId("track", trackId(1, `${ARTIST}/${ALBUM}/never-${index}.mp3`)),
     );
 
     const body = await call("savePlayQueue", { id: tooMany });

@@ -37,7 +37,7 @@ const ALL_TRACKS = [...fixtures.tracks, ...fixtures.lyricsTracks];
 function expectedRows(tracks = fixtures.lyricsTracks): TrackLyrics[] {
   return tracks
     .map((fixture) => ({
-      trackId: trackId(fixture.r2Key),
+      trackId: trackId(1, fixture.r2Key),
       text: fixture.lyrics.storedText,
       lang: fixture.lyrics.lang,
     }))
@@ -227,7 +227,7 @@ describe("the scanner that ran before scan_version", () => {
         suffix, etag, created_at, updated_at) values (?, ?, 'Old Track', 'al', 'ar', 'Old',
         'Old', 'mp3', 'etag', 0, 0)`,
     )
-      .bind(trackId(key), key)
+      .bind(trackId(1, key), key)
       .run();
 
     expect(fallback).toBe("0");

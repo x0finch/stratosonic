@@ -4,7 +4,7 @@ import { encryptPassword } from "../auth/crypto";
 import { OWNER_ROLE } from "../console-auth/permissions";
 import { type Database, database } from "../db";
 import type { Env } from "../env";
-import { countUsers } from "../users/repository";
+import { countUsers, grantLibrariesStatement } from "../users/repository";
 import { configuredSetupToken } from "./setup-token";
 
 /**
@@ -155,6 +155,10 @@ async function markInitialSetupDone(db: Database): Promise<void> {
  * Creates the admin user, or reports that the environment does not say what to
  * create. `onConflictDoNothing` keeps two isolates racing through their first
  * request from turning into two rows.
+ *
+ * The admin is given every library in the same batch, as every new admin is
+ * (`grantLibrariesStatement`). An isolate that lost the race inserted no user,
+ * so its grant, made out to its own id, writes nothing.
  */
 async function createInitialAdmin(env: Env, db: Database): Promise<boolean> {
   const { INITIAL_USER: userName, INITIAL_PASSWORD: password } = env;
@@ -188,18 +192,22 @@ async function createInitialAdmin(env: Env, db: Database): Promise<boolean> {
   }
 
   const now = new Date();
-  await db
-    .insert(subsonicUser)
-    .values({
-      id: newRandomId(),
-      userName,
-      name: userName,
-      password: await encryptPassword(env.PASSWORD_ENCRYPTION_KEY, password),
-      isAdmin: true,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .onConflictDoNothing();
+  const id = newRandomId();
+  await db.batch([
+    db
+      .insert(subsonicUser)
+      .values({
+        id,
+        userName,
+        name: userName,
+        password: await encryptPassword(env.PASSWORD_ENCRYPTION_KEY, password),
+        isAdmin: true,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoNothing(),
+    grantLibrariesStatement(db, id, "all"),
+  ]);
 
   return true;
 }

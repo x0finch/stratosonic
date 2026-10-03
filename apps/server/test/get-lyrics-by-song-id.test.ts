@@ -32,7 +32,7 @@ function sidecar(trackKey: string, suffix: string): string {
 }
 
 function songId(r2Key: string): string {
-  return prefixedId("track", trackId(r2Key));
+  return prefixedId("track", trackId(1, r2Key));
 }
 
 /**
@@ -218,10 +218,10 @@ describe("what getLyricsBySongId refuses", () => {
   });
 
   it.each([
-    ["a track that does not exist", prefixedId("track", trackId("Nobody/Nothing/00 None.mp3"))],
+    ["a track that does not exist", prefixedId("track", trackId(1, "Nobody/Nothing/00 None.mp3"))],
     [
       "an album",
-      prefixedId("album", albumId(SILENT.pathFallback.albumArtist, "Quiet Album", 2024)),
+      prefixedId("album", albumId(1, SILENT.pathFallback.albumArtist, "Quiet Album", 2024)),
     ],
     ["a malformed id", "not-an-id"],
   ])("answers error 70 for %s", async (_label, id) => {
@@ -252,7 +252,7 @@ describe("what getLyricsBySongId costs", () => {
   });
 
   it("reads nothing from R2 for a track that does not exist", async () => {
-    const id = prefixedId("track", trackId("Nobody/Nothing/00 None.mp3"));
+    const id = prefixedId("track", trackId(1, "Nobody/Nothing/00 None.mp3"));
     const counted = await lyricsCounting("getLyricsBySongId", { id });
 
     expect(counted.body.error?.code).toBe(70);

@@ -112,40 +112,74 @@ export function normalizeIdPart(value: string): string {
   return normalized.trim();
 }
 
-/** A track is identified by where it lives: its R2 key, exactly as stored. */
-export function trackId(r2Key: string): string {
-  return newHashId(r2Key);
+/**
+ * The library every deployment has: the bucket the Worker is bound to,
+ * Navidrome's `model.DefaultLibraryID`. Migration 0009 creates it, it can
+ * never be removed, and its ids are the ones v0.5.0 minted (ADR-0009).
+ */
+export const DEFAULT_LIBRARY_ID = 1;
+
+/**
+ * The parts a library adds in front of an id's own (ADR-0009, amending
+ * ADR-0002): none for the default library, whose ids never change, and the
+ * library id as a leading `newHashId` part for any other. That is Navidrome's
+ * legacy rule (`model/metadata/legacy_ids.go`), which prefixes the library
+ * only when it is not the default one, written as a hash part rather than its
+ * `"N\path"` string, since our ids hash parts (ADR-0002).
+ */
+function libraryParts(libraryId: number): string[] {
+  if (!Number.isSafeInteger(libraryId) || libraryId < 1) {
+    throw new Error(`a library id is a positive integer, got ${libraryId}`);
+  }
+
+  return libraryId === DEFAULT_LIBRARY_ID ? [] : [String(libraryId)];
 }
 
 /**
- * An album is identified by its album artist, its name and its year, so two
- * albums of the same name by different artists - or two editions from
- * different years - stay apart. A missing year hashes as the empty string.
+ * A track is identified by where it lives: its library, and its R2 key in
+ * that library's bucket, exactly as stored. The same key in two libraries is
+ * two tracks.
+ */
+export function trackId(libraryId: number, r2Key: string): string {
+  return newHashId(...libraryParts(libraryId), r2Key);
+}
+
+/**
+ * An album is identified by its library, its album artist, its name and its
+ * year, so two albums of the same name by different artists - or two editions
+ * from different years - stay apart, and so does one album in two libraries.
+ * A missing year hashes as the empty string.
  */
 export function albumId(
+  libraryId: number,
   albumArtist: string,
   albumName: string,
   year?: number | null | undefined,
 ): string {
   return newHashId(
+    ...libraryParts(libraryId),
     normalizeIdPart(albumArtist),
     normalizeIdPart(albumName),
     year == null ? "" : String(year),
   );
 }
 
-/** An artist is identified by its name alone. */
+/**
+ * An artist is identified by its name alone, in every library: artists are
+ * shared, as Navidrome computes `artistID` without the library
+ * (`persistent_ids.go`).
+ */
 export function artistId(name: string): string {
   return newHashId(normalizeIdPart(name));
 }
 
 /**
- * A playlist is identified by the R2 key of the `.m3u` it was imported from,
- * so editing the file re-imports into the same playlist and renaming it makes
- * a new one.
+ * A playlist is identified by its library and the R2 key of the `.m3u` it was
+ * imported from, so editing the file re-imports into the same playlist and
+ * renaming it makes a new one.
  */
-export function playlistId(m3uR2Key: string): string {
-  return newHashId(m3uR2Key);
+export function playlistId(libraryId: number, m3uR2Key: string): string {
+  return newHashId(...libraryParts(libraryId), m3uR2Key);
 }
 
 /** The kinds of entity a client-facing id can name. */

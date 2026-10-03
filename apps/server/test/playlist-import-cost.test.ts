@@ -251,9 +251,10 @@ describe("a run that will not reach every playlist on the page", () => {
     // Five playlists are on the page and this run imports two of them, so
     // the lookups bind two keys and two ids, not five of each: the entries
     // of a playlist the run will not reach are rows read for nothing (#61).
+    // The playlist lookup also binds the library the keys are in.
     expect(counted.run.counts.imported).toBe(2);
     expect(counted.run.completed).toBe(false);
-    expect(counted.boundAgainst("playlist")).toEqual([2]);
+    expect(counted.boundAgainst("playlist")).toEqual([1 + 2]);
     expect(counted.boundAgainst("playlist_track")).toEqual([2]);
   });
 

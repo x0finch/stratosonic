@@ -59,8 +59,8 @@ const FAVOURITES = "playlists/favourites.m3u";
 const ROAD_TRIP = "playlists/road trip.m3u";
 const PRIVATE = "playlists/private.m3u";
 
-const FAVOURITES_ID = prefixedId("playlist", playlistId(FAVOURITES));
-const PRIVATE_ID = prefixedId("playlist", playlistId(PRIVATE));
+const FAVOURITES_ID = prefixedId("playlist", playlistId(1, FAVOURITES));
+const PRIVATE_ID = prefixedId("playlist", playlistId(1, PRIVATE));
 
 const KEYS = [
   "Silent Artist/Quiet Album/01 One.mp3",
@@ -194,7 +194,7 @@ describe("getPlaylist", () => {
 
     expect(response.playlist?.id).toBe(FAVOURITES_ID);
     expect(entries.map((entry) => entry.id)).toEqual(
-      [KEYS[2], KEYS[0], KEYS[1]].map((key) => prefixedId("track", trackId(key ?? ""))),
+      [KEYS[2], KEYS[0], KEYS[1]].map((key) => prefixedId("track", trackId(1, key ?? ""))),
     );
   });
 
@@ -246,7 +246,7 @@ describe("getPlaylist", () => {
   });
 
   it("answers an id of a playlist that does not exist with error 70", async () => {
-    const unknown = prefixedId("playlist", playlistId("playlists/nowhere.m3u"));
+    const unknown = prefixedId("playlist", playlistId(1, "playlists/nowhere.m3u"));
 
     expect((await playlists("getPlaylist", { id: unknown })).error?.code).toBe(70);
   });

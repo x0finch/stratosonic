@@ -21,7 +21,14 @@
  * the bucket is empty".
  */
 
-import { album, annotation, playlist, playlistTrack, track } from "@stratosonic/db";
+import {
+  album,
+  annotation,
+  DEFAULT_LIBRARY_ID,
+  playlist,
+  playlistTrack,
+  track,
+} from "@stratosonic/db";
 import { and, asc, eq, gt, inArray, lt, lte, or, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import type { Database } from "../db";
@@ -67,6 +74,14 @@ export interface IndexedPlaylist extends StoredPlaylist {
   readonly trackIds: readonly string[];
 }
 
+/**
+ * Keys are unique per library (migration 0009), so every lookup by key names
+ * its library, which is also what lets `(library_id, r2_key)` serve it. The
+ * import and the Files routes read library 1, the bound bucket, until they
+ * take a library (#84, tickets F and H).
+ */
+const KEYED_LIBRARY = DEFAULT_LIBRARY_ID;
+
 /** The tracks these R2 keys name, by key; keys with no track are absent. */
 export async function findTracksByKeys(
   db: Database,
@@ -78,7 +93,7 @@ export async function findTracksByKeys(
     const rows = await db
       .select({ id: track.id, r2Key: track.r2Key, duration: track.duration })
       .from(track)
-      .where(inArray(track.r2Key, chunk));
+      .where(and(eq(track.libraryId, KEYED_LIBRARY), inArray(track.r2Key, chunk)));
 
     for (const row of rows) {
       found.set(row.r2Key, row);
@@ -125,7 +140,7 @@ export async function findPlaylistsByKeys(
           changedAt: playlist.changedAt,
         })
         .from(playlist)
-        .where(inArray(playlist.r2Key, chunk))),
+        .where(and(eq(playlist.libraryId, KEYED_LIBRARY), inArray(playlist.r2Key, chunk)))),
     );
   }
 
@@ -275,7 +290,11 @@ export async function deletePlaylistRowsByKeys(
 ): Promise<void> {
   await runBatch(
     db,
-    chunked(r2Keys).map((chunk) => db.delete(playlist).where(inArray(playlist.r2Key, chunk))),
+    chunked(r2Keys).map((chunk) =>
+      db
+        .delete(playlist)
+        .where(and(eq(playlist.libraryId, KEYED_LIBRARY), inArray(playlist.r2Key, chunk))),
+    ),
   );
 }
 
@@ -289,6 +308,8 @@ export interface ImportedPlaylist {
   readonly songCount: number;
   readonly duration: number;
   readonly r2Key: string;
+  /** The library whose bucket holds the `.m3u`. */
+  readonly libraryId: number;
   readonly createdAt: Date;
   readonly changedAt: Date;
   /** The tracks it holds, in the order the file lists them. */
@@ -373,6 +394,7 @@ export function upsertPlaylistStatements(
         songCount: imported.songCount,
         duration: imported.duration,
         r2Key: imported.r2Key,
+        libraryId: imported.libraryId,
         createdAt: imported.createdAt,
         changedAt: imported.changedAt,
       })
@@ -386,6 +408,13 @@ export function upsertPlaylistStatements(
           changedAt: imported.changedAt,
           ...(writesDetails ? { comment: imported.comment, public: imported.public } : {}),
         },
+        // The collision guard, as on tracks (scanner/repository.ts): another
+        // library's playlist row is never moved into this one. It guards the
+        // row only: the statements below still replace that id's entries.
+        // Nothing reaches this while every caller passes library 1; the
+        // import and writes across libraries (#84, ticket F) must detect the
+        // refused upsert before replacing the entries.
+        setWhere: sql`${playlist.libraryId} = excluded.${sql.identifier(playlist.libraryId.name)}`,
       }),
     db.delete(playlistTrack).where(eq(playlistTrack.playlistId, imported.id)),
   ];
@@ -446,6 +475,7 @@ export async function sweepMissingPlaylists(
     .from(playlist)
     .where(
       and(
+        eq(playlist.libraryId, KEYED_LIBRARY),
         gt(playlist.r2Key, after),
         through === null ? undefined : lte(playlist.r2Key, through),
         lt(playlist.createdAt, createdBefore),

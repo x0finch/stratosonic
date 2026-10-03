@@ -37,7 +37,7 @@ function query(extra: Record<string, string> = {}): string {
 }
 
 function idOf(file: string): string {
-  return prefixedId("track", trackId(fixtureTrack(file).r2Key));
+  return prefixedId("track", trackId(1, fixtureTrack(file).r2Key));
 }
 
 async function downloadOf(id: string, range?: string): Promise<Response> {
@@ -113,7 +113,7 @@ describe("download", () => {
   });
 
   it("answers error 70 for an id no track has", async () => {
-    const unknown = prefixedId("track", trackId("nothing/at/all.mp3"));
+    const unknown = prefixedId("track", trackId(1, "nothing/at/all.mp3"));
     const response = await SELF.fetch(`${BASE}/rest/download?${query({ id: unknown, f: "json" })}`);
     const body = (await response.json()) as JsonEnvelope;
 

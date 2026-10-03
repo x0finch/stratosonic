@@ -59,7 +59,7 @@ describe("getArtist", () => {
     expect(artist?.albumCount).toBe(ALBUMS.length);
     // The first album with a cover in the order below, which is not the first
     // album and not the first one seeded.
-    expect(artist?.coverArt).toBe(prefixedId("album", albumId(PROLIFIC, "Second", 2001)));
+    expect(artist?.coverArt).toBe(prefixedId("album", albumId(1, PROLIFIC, "Second", 2001)));
   });
 
   it("lists the albums by year and then by name", async () => {
@@ -78,11 +78,11 @@ describe("getArtist", () => {
     const second = albums.find((album) => album.name === "Second");
 
     expect(second).toEqual({
-      id: prefixedId("album", albumId(PROLIFIC, "Second", 2001)),
+      id: prefixedId("album", albumId(1, PROLIFIC, "Second", 2001)),
       name: "Second",
       artist: PROLIFIC,
       artistId: artistUrlId(PROLIFIC),
-      coverArt: prefixedId("album", albumId(PROLIFIC, "Second", 2001)),
+      coverArt: prefixedId("album", albumId(1, PROLIFIC, "Second", 2001)),
       songCount: 2,
       duration: 431,
       created: SEED_TIME.toISOString(),

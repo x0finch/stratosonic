@@ -69,7 +69,7 @@ describe("a first scan of the fixture bucket", () => {
     async (_name, album) => {
       const tracks = album.trackFiles.map((file) => fixtureTrack(file));
       const body = await browse("getAlbum", {
-        id: prefixedId("album", albumId(album.albumArtist, album.name, album.year)),
+        id: prefixedId("album", albumId(1, album.albumArtist, album.name, album.year)),
       });
 
       expect(body.album?.songCount).toBe(tracks.length);
@@ -81,7 +81,7 @@ describe("a first scan of the fixture bucket", () => {
       expect(body.album?.genre).toBe(album.genre ?? undefined);
       expect(body.album?.coverArt).toBe(
         album.hasCover
-          ? prefixedId("album", albumId(album.albumArtist, album.name, album.year))
+          ? prefixedId("album", albumId(1, album.albumArtist, album.name, album.year))
           : undefined,
       );
       expect((body.album?.song ?? []).map((song) => song.title).sort()).toEqual(
@@ -94,7 +94,7 @@ describe("a first scan of the fixture bucket", () => {
     "describes %s from the tags and the object",
     async (_file, fixture) => {
       const body = await browse("getSong", {
-        id: prefixedId("track", trackId(fixture.r2Key)),
+        id: prefixedId("track", trackId(1, fixture.r2Key)),
       });
 
       expect(body.song?.title).toBe(fixture.tags?.title ?? fixture.pathFallback.title);
@@ -140,7 +140,7 @@ describe("a first scan of the fixture bucket", () => {
     const album = fixtureAlbum("Quiet Album");
     const response = await SELF.fetch(
       `${BASE}/rest/getCoverArt?${query({
-        id: prefixedId("album", albumId(album.albumArtist, album.name, album.year)),
+        id: prefixedId("album", albumId(1, album.albumArtist, album.name, album.year)),
       })}`,
     );
 

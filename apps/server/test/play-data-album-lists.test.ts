@@ -24,8 +24,9 @@ const XANDU: AlbumFixture = { name: "Xandu", track: `${ARTIST}/Xandu/01 X.mp3` }
 const YONDER: AlbumFixture = { name: "Yonder", track: `${ARTIST}/Yonder/01 Y.mp3` };
 const ZEPHYR: AlbumFixture = { name: "Zephyr", track: `${ARTIST}/Zephyr/01 Z.mp3` };
 
-const albumIdOf = (album: AlbumFixture) => prefixedId("album", albumId(ARTIST, album.name, YEAR));
-const trackIdOf = (album: AlbumFixture) => prefixedId("track", trackId(album.track));
+const albumIdOf = (album: AlbumFixture) =>
+  prefixedId("album", albumId(1, ARTIST, album.name, YEAR));
+const trackIdOf = (album: AlbumFixture) => prefixedId("track", trackId(1, album.track));
 
 /** Someone else's account, which plays and rates an album the admin never does. */
 const LISTENER = { user: "listener", password: "open-sesame" };
@@ -60,7 +61,7 @@ beforeAll(async () => {
   // to run before another for that to hold.
   await seedAnnotation({
     userId: other,
-    itemId: albumId(ARTIST, ZEPHYR.name, YEAR),
+    itemId: albumId(1, ARTIST, ZEPHYR.name, YEAR),
     itemType: "album",
     starred: false,
     rating: 5,

@@ -74,6 +74,7 @@ describe("the library tables", () => {
       coverKey: "_covers/album-round-trip.png",
       createdAt: CREATED,
       updatedAt: UPDATED,
+      libraryId: 1,
     };
 
     await db.insert(album).values(row);
@@ -127,6 +128,7 @@ describe("the library tables", () => {
       scanVersion: 1,
       createdAt: CREATED,
       updatedAt: UPDATED,
+      libraryId: 1,
     };
 
     await db.insert(track).values(row);
@@ -170,6 +172,7 @@ describe("the library tables", () => {
       r2Key: "playlists/favourites.m3u",
       createdAt: CREATED,
       changedAt: UPDATED,
+      libraryId: 1,
     };
 
     await db.insert(playlist).values(row);

@@ -29,7 +29,7 @@ function artistUrlId(name: string): string {
 }
 
 function albumUrlId(name: string, year: number): string {
-  return prefixedId("album", albumId(ARTIST, name, year));
+  return prefixedId("album", albumId(1, ARTIST, name, year));
 }
 
 function r2KeyOf(title: string): string {
@@ -163,7 +163,7 @@ describe("getMusicDirectory of an album", () => {
       .directory;
     const first = directory?.child?.[0];
 
-    expect(first?.id).toBe(prefixedId("track", trackId(r2KeyOf("First Song"))));
+    expect(first?.id).toBe(prefixedId("track", trackId(1, r2KeyOf("First Song"))));
     expect(first?.isDir).toBe(false);
     expect(first?.parent).toBe(albumUrlId("Covered", 2001));
     expect(first?.albumId).toBe(albumUrlId("Covered", 2001));
@@ -202,10 +202,10 @@ describe("getMusicDirectory of an id it cannot serve", () => {
   });
 
   it.each([
-    ["a track", prefixedId("track", trackId(r2KeyOf("First Song")))],
-    ["a playlist", prefixedId("playlist", playlistId("playlists/mine.m3u"))],
+    ["a track", prefixedId("track", trackId(1, r2KeyOf("First Song")))],
+    ["a playlist", prefixedId("playlist", playlistId(1, "playlists/mine.m3u"))],
     ["an artist that is not there", prefixedId("artist", artistId("Nobody"))],
-    ["an album that is not there", prefixedId("album", albumId("Nobody", "Nothing", 1999))],
+    ["an album that is not there", prefixedId("album", albumId(1, "Nobody", "Nothing", 1999))],
     ["an unknown prefix", "xx-abcdefghijklmnopqrstuv"],
     ["no prefix", "abcdefghijklmnopqrstuv"],
     ["too few digits", "ar-abcdefgh"],

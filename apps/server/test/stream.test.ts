@@ -44,7 +44,7 @@ function query(extra: Record<string, string> = {}): string {
 
 /** The id a client streams a fixture by. */
 function idOf(file: string): string {
-  return prefixedId("track", trackId(fixtureTrack(file).r2Key));
+  return prefixedId("track", trackId(1, fixtureTrack(file).r2Key));
 }
 
 async function streamOf(
@@ -234,7 +234,7 @@ describe("stream without a track to serve", () => {
   });
 
   it("answers error 70 for an id no track has", async () => {
-    const unknown = prefixedId("track", trackId("nothing/at/all.mp3"));
+    const unknown = prefixedId("track", trackId(1, "nothing/at/all.mp3"));
     const response = await streamOf(unknown, { extra: { f: "json" } });
 
     expect((await errorOf(response))?.code).toBe(70);
@@ -246,7 +246,7 @@ describe("stream without a track to serve", () => {
       throw new Error("the fixtures describe no albums");
     }
 
-    const id = prefixedId("album", albumId(album.albumArtist, album.name, album.year));
+    const id = prefixedId("album", albumId(1, album.albumArtist, album.name, album.year));
     const response = await streamOf(id, { extra: { f: "json" } });
 
     expect((await errorOf(response))?.code).toBe(70);

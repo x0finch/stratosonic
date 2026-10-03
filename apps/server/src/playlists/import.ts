@@ -51,7 +51,7 @@
  * runs, would mean it never finished.
  */
 
-import { playlistId } from "@stratosonic/db";
+import { DEFAULT_LIBRARY_ID, playlistId } from "@stratosonic/db";
 import { type Database, database } from "../db";
 import type { Env } from "../env";
 import { isCoverKey } from "../scanner/covers";
@@ -306,7 +306,9 @@ async function importOne(
   }
 
   const imported: ImportedPlaylist = {
-    id: playlistId(object.key),
+    // Playlists are read from the bound bucket until the import walks
+    // every library (#84, ticket F).
+    id: playlistId(DEFAULT_LIBRARY_ID, object.key),
     name: parsed.name ?? playlistNameFromKey(object.key),
     // Navidrome stamps an auto-imported playlist with where it came from
     // (`newSyncedPlaylist`), and keeps whatever the row already says on a
@@ -317,6 +319,7 @@ async function importOne(
     songCount: matched.length,
     duration: matched.reduce((total, entry) => total + entry.duration, 0),
     r2Key: object.key,
+    libraryId: DEFAULT_LIBRARY_ID,
     // `created` is when the playlist first appeared and does not move again;
     // `changed` is the object's upload time, which is Navidrome's
     // `UpdatedAt: info.ModTime()` - the file's own clock rather than ours, so

@@ -29,7 +29,7 @@ const KEYS = TITLES.map((title, index) => {
   return `${ARTIST}/${ALBUM}/${String(index + 1).padStart(2, "0")} ${title}.mp3`;
 });
 
-const SONG_IDS = KEYS.map((key) => prefixedId("track", trackId(key)));
+const SONG_IDS = KEYS.map((key) => prefixedId("track", trackId(1, key)));
 
 /** Each track lasts a distinct number of seconds, so a total names its set. */
 const DURATIONS = [10, 20, 40, 80, 160];
@@ -91,7 +91,7 @@ function titles(playlist: SubsonicPlaylistElement): string[] {
 /** The `.m3u` of the playlist with this client id, and the key it lives at. */
 async function fileOf(id: string): Promise<{ key: string; text: string }> {
   for (const [key, text] of await playlistObjects()) {
-    if (prefixedId("playlist", playlistId(key)) === id) {
+    if (prefixedId("playlist", playlistId(1, key)) === id) {
       return { key, text };
     }
   }
@@ -348,7 +348,7 @@ describe("bad requests", () => {
   });
 
   it("answers a playlistId that names nothing with error 70", async () => {
-    const unknown = prefixedId("playlist", playlistId("playlists/nowhere.m3u"));
+    const unknown = prefixedId("playlist", playlistId(1, "playlists/nowhere.m3u"));
 
     expect((await update([["playlistId", unknown]])).error?.code).toBe(70);
     expect((await update([["playlistId", "not-an-id"]])).error?.code).toBe(70);
@@ -356,7 +356,7 @@ describe("bad requests", () => {
 
   it("answers a songIdToAdd that names no track with error 70", async () => {
     const mix = await create("Ghost song", [SONG_IDS[0] ?? ""]);
-    const ghost = prefixedId("track", trackId(`${ARTIST}/${ALBUM}/99 Ghost.mp3`));
+    const ghost = prefixedId("track", trackId(1, `${ARTIST}/${ALBUM}/99 Ghost.mp3`));
 
     const response = await update([
       ["playlistId", mix.id],

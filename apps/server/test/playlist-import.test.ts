@@ -26,7 +26,7 @@ import { testEnv } from "./support";
  */
 
 const PLAYLIST = fixtures.playlist;
-const PLAYLIST_ID = prefixedId("playlist", playlistId(PLAYLIST.r2Key));
+const PLAYLIST_ID = prefixedId("playlist", playlistId(1, PLAYLIST.r2Key));
 
 /** The duration the fixture's four matched tracks add up to. */
 const MATCHED_DURATION = PLAYLIST.trackKeys
@@ -99,7 +99,7 @@ describe("a first pass over the fixture bucket", () => {
     const entries = response.playlist?.entry ?? [];
 
     expect(entries.map((entry) => entry.id)).toEqual(
-      PLAYLIST.trackKeys.map((key) => prefixedId("track", trackId(key))),
+      PLAYLIST.trackKeys.map((key) => prefixedId("track", trackId(1, key))),
     );
     expect(entries.map((entry) => entry.path)).toEqual([...PLAYLIST.trackKeys]);
   });
@@ -198,7 +198,7 @@ describe("a playlist file that was edited", () => {
 
 describe("a second playlist, named by the file itself", () => {
   const KEY = "playlists/mixed.m3u8";
-  const ID = prefixedId("playlist", playlistId(KEY));
+  const ID = prefixedId("playlist", playlistId(1, KEY));
   const TRACK = fixtures.tracks[0]?.r2Key ?? "";
 
   it("takes its name from #PLAYLIST: and reads past a byte-order mark", async () => {

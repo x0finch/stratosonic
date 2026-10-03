@@ -16,9 +16,12 @@ import { BASE, seedFixtureLibrary, seedFixtureObjects, seedPlaylist } from "./su
  * without one.
  */
 
-const QUIET = prefixedId("album", albumId("Silent Artist", "Quiet Album", 2001));
-const FALLBACK = prefixedId("album", albumId("Fallback Artist", "Fallback Album", null));
-const HUSHED = prefixedId("track", trackId("Silent Artist/Quiet Album/02 Hushed Interlude.flac"));
+const QUIET = prefixedId("album", albumId(1, "Silent Artist", "Quiet Album", 2001));
+const FALLBACK = prefixedId("album", albumId(1, "Fallback Artist", "Fallback Album", null));
+const HUSHED = prefixedId(
+  "track",
+  trackId(1, "Silent Artist/Quiet Album/02 Hushed Interlude.flac"),
+);
 let playlistId = "";
 
 beforeAll(async () => {
@@ -83,8 +86,8 @@ describe.each(["getAlbumInfo", "getAlbumInfo2"])("%s", (endpoint) => {
   });
 
   it.each([
-    ["an album that does not exist", () => prefixedId("album", albumId("Nobody", "None", null))],
-    ["a song that does not exist", () => prefixedId("track", trackId("Nobody/None/01.mp3"))],
+    ["an album that does not exist", () => prefixedId("album", albumId(1, "Nobody", "None", null))],
+    ["a song that does not exist", () => prefixedId("track", trackId(1, "Nobody/None/01.mp3"))],
     [
       "an artist, which Navidrome's getAlbum does not follow",
       () => prefixedId("artist", artistId("Silent Artist")),

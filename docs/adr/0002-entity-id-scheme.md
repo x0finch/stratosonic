@@ -23,3 +23,7 @@ name (albums/artists) is unchanged; renaming a file, or retagging an album or
 artist name, mints a new id and drops that item's annotations. This is
 acceptable because we do not migrate historical data and album/artist-level
 stars are rare.
+
+_Amended by ADR-0009: ids are per library. Library 1's are exactly as
+above; another library's tracks, albums and playlists hash its id as a
+leading part, and artists stay shared._

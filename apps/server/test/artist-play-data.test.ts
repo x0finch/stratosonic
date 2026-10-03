@@ -24,7 +24,7 @@ const FIRST = `${ARTIST}/${ALBUM}/01 First.mp3`;
 const SECOND = `${ARTIST}/${ALBUM}/02 Second.mp3`;
 
 const ARTIST_ID = prefixedId("artist", artistId(ARTIST));
-const trackIdOf = (key: string) => prefixedId("track", trackId(key));
+const trackIdOf = (key: string) => prefixedId("track", trackId(1, key));
 
 const OTHER_USER = { user: "roamer", password: "open-sesame" };
 

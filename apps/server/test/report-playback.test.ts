@@ -46,8 +46,8 @@ const SONGS = {
   unknown: { key: `${ARTIST}/${ALBUM}/05 Unknown.mp3`, title: "Unknown", duration: 0 },
 } satisfies Record<string, Song>;
 
-const id = (song: Song) => prefixedId("track", trackId(song.key));
-const ALBUM_ID = prefixedId("album", albumId(ARTIST, ALBUM, YEAR));
+const id = (song: Song) => prefixedId("track", trackId(1, song.key));
+const ALBUM_ID = prefixedId("album", albumId(1, ARTIST, ALBUM, YEAR));
 const ARTIST_ID = prefixedId("artist", artistId(ARTIST));
 
 /** A complete, valid report of `song`, with whatever a test overrides. */
@@ -125,7 +125,7 @@ describe("a request it refuses", () => {
   it("is error 70 for a track id that names nothing", async () => {
     const body = await write("reportPlayback", {
       ...reportOf(SONGS.long),
-      mediaId: prefixedId("track", trackId("Nobody/Nothing/None.mp3")),
+      mediaId: prefixedId("track", trackId(1, "Nobody/Nothing/None.mp3")),
     });
 
     expect(body.error?.code).toBe(70);
@@ -285,7 +285,7 @@ describe("a stop", () => {
       userId: await adminId(),
       starred: false,
       itemType: "track",
-      itemId: trackId(SONGS.fourth.key),
+      itemId: trackId(1, SONGS.fourth.key),
       playCount: 3,
       playDate: future,
     });
@@ -301,7 +301,7 @@ describe("a stop", () => {
 describe("reports that arrive out of order", () => {
   it("leaves a playing session alone on a late starting for its track", async () => {
     const startedAt = new Date(Date.now() - 30_000);
-    await seedSession({ trackId: trackId(SONGS.long.key), positionMs: 30_000, startedAt });
+    await seedSession({ trackId: trackId(1, SONGS.long.key), positionMs: 30_000, startedAt });
 
     const counted = await callCounting(
       "reportPlayback",
@@ -317,7 +317,7 @@ describe("reports that arrive out of order", () => {
   });
 
   it("restarts a paused session on a starting for its track", async () => {
-    await seedSession({ trackId: trackId(SONGS.long.key), state: "paused", positionMs: 30_000 });
+    await seedSession({ trackId: trackId(1, SONGS.long.key), state: "paused", positionMs: 30_000 });
     await report(SONGS.long, { state: "starting" });
 
     const session = await storedSession();
@@ -326,37 +326,37 @@ describe("reports that arrive out of order", () => {
   });
 
   it("replaces a playing session on a starting for another track", async () => {
-    await seedSession({ trackId: trackId(SONGS.long.key), positionMs: 30_000 });
+    await seedSession({ trackId: trackId(1, SONGS.long.key), positionMs: 30_000 });
     await report(SONGS.short, { state: "starting" });
 
-    expect((await storedSession())?.trackId).toBe(trackId(SONGS.short.key));
+    expect((await storedSession())?.trackId).toBe(trackId(1, SONGS.short.key));
   });
 
   it("keeps the session on a late stop for another track, still counting that play", async () => {
-    await seedSession({ trackId: trackId(SONGS.long.key), positionMs: 5_000 });
+    await seedSession({ trackId: trackId(1, SONGS.long.key), positionMs: 5_000 });
     const before = await playData(SONGS.other);
 
     await report(SONGS.other, { state: "stopped", positionMs: "200000" });
 
     // Navidrome counts the play before it looks at the session, and then
     // leaves a session on another track alone.
-    expect((await storedSession())?.trackId).toBe(trackId(SONGS.long.key));
+    expect((await storedSession())?.trackId).toBe(trackId(1, SONGS.long.key));
     expect((await playData(SONGS.other)).track).toBe(before.track + 1);
   });
 
   it("starts a playing session on another track from its reported position", async () => {
-    await seedSession({ trackId: trackId(SONGS.long.key), positionMs: 5_000 });
+    await seedSession({ trackId: trackId(1, SONGS.long.key), positionMs: 5_000 });
     const before = Date.now();
     await report(SONGS.short, { positionMs: "60000" });
 
     const session = await storedSession();
-    expect(session?.trackId).toBe(trackId(SONGS.short.key));
+    expect(session?.trackId).toBe(trackId(1, SONGS.short.key));
     expect(distance(session?.startedAt, before - 60_000)).toBeLessThan(2_000);
   });
 
   it("keeps the start of a session across its playing and paused reports", async () => {
     const startedAt = new Date(Date.now() - 90_000);
-    await seedSession({ trackId: trackId(SONGS.long.key), positionMs: 5_000, startedAt });
+    await seedSession({ trackId: trackId(1, SONGS.long.key), positionMs: 5_000, startedAt });
     await report(SONGS.long, { state: "paused", positionMs: "95000" });
 
     expect((await storedSession())?.startedAt).toEqual(startedAt);
@@ -366,7 +366,7 @@ describe("reports that arrive out of order", () => {
 describe("the now-playing feed", () => {
   it("carries the state, the position moved on at the rate, and the rate", async () => {
     await seedSession({
-      trackId: trackId(SONGS.long.key),
+      trackId: trackId(1, SONGS.long.key),
       positionMs: 30_000,
       playbackRate: 1.5,
       reportedAt: new Date(Date.now() - 10_000),
@@ -384,7 +384,7 @@ describe("the now-playing feed", () => {
 
   it("never puts a playing session past the end of its track", async () => {
     await seedSession({
-      trackId: trackId(SONGS.short.key),
+      trackId: trackId(1, SONGS.short.key),
       positionMs: 170_000,
       reportedAt: new Date(Date.now() - 60_000),
     });
@@ -394,7 +394,7 @@ describe("the now-playing feed", () => {
 
   it("leaves a paused session where it was reported", async () => {
     await seedSession({
-      trackId: trackId(SONGS.long.key),
+      trackId: trackId(1, SONGS.long.key),
       state: "paused",
       positionMs: 30_000,
       reportedAt: new Date(Date.now() - 60_000),
@@ -406,7 +406,7 @@ describe("the now-playing feed", () => {
   });
 
   it("leaves out a session past its expiry", async () => {
-    await seedSession({ trackId: trackId(SONGS.long.key), expiresAt: new Date(Date.now() - 1) });
+    await seedSession({ trackId: trackId(1, SONGS.long.key), expiresAt: new Date(Date.now() - 1) });
 
     expect(await nowPlayingFeed()).toEqual([]);
   });
@@ -435,7 +435,7 @@ describe("what a report costs D1", () => {
 
   it("writes nothing for a playing report where the estimate already is", async () => {
     await seedSession({
-      trackId: trackId(SONGS.long.key),
+      trackId: trackId(1, SONGS.long.key),
       positionMs: 30_000,
       reportedAt: new Date(Date.now() - 10_000),
     });
@@ -453,7 +453,7 @@ describe("what a report costs D1", () => {
 
   it("writes a playing report more than two seconds off the estimate", async () => {
     await seedSession({
-      trackId: trackId(SONGS.long.key),
+      trackId: trackId(1, SONGS.long.key),
       positionMs: 30_000,
       reportedAt: new Date(Date.now() - 10_000),
     });
@@ -468,7 +468,7 @@ describe("what a report costs D1", () => {
   });
 
   it("writes a report that changes the rate", async () => {
-    await seedSession({ trackId: trackId(SONGS.long.key), positionMs: 30_000 });
+    await seedSession({ trackId: trackId(1, SONGS.long.key), positionMs: 30_000 });
 
     const counted = await callCounting(
       "reportPlayback",
@@ -480,7 +480,7 @@ describe("what a report costs D1", () => {
   });
 
   it("writes a report that changes the state", async () => {
-    await seedSession({ trackId: trackId(SONGS.long.key), positionMs: 30_000 });
+    await seedSession({ trackId: trackId(1, SONGS.long.key), positionMs: 30_000 });
 
     const counted = await callCounting(
       "reportPlayback",
@@ -493,7 +493,7 @@ describe("what a report costs D1", () => {
 
   it("writes nothing for a paused report refreshed within five minutes", async () => {
     await seedSession({
-      trackId: trackId(SONGS.long.key),
+      trackId: trackId(1, SONGS.long.key),
       state: "paused",
       positionMs: 30_000,
       reportedAt: new Date(Date.now() - 4 * 60_000),
@@ -509,7 +509,7 @@ describe("what a report costs D1", () => {
 
   it("refreshes a paused session once five minutes have passed", async () => {
     await seedSession({
-      trackId: trackId(SONGS.long.key),
+      trackId: trackId(1, SONGS.long.key),
       state: "paused",
       positionMs: 30_000,
       reportedAt: new Date(Date.now() - 6 * 60_000),
@@ -529,7 +529,7 @@ describe("what a report costs D1", () => {
     // Forty seconds into a session that the one-minute floor ends at 60 s:
     // skipping the report would drop the session while the client plays on.
     await seedSession({
-      trackId: trackId(SONGS.unknown.key),
+      trackId: trackId(1, SONGS.unknown.key),
       positionMs: 0,
       reportedAt: new Date(Date.now() - 40_000),
       expiresAt: new Date(Date.now() + 20_000),
@@ -547,7 +547,7 @@ describe("what a report costs D1", () => {
 
   it("still skips a report on such a track while its expiry is fresh", async () => {
     await seedSession({
-      trackId: trackId(SONGS.unknown.key),
+      trackId: trackId(1, SONGS.unknown.key),
       positionMs: 0,
       reportedAt: new Date(Date.now() - 10_000),
       expiresAt: new Date(Date.now() + 50_000),
@@ -563,7 +563,7 @@ describe("what a report costs D1", () => {
 
   it("writes an expired session's report, whatever it repeats", async () => {
     await seedSession({
-      trackId: trackId(SONGS.long.key),
+      trackId: trackId(1, SONGS.long.key),
       positionMs: 30_000,
       expiresAt: new Date(Date.now() - 1),
     });
@@ -577,7 +577,7 @@ describe("what a report costs D1", () => {
   });
 
   it("is one read and one batch for a stop that counts a play", async () => {
-    await seedSession({ trackId: trackId(SONGS.long.key), positionMs: 250_000 });
+    await seedSession({ trackId: trackId(1, SONGS.long.key), positionMs: 250_000 });
 
     const counted = await callCounting(
       "reportPlayback",

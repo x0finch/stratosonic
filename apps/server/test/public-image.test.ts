@@ -15,8 +15,8 @@ import { BASE, encryptionKey, seedFixtureLibrary, seedFixtureObjects, testEnv } 
  * No Subsonic credentials; the token authorizes one cover and nothing else.
  */
 
-const QUIET = prefixedId("album", albumId("Silent Artist", "Quiet Album", 2001));
-const FALLBACK = prefixedId("album", albumId("Fallback Artist", "Fallback Album", null));
+const QUIET = prefixedId("album", albumId(1, "Silent Artist", "Quiet Album", 2001));
+const FALLBACK = prefixedId("album", albumId(1, "Fallback Artist", "Fallback Album", null));
 const SILENT = prefixedId("artist", artistId("Silent Artist"));
 
 function base64Url(text: string): string {
