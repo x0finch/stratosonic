@@ -18,6 +18,7 @@ import {
   describeFailure,
   describeHidden,
   describeQueue,
+  describeUploadsStatus,
   EXPIRY_MARGIN_MS,
   NOTIFY_EVERY_MS,
   notUploadedToast,
@@ -33,6 +34,7 @@ import {
   UploadQueue,
   type UploadView,
   uploadedToast,
+  uploadsStatus,
   uploadTarget,
   watchPage,
   xhrPut,
@@ -869,6 +871,38 @@ describe("the words", () => {
         view("canceled"),
       ]),
     ).toBe("1 of 3 uploaded");
+  });
+
+  it("gives the header's trigger its state in words", () => {
+    expect(uploadsStatus([])).toBeNull();
+    expect(describeUploadsStatus([])).toBe("");
+
+    // The file the run is on: one past those settled, skipped and canceled left out.
+    const running = [
+      view("uploaded"),
+      view("exists"),
+      view("uploading"),
+      view("signing"),
+      view("waiting"),
+      view("skipped"),
+      view("canceled"),
+    ];
+    expect(uploadsStatus(running)).toBe("running");
+    expect(describeUploadsStatus(running)).toBe("Uploading 3 of 5");
+    expect(describeUploadsStatus([view("waiting")])).toBe("Uploading 1 of 1");
+    expect(describeUploadsStatus(Array.from({ length: 1_200 }, () => view("waiting")))).toBe(
+      "Uploading 1 of 1,200",
+    );
+
+    // Conflicts and failures, once nothing is left to go.
+    const waiting = [view("uploaded"), view("exists"), view("failed"), view("skipped")];
+    expect(uploadsStatus(waiting)).toBe("attention");
+    expect(describeUploadsStatus(waiting)).toBe("2 need attention");
+    expect(describeUploadsStatus([view("uploaded"), view("failed")])).toBe("1 needs attention");
+
+    const done = [view("uploaded"), view("skipped"), view("canceled")];
+    expect(uploadsStatus(done)).toBe("done");
+    expect(describeUploadsStatus(done)).toBe("Uploads done");
   });
 
   it("says why a file failed", () => {

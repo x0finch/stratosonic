@@ -1140,6 +1140,51 @@ export function describeQueue(items: readonly UploadView[]): string {
   return `${uploaded.toLocaleString("en")} of ${counted.length.toLocaleString("en")} uploaded`;
 }
 
+/**
+ * What the header's Uploads trigger shows (#141), while the queue holds a
+ * file: `running` while a file waits or is sent, then `attention` while a
+ * conflict or a failure waits for the owner, then `done`. A run's
+ * conflicts are told at its end, by the toast and this label together.
+ */
+export type UploadsStatus = "running" | "attention" | "done";
+
+/** The trigger's state, or null for an empty queue (no trigger). */
+export function uploadsStatus(items: readonly UploadView[]): UploadsStatus | null {
+  if (items.length === 0) {
+    return null;
+  }
+  if (items.some((item) => ACTIVE.has(item.state))) {
+    return "running";
+  }
+  return items.some((item) => item.state === "exists" || item.state === "failed")
+    ? "attention"
+    : "done";
+}
+
+/**
+ * The trigger's label, its state in words: `Uploading 3 of 12` (the file
+ * the run is on: one past those settled, with skipped and canceled files
+ * left out as `describeQueue` leaves them), `2 need attention`, `Uploads
+ * done`.
+ */
+export function describeUploadsStatus(items: readonly UploadView[]): string {
+  switch (uploadsStatus(items)) {
+    case "running": {
+      const counted = items.filter((item) => item.state !== "skipped" && item.state !== "canceled");
+      const settled = counted.filter((item) => !ACTIVE.has(item.state)).length;
+      return `Uploading ${formatCount(Math.min(settled + 1, counted.length))} of ${formatCount(counted.length)}`;
+    }
+    case "attention": {
+      const waiting = items.filter((item) => item.state === "exists" || item.state === "failed");
+      return `${formatCount(waiting.length)} ${waiting.length === 1 ? "needs" : "need"} attention`;
+    }
+    case "done":
+      return "Uploads done";
+    case null:
+      return "";
+  }
+}
+
 /** Why a file failed, for its row: short, after `Failed: `. */
 export function describeFailure(
   failure: UploadFailure,
