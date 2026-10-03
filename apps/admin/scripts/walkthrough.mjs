@@ -86,11 +86,13 @@
  * configured (fake credentials will do), they pick a `.pdf` and see it
  * refused before any request, the check's included: the trigger says
  * "1 needs attention" while the popover stays closed and the folder stays
- * the page's one block, the keyboard opens the popover, Escape closes it
- * with focus back on the trigger, and Clear finished takes the trigger
- * away with focus on Upload. Each step's note gives the requests its run
- * made (check, sign, complete and `PUT`), for the budget. Signing out from
- * the Files page then reads nothing more from the files API (#141).
+ * the page's one block, the keyboard opens the popover with focus on its
+ * heading, Escape closes it with focus back on the trigger, and Clear
+ * finished takes the trigger away with focus on Upload. Each step's note
+ * gives the requests its run made (check, sign, complete and `PUT`), for
+ * the budget. Signing out from the Files page, with a refused `.pdf` still
+ * in the queue, then reads nothing more from the files API, and the next
+ * session has no queue (#141).
  *
  * Any console error or uncaught exception on a page fails the walkthrough,
  * except the browser's own "Failed to load resource" line for a response the
@@ -500,11 +502,14 @@ async function pick(page, item, paths) {
 
 /**
  * The header's Uploads trigger (#141), on every page while the upload queue
- * holds a file: with these words, or whatever its words.
+ * holds a file, by its accessible name ("1 upload needs attention", where
+ * it shows "1 needs attention"): this one, or whichever it has.
  */
 function uploadsTrigger(page, label) {
   return page.getByRole("button", {
-    name: label ?? /^(Uploading [\d,]+ of [\d,]+|[\d,]+ needs? attention|Uploads done)$/,
+    name:
+      label ??
+      /^(Uploading [\d,]+ of [\d,]+ files?|[\d,]+ uploads? needs? attention|Uploads done)$/,
     exact: true,
   });
 }
@@ -1231,7 +1236,7 @@ async function main() {
       await markToasts(page);
       await pick(page, "Files…", join(uploads.dir, "notes.pdf"));
       // The header's trigger says so; the popover never opens by itself.
-      await uploadsTrigger(page, "1 needs attention").waitFor();
+      await uploadsTrigger(page, "1 upload needs attention").waitFor();
       await expectToast(page, "1 file was not uploaded");
       check((await uploadsPopover(page).count()) === 0, "the Uploads popover opened by itself");
       // The folder stays the page's one block: no h2, no region.
@@ -1247,6 +1252,14 @@ async function main() {
       await uploadsTrigger(page).focus();
       await page.keyboard.press("Enter");
       await uploadsPopover(page).getByText("Failed: not a type the server reads").waitFor();
+      // Focus lands on the popover's heading, never on Cancel all, so a
+      // second Enter cancels nothing (#142 review).
+      check(
+        await uploadsPopover(page)
+          .getByRole("heading", { name: "Uploads" })
+          .evaluate((element) => element === document.activeElement),
+        "opening the Uploads popover did not put focus on its heading",
+      );
       await shot(page, "files-upload-refused");
       await page.keyboard.press("Escape");
       await uploadsPopover(page).waitFor({ state: "detached" });
@@ -1401,8 +1414,21 @@ async function main() {
       }
       await page.goto(filesUrl(FILES_PREFIX));
       await inFolder(page, FILES_PREFIX);
-      // The page used to read its folder and the files config again as the
-      // cache was cleared, both refused (#141).
+      // Sign out while the queue still holds a file, as when the page used
+      // to read its folder and the files config again as the queue ended
+      // and the cache was cleared, both refused (#141). A .pdf fills it
+      // with no request at all.
+      const queued = uploads.configured;
+      if (queued) {
+        const dir = mkdtempSync(join(tmpdir(), "walkthrough-sign-out-"));
+        writeFileSync(join(dir, "notes.pdf"), "%PDF-1.4\n");
+        try {
+          await pick(page, "Files…", join(dir, "notes.pdf"));
+          await uploadsTrigger(page, "1 upload needs attention").waitFor();
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
       const read = [];
       let signedOut = false;
       const onRequest = (request) => {
@@ -1419,6 +1445,9 @@ async function main() {
       page.off("request", onRequest);
       check(read.length === 0, `signing out read the files API: ${read.join(", ")}`);
       await signIn(page, password, { expectAt: "/" });
+      // The queue ended with the session: no trigger for the next one.
+      check((await uploadsTrigger(page).count()) === 0, "the queue outlived the session");
+      return queued ? "signed out with a file in the queue" : "signed out with an empty queue";
     });
 
     await step("dark mode", async () => {
