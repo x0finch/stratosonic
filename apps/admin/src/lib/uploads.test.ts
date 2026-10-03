@@ -26,6 +26,7 @@ import {
   EXPIRY_MARGIN_MS,
   findConflicts,
   NOTIFY_EVERY_MS,
+  nameUploadsStatus,
   notUploadedToast,
   type PickedFile,
   PLAN_SLICE,
@@ -1020,11 +1021,32 @@ describe("the words", () => {
       title: "Uploaded 1 file",
       description: "The next scheduled scan will index it.",
     });
-    expect(notUploadedToast(summary)).toEqual({
+    // It names the header's trigger by the words it shows, every failure counted.
+    expect(notUploadedToast(summary, 3)).toEqual({
       title: "2 files were not uploaded",
-      description: "Uploads lists why.",
+      description: "Open “3 need attention” in the header to see why.",
     });
-    expect(notUploadedToast({ ...summary, notUploaded: 1 }).title).toBe("1 file was not uploaded");
+    expect(notUploadedToast({ ...summary, notUploaded: 1 }, 1)).toEqual({
+      title: "1 file was not uploaded",
+      description: "Open “1 needs attention” in the header to see why.",
+    });
+  });
+
+  it("names the trigger by what its words are about", () => {
+    expect(nameUploadsStatus([view("uploading"), view("waiting")])).toBe("Uploading 1 of 2 files");
+    expect(nameUploadsStatus([view("uploading")])).toBe("Uploading 1 of 1 file");
+    expect(nameUploadsStatus([view("failed"), view("failed"), view("uploaded")])).toBe(
+      "2 uploads need attention",
+    );
+    expect(nameUploadsStatus([view("failed")])).toBe("1 upload needs attention");
+    expect(nameUploadsStatus([view("uploaded")])).toBe("Uploads done");
+    expect(nameUploadsStatus([])).toBe("");
+  });
+
+  it("counts the queue's failed rows for the toast", async () => {
+    const h = harness();
+    h.queue.add(plan("", "a.pdf", "b.pdf", "1.flac"), 10);
+    expect(h.queue.failed).toBe(2);
   });
 
   it("describes replace_unavailable as a refusal with rclone", () => {
@@ -1091,10 +1113,17 @@ describe("a large queue", () => {
       view(103, "uploading"),
       ...Array.from({ length: 80 }, (_, i) => view(200 + i, "waiting")),
     ];
-    const { rows, hidden } = shownRows(items, { finished: 10, waiting: 5 });
-    expect(rows.map((row) => row.id)).toEqual([
-      91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 103, 200, 201, 202, 203, 204,
-    ]);
+    const { active, settled, rows, hidden } = shownRows(items, { finished: 10, waiting: 5 });
+    // The file in flight at the top, then the next waiting, then the settled ones.
+    expect(active.map((row) => row.id)).toEqual([103, 200, 201, 202, 203, 204]);
+    expect(settled.map((row) => row.id)).toEqual([91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101]);
+    expect(rows).toEqual([...active, ...settled]);
+    // A file waiting to be tried again, earlier in the queue, still goes below those in flight.
+    expect(
+      shownRows([view(1, "waiting"), view(2, "uploading"), view(3, "signing")]).active.map(
+        (row) => row.id,
+      ),
+    ).toEqual([2, 3, 1]);
     expect(hidden).toEqual({ uploaded: 91, canceled: 0, waiting: 75 });
     expect(describeHidden(hidden)).toEqual({
       earlier: "91 more uploaded earlier",

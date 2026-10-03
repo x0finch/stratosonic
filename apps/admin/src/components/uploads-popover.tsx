@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { CircleAlertIcon, CircleCheckIcon, XIcon } from "lucide-react";
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -22,6 +22,7 @@ import {
   describeHidden,
   describeQueue,
   describeUploadsStatus,
+  nameUploadsStatus,
   percentOf,
   shownRows,
   splitKey,
@@ -64,13 +65,20 @@ function focusUploadAnchor(): void {
  * It opens the upload list in a popover, which never opens by itself: a
  * run's failures are told by its toast and by the label. Conflicts never
  * get here: the Files page settles them in its conflict dialog before
- * anything is signed. The trigger redraws only when its words change, not
- * on every upload's progress.
+ * anything is signed. Opening it puts focus on its heading, never on a
+ * button, so a second Enter cancels nothing. The trigger redraws only when
+ * its words change, not on every upload's progress; its name says what
+ * they are about ("2 uploads need attention", `nameUploadsStatus`), and in
+ * a narrow header the words are cut short rather than overflow.
  */
 export function UploadsPopover() {
   const queue = useUploadQueue();
   const status = useUploads(queue, (snapshot) => uploadsStatus(snapshot.items));
   const label = useUploads(queue, (snapshot) => describeUploadsStatus(snapshot.items));
+  const name = useUploads(queue, (snapshot) => nameUploadsStatus(snapshot.items));
+  // The popover's heading: focus lands there when it opens, so a second
+  // Enter cancels nothing (#142 review), and when a row's button goes.
+  const headingRef = useRef<HTMLHeadingElement>(null);
   // The rows' failure words read the upload limits, which the Files page
   // read before any file joined the queue: read from the cache only, and
   // kept there while the trigger shows.
@@ -92,7 +100,9 @@ export function UploadsPopover() {
 
   return (
     <Popover>
-      <PopoverTrigger render={<Button variant="outline" />}>
+      {/* It may shrink, its words cut short, so a narrow header never
+          overflows; its name says what the words are about. */}
+      <PopoverTrigger render={<Button variant="outline" className="min-w-0" aria-label={name} />}>
         {status === "running" ? (
           <Spinner data-icon="inline-start" aria-hidden="true" />
         ) : status === "attention" ? (
@@ -100,18 +110,27 @@ export function UploadsPopover() {
         ) : (
           <CircleCheckIcon data-icon="inline-start" aria-hidden="true" />
         )}
-        {label}
+        <span className="truncate">{label}</span>
       </PopoverTrigger>
-      {/* At most 32rem tall: a long list scrolls inside, below its heading
-          and buttons. Narrower than a phone's screen, wider from `sm`. */}
-      <PopoverContent align="end" className="max-h-128 w-80 gap-4 p-4 sm:w-md">
-        <UploadList
-          queue={queue}
-          config={config}
-          onEmptied={() => {
-            emptied.current = true;
-          }}
-        />
+      {/* Never taller than the room below the header, as the official
+          dropdown menu is, and at most 32rem: a long list scrolls inside,
+          below its heading and buttons. Narrower than a phone's screen,
+          wider from `sm`. */}
+      <PopoverContent
+        align="end"
+        initialFocus={headingRef}
+        className="max-h-(--available-height) w-80 p-4 sm:w-md"
+      >
+        <div className="flex max-h-128 min-h-0 flex-col gap-4">
+          <UploadList
+            queue={queue}
+            config={config}
+            headingRef={headingRef}
+            onEmptied={() => {
+              emptied.current = true;
+            }}
+          />
+        </div>
       </PopoverContent>
     </Popover>
   );
@@ -128,10 +147,12 @@ export function UploadsPopover() {
  * cancel button. The rows scroll in a `ScrollArea`, below the heading and
  * the buttons.
  *
- * A pick of thousands of files stays light: the list draws the files in
- * flight, every failure, the next waiting files and the latest finished
- * ones (`shownRows`), counts the rest, and redraws a row only when it
- * changed (the queue keeps each row's object, and `UploadRow` is memoised).
+ * The files still to go come first, those in flight at the top, then the
+ * settled ones. A pick of thousands of files stays light: the list draws
+ * the files in flight, the next waiting files, every failure and the
+ * latest finished ones (`shownRows`), counts the rest, and redraws a row
+ * only when it changed (the queue keeps each row's object, and `UploadRow`
+ * is memoised).
  *
  * When a row's button goes (Cancel upload), focus moves to the next row
  * that has one, or to the heading when none is left; so it does after
@@ -142,19 +163,21 @@ export function UploadsPopover() {
 function UploadList({
   queue,
   config,
+  headingRef,
   onEmptied,
 }: {
   queue: UploadQueue;
   config: Pick<FilesConfig, "allowed" | "limits"> | undefined;
+  /** The popover's heading, which takes focus as it opens and once no row has a button. */
+  headingRef: RefObject<HTMLHeadingElement | null>;
   /** The queue is empty, and the trigger goes: the page gets focus. */
   onEmptied: () => void;
 }) {
   const items = useUploads(queue, (snapshot) => snapshot.items);
   const [focusTarget, setFocusTarget] = useState<FocusTarget>(null);
-  const listRef = useRef<HTMLUListElement>(null);
-  const headingRef = useRef<HTMLHeadingElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
-  const { rows, hidden } = shownRows(items);
+  const { active, settled, rows, hidden } = shownRows(items);
   const { earlier, later } = describeHidden(hidden);
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
@@ -191,7 +214,7 @@ function UploadList({
     }
     headingRef.current?.focus();
     setFocusTarget(null);
-  }, [focusTarget]);
+  }, [focusTarget, headingRef]);
 
   return (
     <>
@@ -238,15 +261,26 @@ function UploadList({
           container may shrink below its content in the popup's column. */}
       <ScrollArea className="group/list flex min-h-0 flex-col">
         {/* Clear of the scrollbar while there is one. */}
-        <div className="flex flex-col gap-4 group-data-has-overflow-y/list:pr-4">
+        <div ref={listRef} className="flex flex-col gap-4 group-data-has-overflow-y/list:pr-4">
+          {/* The files still to go, those in flight first; then how many
+              more wait. */}
+          {active.length > 0 ? (
+            <ul className="flex flex-col gap-4">
+              {active.map((item) => (
+                <UploadRow key={item.id} item={item} config={config} onCancel={cancel} />
+              ))}
+            </ul>
+          ) : null}
+          {later ? <p className="text-muted-foreground">{later}</p> : null}
           {/* The older finished files, counted above the latest ones shown. */}
           {earlier ? <p className="text-muted-foreground">{earlier}</p> : null}
-          <ul ref={listRef} className="flex flex-col gap-4">
-            {rows.map((item) => (
-              <UploadRow key={item.id} item={item} config={config} onCancel={cancel} />
-            ))}
-          </ul>
-          {later ? <p className="text-muted-foreground">{later}</p> : null}
+          {settled.length > 0 ? (
+            <ul className="flex flex-col gap-4">
+              {settled.map((item) => (
+                <UploadRow key={item.id} item={item} config={config} onCancel={cancel} />
+              ))}
+            </ul>
+          ) : null}
         </div>
       </ScrollArea>
     </>

@@ -38,7 +38,7 @@ function createQueue(queryClient: QueryClient): UploadQueue {
           toastSuccess(title, description);
         }
         if (summary.notUploaded > 0) {
-          const { title, description } = notUploadedToast(summary);
+          const { title, description } = notUploadedToast(summary, queue.failed);
           toastFailure(title, description);
         }
       },

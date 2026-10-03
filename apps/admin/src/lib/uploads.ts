@@ -669,6 +669,11 @@ export class UploadQueue {
     this.#cancel(this.#entries);
   }
 
+  /** The failed rows the queue holds, this run's and earlier ones, as the header's trigger counts them. */
+  get failed(): number {
+    return this.#entries.filter((entry) => entry.state === "failed").length;
+  }
+
   /** Takes the uploaded, failed and canceled rows away. */
   clearFinished(): void {
     this.#entries = this.#entries.filter((entry) => !FINISHED.has(entry.state));
@@ -1110,15 +1115,21 @@ export const SHOWN_WAITING = 50;
 
 /** The rows the upload list shows, and how many of each kind it leaves out. */
 export interface ShownRows {
+  /** The files still to go: those being signed or sent first, then the next waiting ones. */
+  active: UploadView[];
+  /** The files settled: every failure and the latest finished ones, in queue order. */
+  settled: UploadView[];
+  /** `active`, then `settled`: every row drawn, in the order drawn. */
   rows: UploadView[];
   hidden: { uploaded: number; canceled: number; waiting: number };
 }
 
 /**
- * Which rows to draw, in queue order: every file being signed or sent,
- * every failure (it needs the owner), the next `SHOWN_WAITING` waiting
- * files and the latest `SHOWN_FINISHED` uploaded or canceled ones. The rest
- * are counted, so a pick of 2,000 files draws about a hundred rows.
+ * Which rows to draw: every file being signed or sent, at the top (#142
+ * review), then the next `SHOWN_WAITING` waiting files, then every failure
+ * (it needs the owner) and the latest `SHOWN_FINISHED` uploaded or
+ * canceled ones, in queue order. The rest are counted, so a pick of 2,000
+ * files draws about a hundred rows.
  */
 export function shownRows(
   items: readonly UploadView[],
@@ -1130,35 +1141,44 @@ export function shownRows(
   const done = items.filter((item) => item.state === "uploaded" || item.state === "canceled");
   const kept = new Set(done.slice(Math.max(done.length - limits.finished, 0)));
   const hidden = { uploaded: 0, canceled: 0, waiting: 0 };
-  let waiting = 0;
-  const rows = items.filter((item) => {
+  const inFlight: UploadView[] = [];
+  const waiting: UploadView[] = [];
+  const settled: UploadView[] = [];
+  for (const item of items) {
     switch (item.state) {
+      case "signing":
+      case "uploading":
+        inFlight.push(item);
+        break;
       case "waiting":
-        waiting++;
-        if (waiting <= limits.waiting) {
-          return true;
+        if (waiting.length < limits.waiting) {
+          waiting.push(item);
+        } else {
+          hidden.waiting++;
         }
-        hidden.waiting++;
-        return false;
+        break;
       case "uploaded":
       case "canceled":
         if (kept.has(item)) {
-          return true;
+          settled.push(item);
+        } else {
+          hidden[item.state]++;
         }
-        hidden[item.state]++;
-        return false;
-      default:
-        return true;
+        break;
+      case "failed":
+        settled.push(item);
+        break;
     }
-  });
-  return { rows, hidden };
+  }
+  const active = [...inFlight, ...waiting];
+  return { active, settled, rows: [...active, ...settled], hidden };
 }
 
 /**
- * The lines that count the rows left out. `earlier` stands for the older
- * finished files, so it goes above the rows (`1,950 more uploaded
- * earlier`, with canceled ones); `later` for the waiting files past the
- * shown ones, below them (`and 300 more waiting`).
+ * The lines that count the rows left out. `later` stands for the waiting
+ * files past the shown ones, below them (`and 300 more waiting`);
+ * `earlier` for the older finished files, so it goes above the settled
+ * rows (`1,950 more uploaded earlier`, with canceled ones).
  */
 export function describeHidden(hidden: ShownRows["hidden"]): {
   earlier: string | null;
@@ -1214,14 +1234,37 @@ export function describeUploadsStatus(items: readonly UploadView[]): string {
       const settled = counted.filter((item) => !ACTIVE.has(item.state)).length;
       return `Uploading ${formatCount(Math.min(settled + 1, counted.length))} of ${formatCount(counted.length)}`;
     }
-    case "attention": {
-      const failed = items.filter((item) => item.state === "failed").length;
-      return `${formatCount(failed)} ${failed === 1 ? "needs" : "need"} attention`;
-    }
+    case "attention":
+      return describeAttention(items.filter((item) => item.state === "failed").length);
     case "done":
       return "Uploads done";
     case null:
       return "";
+  }
+}
+
+/** `2 need attention`, `1 needs attention`: the trigger's words for failures. */
+export function describeAttention(failed: number): string {
+  return `${formatCount(failed)} ${failed === 1 ? "needs" : "need"} attention`;
+}
+
+/**
+ * The trigger's accessible name, which says what the words are about:
+ * `Uploading 3 of 12 files`, `2 uploads need attention`, `Uploads done`.
+ */
+export function nameUploadsStatus(items: readonly UploadView[]): string {
+  const label = describeUploadsStatus(items);
+  switch (uploadsStatus(items)) {
+    case "running": {
+      const counted = items.filter((item) => item.state !== "canceled").length;
+      return `${label} ${counted === 1 ? "file" : "files"}`;
+    }
+    case "attention": {
+      const failed = items.filter((item) => item.state === "failed").length;
+      return `${formatCount(failed)} ${failed === 1 ? "upload needs" : "uploads need"} attention`;
+    }
+    default:
+      return label;
   }
 }
 
@@ -1287,10 +1330,15 @@ export function uploadedToast(summary: RunSummary): { title: string; description
 }
 
 /** The toast after a run that left files out. */
-export function notUploadedToast(summary: RunSummary): { title: string; description: string } {
+export function notUploadedToast(
+  summary: RunSummary,
+  /** The failed rows the queue holds now, which the header's trigger counts. */
+  failed: number,
+): { title: string; description: string } {
   const verb = summary.notUploaded === 1 ? "was" : "were";
   return {
     title: `${countOf(summary.notUploaded, "file")} ${verb} not uploaded`,
-    description: "Uploads lists why.",
+    // Names the trigger by the words it shows (#142 review).
+    description: `Open “${describeAttention(failed)}” in the header to see why.`,
   };
 }
