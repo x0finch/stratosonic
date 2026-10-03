@@ -2,7 +2,7 @@ import { env } from "cloudflare:test";
 import { type MockInstance, vi } from "vitest";
 import type { StorageCredentials } from "../src/storage/credentials";
 import type { S3Location } from "../src/storage/s3";
-import { oracleSignature, uriEncode } from "./sigv4-oracle";
+import { oracleSignature } from "./sigv4-oracle";
 
 /**
  * A fake R2 S3 endpoint (#84, "Testing Decisions", "Fake S3"): the S3
@@ -13,17 +13,22 @@ import { oracleSignature, uriEncode } from "./sigv4-oracle";
  * usage-api.test.ts stands in for Cloudflare's API), and:
  *
  * - verifies every request's SigV4 `Authorization` header with the
- *   independent oracle (test/sigv4-oracle.ts), and its
- *   `X-Amz-Content-Sha256` against the bytes received, answering `403
- *   SignatureDoesNotMatch` (or `InvalidAccessKeyId`) when either is wrong;
+ *   independent oracle (test/sigv4-oracle.ts), over the path exactly as
+ *   sent, and its `X-Amz-Content-Sha256` against the bytes received (never
+ *   `UNSIGNED-PAYLOAD`), answering `403 SignatureDoesNotMatch` (or
+ *   `InvalidAccessKeyId`) when either is wrong;
  * - implements `ListObjectsV2` (`list-type=2`, `max-keys`, `prefix`,
  *   `delimiter`, `continuation-token`, `encoding-type=url`), `HeadObject`,
  *   ranged `GetObject`, `PutObject` with `If-None-Match: *`, `DeleteObject`
- *   and `DeleteObjects` with its `Content-MD5` check;
+ *   and `DeleteObjects` with its `Content-MD5` check and a strict reading
+ *   of its XML (a raw `<`, a bare `&` or a character XML 1.0 refuses is
+ *   `400 MalformedXML`);
  * - answers a continuation token it never issued with `400
  *   InvalidArgument`, as S3 does;
  * - can be switched (`fail`) to answer 401, 403, `NoSuchBucket`,
- *   `SlowDown`, 429, 500 or a redirect, or to fail as a network does;
+ *   `SlowDown`, 429, 500 or a redirect, to fail as a network does, to
+ *   report a key `DeleteObjects` did not delete, or to answer a ranged read
+ *   with another range than asked;
  * - records every call (`calls`), signature verdict included.
  *
  * `encoding-type=url` is answered as S3 encodes it, a form encoding: a
@@ -50,7 +55,18 @@ export type FakeS3Failure =
   | "server_error"
   | "redirect"
   | "network"
-  | "delete_error";
+  | "delete_error"
+  /** A ranged `GetObject` answers the range one byte later than asked. */
+  | "wrong_range"
+  /** A ranged `GetObject` answers one byte more than asked, when there is one. */
+  | "long_range";
+
+/** The failures answered inside an operation's own answer. */
+const IN_ANSWER: ReadonlySet<FakeS3Failure> = new Set([
+  "delete_error",
+  "wrong_range",
+  "long_range",
+]);
 
 /** One request the fake received. */
 export interface FakeS3Call {
@@ -158,10 +174,11 @@ export class FakeS3 {
     }
 
     const failure = this.#failure;
-    // `delete_error` is answered inside a `DeleteObjects` result, below.
+    // `delete_error` and the range failures are answered inside the
+    // operation's own answer, below.
     if (
       failure !== null &&
-      failure.failure !== "delete_error" &&
+      !IN_ANSWER.has(failure.failure) &&
       (failure.operations === null || failure.operations.has(operation))
     ) {
       if (failure.failure === "network") {
@@ -181,8 +198,15 @@ export class FakeS3 {
         return answer(await this.#list(storage, url));
       case "HeadObject":
         return answer(await headObject(storage, key ?? ""));
-      case "GetObject":
-        return answer(await getObject(storage, key ?? "", request.headers.get("Range")));
+      case "GetObject": {
+        const skew =
+          failure?.failure === "wrong_range"
+            ? "start"
+            : failure?.failure === "long_range"
+              ? "end"
+              : null;
+        return answer(await getObject(storage, key ?? "", request.headers.get("Range"), skew));
+      }
       case "PutObject":
         return answer(await putObject(storage, key ?? "", body, request.headers));
       case "DeleteObject":
@@ -252,7 +276,9 @@ export class FakeS3 {
       !names.includes("host") ||
       !names.includes("x-amz-date") ||
       !names.includes("x-amz-content-sha256") ||
-      (payloadHash !== "UNSIGNED-PAYLOAD" && payloadHash !== (await sha256Hex(body)))
+      // Every request is header-signed over its payload: `UNSIGNED-PAYLOAD`
+      // is for presigned URLs only, and a hash must be the body's.
+      payloadHash !== (await sha256Hex(body))
     ) {
       return "SignatureDoesNotMatch";
     }
@@ -266,16 +292,12 @@ export class FakeS3 {
       }
       headers[name] = value;
     }
-    const canonicalPath = `/${url.pathname
-      .slice(1)
-      .split("/")
-      .map((segment) => uriEncode(decodeURIComponent(segment)))
-      .join("/")}`;
-
     const expected = await oracleSignature({
       method: request.method,
       host: url.host,
-      canonicalPath,
+      // The path as sent, as R2 takes it: it verifies only if the client
+      // sent exactly the canonical path it signed, each segment encoded once.
+      canonicalPath: url.pathname,
       query: Object.fromEntries(url.searchParams),
       headers,
       secretAccessKey: this.secretAccessKey,
@@ -356,14 +378,30 @@ export class FakeS3 {
       return { response: errorResponse(400, "BadDigest") };
     }
 
+    // Well-formed XML of exactly the shape S3 takes, as an XML parser would
+    // demand it: a raw `<` in a key breaks the structure, and a bare `&`, or
+    // a character XML 1.0 has no place for, is refused.
     const xml = new TextDecoder().decode(body);
-    if (!/^<\?xml[^>]*\?><Delete[ >]/.test(xml) || !xml.endsWith("</Delete>")) {
+    const shape =
+      /^<\?xml[^>]*\?><Delete(?: xmlns="[^"]*")?>(?:<Quiet>(?:true|false)<\/Quiet>)?((?:<Object><Key>[^<]*<\/Key><\/Object>)+)<\/Delete>$/;
+    const objects = shape.exec(xml)?.[1];
+    if (objects === undefined) {
       return { response: errorResponse(400, "MalformedXML") };
     }
-    const keys = [...xml.matchAll(/<Key>([^<]*)<\/Key>/g)].map((match) =>
-      unescapeXmlText(match[1] ?? ""),
-    );
-    if (keys.length === 0 || keys.length > 1000) {
+    const texts = [...objects.matchAll(/<Key>([^<]*)<\/Key>/g)].map((match) => match[1] ?? "");
+    const entity = /&(?:#x[0-9a-fA-F]+|#[0-9]+|amp|lt|gt|quot|apos);/g;
+    if (
+      texts.some(
+        (text) =>
+          text.replace(entity, "").includes("&") ||
+          // biome-ignore lint/suspicious/noControlCharactersInRegex: refusing them is the point.
+          /[\u0000-\u0008\u000b\u000c\u000e-\u001f￾￿]/.test(text),
+      )
+    ) {
+      return { response: errorResponse(400, "MalformedXML") };
+    }
+    const keys = texts.map(unescapeXmlText);
+    if (keys.length > 1000) {
       return { response: errorResponse(400, "MalformedXML") };
     }
 
@@ -436,7 +474,12 @@ async function headObject(storage: R2Bucket, key: string): Promise<Response> {
   return new Response(null, { status: 200, headers });
 }
 
-async function getObject(storage: R2Bucket, key: string, range: string | null): Promise<Response> {
+async function getObject(
+  storage: R2Bucket,
+  key: string,
+  range: string | null,
+  skew: "start" | "end" | null = null,
+): Promise<Response> {
   const head = await storage.head(key);
   if (head === null) {
     return errorResponse(404, "NoSuchKey");
@@ -456,13 +499,16 @@ async function getObject(storage: R2Bucket, key: string, range: string | null): 
   if (match === null) {
     return errorResponse(400, "InvalidArgument");
   }
-  const start = Number(match[1]);
+  const requestedStart = Number(match[1]);
   const requestedEnd = match[2] === "" ? head.size - 1 : Number(match[2]);
-  if (start >= head.size || requestedEnd < start) {
+  if (requestedStart >= head.size || requestedEnd < requestedStart) {
     headers.set("Content-Range", `bytes */${head.size}`);
     return xmlResponse(416, errorXml("InvalidRange"), headers);
   }
-  const end = Math.min(requestedEnd, head.size - 1);
+  // A misbehaving server, when switched to be one: another range than asked.
+  const last = head.size - 1;
+  const start = skew === "start" ? Math.min(requestedStart + 1, last) : requestedStart;
+  const end = Math.min(skew === "end" ? requestedEnd + 1 : requestedEnd, last);
   const object = await storage.get(key, { range: { offset: start, length: end - start + 1 } });
   if (object === null) {
     return errorResponse(404, "NoSuchKey");

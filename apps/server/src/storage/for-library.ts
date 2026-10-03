@@ -25,8 +25,9 @@ export type StorageRow = Pick<
  *   token opened under `PASSWORD_ENCRYPTION_KEY` and the row's `path` on the
  *   first request that needs it, so a route that never reaches the bucket
  *   decrypts nothing. A token that does not open, or a row without one, is
- *   `StorageError("auth")`, and a missing endpoint or bucket fails the S3
- *   client's assertions (`unavailable`), on use.
+ *   `StorageError("auth")`, and a missing endpoint or bucket, or one the
+ *   row's `path` does not name, fails the S3 client's assertions
+ *   (`unavailable`), on use and before the token is opened.
  *
  * It reads nothing itself: no D1 statement, no subrequest.
  */
@@ -41,7 +42,9 @@ export function storageFor(env: Env, library: StorageRow): LibraryStorage {
       const { id, path, credentials: sealed } = library;
       const passphrase = env.PASSWORD_ENCRYPTION_KEY ?? "";
       return s3Storage(
-        { libraryId: id, endpoint: library.endpoint ?? "", bucket: library.bucket ?? "" },
+        // With the path, so the client refuses an endpoint or bucket the
+        // sealed token's path does not name.
+        { libraryId: id, endpoint: library.endpoint ?? "", bucket: library.bucket ?? "", path },
         () =>
           sealed === null
             ? Promise.reject(new Error(`library ${id} has no stored credentials`))

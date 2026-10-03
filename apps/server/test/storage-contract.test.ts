@@ -54,6 +54,7 @@ const AWKWARD_NAMES = [
   "坂本龍一/音楽図鑑/01 Tibetan Dance.flac",
   "Emoji 🎵/~tilde~/a!b*c(d)e.lrc",
   "control\u0001character.flac",
+  `Markup <b>bold</b> & "quotes" &amp; it's.flac`,
 ];
 
 /** 2026-10-02 12:34:56 UTC, as an `X-Amz-Date`. */
@@ -297,7 +298,12 @@ function storageContract(name: string, subject: ContractSubject): void {
     it("deletes 1,500 keys, a thousand a call, and a missing key", async () => {
       const storage = subject.storage();
       const prefix = freshPrefix();
-      const keys = Array.from({ length: 1500 }, (_, index) => `${prefix}${index}`);
+      // Two carry what an XML body must escape, in among the rest.
+      const keys = [
+        ...Array.from({ length: 1498 }, (_, index) => `${prefix}${index}`),
+        `${prefix}a & b`,
+        `${prefix}<c>`,
+      ];
       await putAll(storage, keys);
       const before = subject.deleteCalls?.().length ?? 0;
 

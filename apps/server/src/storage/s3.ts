@@ -39,9 +39,10 @@ import {
  *   end (`416`), or one of no bytes, costs one `HeadObject` instead or more;
  * - `put` is `PutObject`, with `If-None-Match: *` for `onlyIfAbsent`;
  * - `delete` is one `DeleteObjects` a thousand keys, with the `Content-MD5`
- *   S3 requires on it, plus one `DeleteObject` for each key holding a C0
- *   control character, which XML 1.0 cannot carry (`deleteRequests` counts
- *   them, for callers that budget subrequests);
+ *   S3 requires on it, plus one `DeleteObject` for each key holding a
+ *   character XML 1.0 cannot carry, a C0 control character, U+FFFE or
+ *   U+FFFF (`deleteRequests` counts them, for callers that budget
+ *   subrequests);
  * - `presignPut` signs locally and sends nothing.
  *
  * Every request carries the SHA-256 of its payload as
@@ -52,7 +53,8 @@ import {
  *
  * **Where requests may go.** The endpoint is asserted against
  * `^https://[0-9a-f]{32}\.r2\.cloudflarestorage\.com$`, and the bucket
- * against R2's naming rule, on every use, before the token is opened, so a
+ * against R2's naming rule, and, for a row, both against the `path` its
+ * token is sealed for, on every use, before the token is opened, so a
  * tampered row cannot send a signed request elsewhere. A key with a `.` or
  * `..` segment is refused before any URL is built (`UnaddressableKeyError`,
  * storage/presign.ts): the URL parser would collapse it into another
@@ -86,6 +88,18 @@ const R2_BUCKET = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
 /** Where a library's bucket is. */
 export interface S3Location extends S3Bucket {
   readonly libraryId: number;
+  /**
+   * The library's storage URI, `s3://<endpoint host>/<bucket>`, when the
+   * location comes from a row: its sealed token is bound to the path alone
+   * (storage/credentials.ts), so the endpoint and bucket must be the ones
+   * the path names, or a tampered row could aim a valid token elsewhere.
+   */
+  readonly path?: string;
+}
+
+/** The storage URI of a bucket on an R2 endpoint, as `library.path` holds it. */
+export function s3Path({ endpoint, bucket }: S3Bucket): string {
+  return `s3://${endpoint.slice("https://".length)}/${bucket}`;
 }
 
 /**
@@ -114,6 +128,12 @@ export function s3Storage(location: S3Location, credentials: CredentialsSource):
     }
     if (!R2_BUCKET.test(location.bucket)) {
       throw new StorageError("unavailable", "the library's bucket is not an R2 bucket name");
+    }
+    if (location.path !== undefined && location.path !== s3Path(location)) {
+      throw new StorageError(
+        "unavailable",
+        "the library's path does not name its endpoint and bucket",
+      );
     }
     return location;
   }
@@ -222,7 +242,13 @@ export function s3Storage(location: S3Location, credentials: CredentialsSource):
         const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(
           response.headers.get("Content-Range") ?? "",
         );
-        if (match === null || Number(match[1]) !== range.offset) {
+        // The bytes asked for, clamped to the object, and nothing else.
+        const total = Number(match?.[3]);
+        if (
+          match === null ||
+          Number(match[1]) !== range.offset ||
+          Number(match[2]) !== Math.min(last, total - 1)
+        ) {
           await discard(response);
           throw new StorageError("unavailable", "GetObject answered a range it was not asked for");
         }
@@ -364,7 +390,7 @@ export function s3Storage(location: S3Location, credentials: CredentialsSource):
       const batched: string[] = [];
       const alone: string[] = [];
       for (const key of keys) {
-        (hasControlCharacter(key) ? alone : batched).push(key);
+        (notInXml(key) ? alone : batched).push(key);
       }
       // A key deleted alone goes in a URL: refuse an unaddressable one before
       // anything is deleted.
@@ -399,7 +425,7 @@ export function s3Storage(location: S3Location, credentials: CredentialsSource):
 export function deleteRequests(keys: readonly string[]): number {
   let alone = 0;
   for (const key of keys) {
-    if (hasControlCharacter(key)) alone++;
+    if (notInXml(key)) alone++;
   }
   return Math.ceil((keys.length - alone) / DELETE_KEYS_PER_CALL) + alone;
 }
@@ -512,10 +538,18 @@ async function discard(response: Response): Promise<void> {
   }
 }
 
-/** Whether a key holds a C0 control character, which XML 1.0 cannot carry. */
-function hasControlCharacter(key: string): boolean {
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point.
-  return /[\u0000-\u001f]/.test(key);
+/**
+ * Whether a key holds a character XML 1.0 cannot carry (its `Char`
+ * production): a C0 control character, U+FFFE or U+FFFF, or a lone
+ * surrogate. Such a key is deleted alone, in a URL, which carries any
+ * well-formed key; a lone surrogate's is refused there before anything is
+ * sent.
+ */
+function notInXml(key: string): boolean {
+  return (
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point.
+    /[\u0000-\u001f￾￿]/.test(key) || !(key as string & { isWellFormed(): boolean }).isWellFormed()
+  );
 }
 
 function escapeXml(text: string): string {

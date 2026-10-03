@@ -158,6 +158,28 @@ describe("s3Storage", () => {
     expect((await libraryTestBucket().list({ prefix })).objects).toEqual([]);
   });
 
+  it("deletes a key holding U+FFFE or U+FFFF alone, as XML 1.0 cannot carry it", async () => {
+    const awkward = [`${prefix}not￾a-character`, `${prefix}nor￿this`];
+    for (const key of awkward) {
+      await libraryTestBucket().put(key, encoder.encode("x"));
+    }
+
+    await storage().delete([`${prefix}plain`, ...awkward]);
+
+    expect(fake.deleteCalls()).toEqual([1]);
+    expect(
+      fake.calls.filter((call) => call.operation === "DeleteObject").map((call) => call.key),
+    ).toEqual(awkward);
+    expect((await libraryTestBucket().list({ prefix })).objects).toEqual([]);
+  });
+
+  it("refuses to delete a key with a lone surrogate, which neither XML nor a URL carries", async () => {
+    await expect(storage().delete([`${prefix}ok`, `${prefix}lone\ud800`])).rejects.toThrow(
+      UnaddressableKeyError,
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("deletes a key with a dot segment in a DeleteObjects body, which no URL carries", async () => {
     const key = `${prefix}a/../b.flac`;
     await libraryTestBucket().put(key, encoder.encode("x"));
@@ -178,13 +200,28 @@ describe("s3Storage", () => {
     await expect(s3.get(key, { offset: 0, length: 4 })).rejects.toThrow(UnaddressableKeyError);
     await expect(s3.put(key, new Uint8Array(1))).rejects.toThrow(UnaddressableKeyError);
     await expect(s3.presignPut(upload)).rejects.toThrow(UnaddressableKeyError);
-    await expect(s3.get(`${prefix}%2e%2e/x`)).rejects.toThrow(UnaddressableKeyError);
     // Alone (a control character), it would need a URL: nothing is deleted.
     await expect(s3.delete([`${prefix}ok`, `${prefix}..\u0001/../x`])).rejects.toThrow(
       UnaddressableKeyError,
     );
 
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("reads and writes a key with %2e segments, which are names, not dot segments", async () => {
+    const s3 = storage();
+    for (const name of ["%2e%2e/x.mp3", "a/%2E/x.mp3", "b/.%2e/y"]) {
+      const key = `${prefix}${name}`;
+      expect((await s3.put(key, encoder.encode(name)))?.key).toBe(key);
+      expect((await s3.head(key))?.size).toBe(name.length);
+      expect(new TextDecoder().decode(await (await s3.get(key))?.bytes())).toBe(name);
+      expect(await libraryTestBucket().head(key)).not.toBeNull();
+    }
+    const listed = (await s3.list({ prefix, limit: 10 })).objects.map((object) => object.key);
+    expect(listed.sort()).toEqual(
+      ["%2e%2e/x.mp3", "a/%2E/x.mp3", "b/.%2e/y"].map((name) => `${prefix}${name}`).sort(),
+    );
+    expect(fake.calls.every((call) => call.signatureValid)).toBe(true);
   });
 
   it.each([
@@ -299,6 +336,21 @@ describe("s3Storage failures", () => {
     expect(fake.calls.map((call) => call.status)).toEqual([400]);
   });
 
+  it.each<[FakeS3Failure, string]>([
+    ["wrong_range", "starts elsewhere"],
+    ["long_range", "runs past the bytes asked for"],
+  ])("refuses a ranged read whose range (%s) %s", async (failure, _what) => {
+    const key = `${prefix}range`;
+    await libraryTestBucket().put(key, encoder.encode("0123456789"));
+    fake.fail(failure);
+
+    expect(await reasonOf(storage().get(key, { offset: 2, length: 3 }))).toBe("unavailable");
+    expect(fake.calls.map((call) => [call.operation, call.status])).toEqual([["GetObject", 206]]);
+    // A range clamped at the object's end is still the one asked for.
+    fake.fail(null);
+    expect((await storage().get(key, { offset: 8, length: 5 }))?.size).toBe(10);
+  });
+
   it("reads a key DeleteObjects did not delete as a failure", async () => {
     fake.fail("delete_error");
 
@@ -354,6 +406,7 @@ describe("deleteRequests", () => {
     expect(deleteRequests(Array.from({ length: 1000 }, (_, i) => `${i}`))).toBe(1);
     expect(deleteRequests(Array.from({ length: 1001 }, (_, i) => `${i}`))).toBe(2);
     expect(deleteRequests(["a", "b\u0000", "c\u001f", "d\u007f"])).toBe(3);
+    expect(deleteRequests(["a", "b￾", "c￿", "d�"])).toBe(3);
   });
 });
 
@@ -392,6 +445,21 @@ describe("storageFor", () => {
     await library.put(key, encoder.encode("x"));
     expect((await library.head(key))?.size).toBe(1);
     expect(fake.calls.every((call) => call.signatureValid)).toBe(true);
+  });
+
+  it("refuses a row whose endpoint or bucket its path does not name, before opening or sending", async () => {
+    // A valid token, sealed for this row's path, aimed elsewhere by a
+    // tampered endpoint or bucket: the AAD binds only the path.
+    const sealed = await sealCredentials(encryptionKey(), path(), fake.credentials());
+    const other = new FakeS3({ accountId: "0123456789abcdef0123456789abcdef" });
+    for (const tampered of [
+      row({ credentials: sealed, endpoint: other.endpoint }),
+      row({ credentials: sealed, bucket: "another-bucket" }),
+      row({ credentials: sealed, path: `${path()}x` }),
+    ]) {
+      expect(await reasonOf(storageFor(testEnv, tampered).list({ limit: 1 }))).toBe("unavailable");
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("reads a token sealed for another path, or none, as auth, before sending", async () => {
