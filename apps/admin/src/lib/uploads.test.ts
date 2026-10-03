@@ -13,13 +13,18 @@ import {
 } from "@/lib/api";
 import { describeError } from "@/lib/errors";
 import {
+  CHECK_BATCH,
   COMPLETE_QUIET_MS,
+  checkBatches,
   checkUpload,
+  decideConflicts,
+  describeConflicts,
   describeFailure,
   describeHidden,
   describeQueue,
   describeUploadsStatus,
   EXPIRY_MARGIN_MS,
+  findConflicts,
   NOTIFY_EVERY_MS,
   notUploadedToast,
   type PickedFile,
@@ -368,7 +373,7 @@ describe("the client's mirror of the allow-list", () => {
       state: "failed",
       failure: { code: "type_not_allowed" },
     });
-    expect(h.drained).toEqual([{ uploaded: 0, notUploaded: 1, conflicts: 0, scanUnknown: false }]);
+    expect(h.drained).toEqual([{ uploaded: 0, notUploaded: 1, scanUnknown: false }]);
   });
 });
 
@@ -448,7 +453,7 @@ describe("the upload queue", () => {
     expect(h.drained).toEqual([]);
     await h.completeDone(0);
     expect(h.queue.getSnapshot().schedule?.scan).toEqual(SCHEDULED);
-    expect(h.drained).toEqual([{ uploaded: 2, notUploaded: 1, conflicts: 0, scanUnknown: false }]);
+    expect(h.drained).toEqual([{ uploaded: 2, notUploaded: 1, scanUnknown: false }]);
   });
 
   it("reports at once when limits.signBatch keys wait, whatever the sign requests", async () => {
@@ -525,10 +530,10 @@ describe("the upload queue", () => {
     expect(h.signs[2]?.files).toEqual([{ key: "1.flac", size: 1000, overwrite: false }]);
   });
 
-  describe("Already exists", () => {
-    async function conflicted() {
+  describe("a key that exists by the time it is signed or sent", () => {
+    it("is Failed as uploaded elsewhere just now, with no prompt, when the server says exists", async () => {
       const h = harness();
-      h.queue.add(plan("", "1.flac", "2.flac", "3.flac"), 10);
+      h.queue.add(plan("", "1.flac", "2.flac"), 10);
       h.signs[0]?.resolve({
         uploads: [
           {
@@ -537,67 +542,42 @@ describe("the upload queue", () => {
             existing: { size: 5, uploadedAt: "2026-01-01T00:00:00Z" },
           },
           url("2.flac"),
-          {
-            key: "3.flac",
-            error: "exists",
-            existing: { size: 6, uploadedAt: "2026-01-01T00:00:00Z" },
-          },
         ],
         clock: clock(),
       });
       await tick();
-      return h;
-    }
-
-    it("is a state with what is there, and the run says so", async () => {
-      const h = await conflicted();
-      expect(h.item("1.flac")).toMatchObject({ state: "exists", existing: { size: 5 } });
+      const row = h.item("1.flac");
+      expect(row).toMatchObject({ state: "failed", failure: { code: "exists_now" } });
+      expect(describeFailure(row.failure ?? { code: "invalid_path" }, row.key, CONFIG)).toBe(
+        "uploaded elsewhere just now. Upload it again to replace it.",
+      );
       await h.putDone(0);
       await h.quiet();
       await h.completeDone(0);
-      expect(h.drained).toEqual([
-        { uploaded: 1, notUploaded: 2, conflicts: 2, scanUnknown: false },
-      ]);
-      expect(h.queue.getSnapshot().busy).toBe(false);
-    });
-
-    it("Replace signs again with overwrite: true, only when asked", async () => {
-      const h = await conflicted();
+      expect(h.drained).toEqual([{ uploaded: 1, notUploaded: 1, scanUnknown: false }]);
+      // Nothing signs it again by itself.
       expect(h.signs).toHaveLength(1);
-      const id = h.item("1.flac").id;
-      h.queue.replace(id);
-      expect(h.signs[1]?.files).toEqual([{ key: "1.flac", size: 1000, overwrite: true }]);
     });
 
-    it("Replace all signs every conflict again, and Skip leaves one", async () => {
-      const h = await conflicted();
-      h.queue.skip(h.item("3.flac").id);
-      expect(h.item("3.flac").state).toBe("skipped");
-      h.queue.replaceAll();
-      expect(h.signs[1]?.files).toEqual([{ key: "1.flac", size: 1000, overwrite: true }]);
-      expect(h.item("3.flac").state).toBe("skipped");
-    });
-
-    it("Skip all leaves every conflict", async () => {
-      const h = await conflicted();
-      h.queue.skipAll();
-      expect(h.states()).toEqual(["skipped", "uploading", "skipped"]);
-    });
-
-    it("a 412 from R2 is Already exists too", async () => {
+    it("is Failed the same way on R2's 412, and not reported", async () => {
       const h = harness();
       h.queue.add(plan("", "1.flac"), 10);
       await h.signAll(0);
       await h.putDone(0, 412);
-      expect(h.item("1.flac").state).toBe("exists");
+      expect(h.item("1.flac")).toMatchObject({ state: "failed", failure: { code: "exists_now" } });
       expect(h.signs).toHaveLength(1);
+      await h.quiet();
       expect(h.completes).toHaveLength(0);
     });
 
     it("a Replace the server cannot spell is Failed, with rclone named", async () => {
-      const h = await conflicted();
-      h.queue.replace(h.item("1.flac").id);
-      h.signs[1]?.resolve({
+      const h = harness();
+      h.queue.add(
+        plan("", "1.flac").map((upload) => ({ ...upload, overwrite: true })),
+        10,
+      );
+      expect(h.signs[0]?.files).toEqual([{ key: "1.flac", size: 1000, overwrite: true }]);
+      h.signs[0]?.resolve({
         uploads: [{ key: "1.flac", error: "replace_unavailable" }],
         clock: clock(),
       });
@@ -704,9 +684,7 @@ describe("the upload queue", () => {
       await tick();
       expect(h.states()).toEqual(["failed", "failed", "failed", "failed"]);
       expect(h.signs).toHaveLength(1);
-      expect(h.drained).toEqual([
-        { uploaded: 0, notUploaded: 4, conflicts: 0, scanUnknown: false },
-      ]);
+      expect(h.drained).toEqual([{ uploaded: 0, notUploaded: 4, scanUnknown: false }]);
     });
   });
 
@@ -801,7 +779,6 @@ describe("the upload queue", () => {
     expect(h.drained.at(-1)).toEqual({
       uploaded: 1,
       notUploaded: 0,
-      conflicts: 0,
       scanUnknown: true,
     });
     expect(h.item("2.flac").state).toBe("uploaded");
@@ -844,10 +821,114 @@ describe("the upload queue", () => {
     await h.putDone(0);
     h.queue.clearFinished();
     expect(h.queue.getSnapshot().items.map((item) => [item.key, item.state])).toEqual([
-      ["2.flac", "exists"],
       ["3.flac", "uploading"],
       ["4.flac", "signing"],
     ]);
+  });
+});
+
+/* --------------------------------------------------------------- check -- */
+
+describe("the check before anything is signed", () => {
+  const existing = (key: string, size = 31_234_567) => ({
+    key,
+    storedKey: key,
+    size,
+    uploadedAt: "2026-09-30T12:00:00.000Z",
+  });
+
+  it("batches the files the mirror took by folder prefix, at most 1,000 a request", () => {
+    const planned = planUploads(
+      [
+        ...Array.from({ length: 1001 }, (_, i) => picked(`${i}.flac`, 10, `X/${i}.flac`)),
+        picked("2.flac", 10, "Y/2.flac"),
+        picked("notes.pdf", 10, "Y/notes.pdf"),
+      ],
+      "",
+      CONFIG,
+      (prefix) =>
+        prefix === ""
+          ? [
+              { name: "X", prefix: "X/" },
+              { name: "Y", prefix: "Y/" },
+            ]
+          : undefined,
+    );
+    const batches = checkBatches(planned);
+    expect(batches.map(({ prefix, keys }) => [prefix, keys.length])).toEqual([
+      ["X/", CHECK_BATCH],
+      ["X/", 1],
+      ["Y/", 1],
+    ]);
+    // The refused .pdf is never asked about.
+    expect(batches.flatMap((batch) => batch.keys)).not.toContain("Y/notes.pdf");
+  });
+
+  it("finds the conflicts in the order picked, taking an unchecked key as new", async () => {
+    const planned = plan("A/", "1.flac", "2.flac", "3.flac", "x.pdf");
+    const check = vi.fn(async () => ({
+      existing: [existing("A/3.flac"), existing("A/1.flac")],
+      unchecked: ["A/2.flac"],
+    }));
+
+    const conflicts = await findConflicts(planned, check);
+
+    expect(check).toHaveBeenCalledTimes(1);
+    expect(check).toHaveBeenCalledWith("A/", ["A/1.flac", "A/2.flac", "A/3.flac"]);
+    expect(conflicts.map(({ upload, existing }) => [upload.key, existing.size])).toEqual([
+      ["A/1.flac", 31_234_567],
+      ["A/3.flac", 31_234_567],
+    ]);
+  });
+
+  it("asks nothing for a pick the mirror refused whole", async () => {
+    const check = vi.fn();
+    expect(await findConflicts(plan("", "a.pdf"), check)).toEqual([]);
+    expect(check).not.toHaveBeenCalled();
+  });
+
+  describe("the owner's one answer", () => {
+    const planned = plan("A/", "1.flac", "2.flac", "3.flac");
+    const conflicts = [{ upload: planned[1] as PlannedUpload, existing: existing("A/2.flac") }];
+
+    it("Replace them: every file goes, the conflicts with overwrite", () => {
+      expect(
+        decideConflicts(planned, conflicts, "replace").map((u) => [u.key, u.overwrite === true]),
+      ).toEqual([
+        ["A/1.flac", false],
+        ["A/2.flac", true],
+        ["A/3.flac", false],
+      ]);
+    });
+
+    it("Skip them: only the rest go", () => {
+      expect(decideConflicts(planned, conflicts, "skip").map((u) => u.key)).toEqual([
+        "A/1.flac",
+        "A/3.flac",
+      ]);
+    });
+
+    it("Cancel: nothing goes", () => {
+      expect(decideConflicts(planned, conflicts, "cancel")).toEqual([]);
+    });
+  });
+
+  it("a Replace is signed with overwrite: true, and nothing else is", async () => {
+    const h = harness();
+    const planned = plan("A/", "1.flac", "2.flac");
+    const conflicts = [{ upload: planned[0] as PlannedUpload, existing: existing("A/1.flac") }];
+    h.queue.add(decideConflicts(planned, conflicts, "replace"), 10);
+    expect(h.signs[0]?.files).toEqual([
+      { key: "A/1.flac", size: 1000, overwrite: true },
+      { key: "A/2.flac", size: 1000, overwrite: false },
+    ]);
+  });
+
+  it("titles the dialog with how many of the pick exist", () => {
+    expect(describeConflicts(3, 25)).toBe("3 of 25 files already exist");
+    expect(describeConflicts(1, 25)).toBe("1 of 25 files already exists");
+    expect(describeConflicts(1, 1)).toBe("1 of 1 file already exists");
+    expect(describeConflicts(1200, 2000)).toBe("1,200 of 2,000 files already exist");
   });
 });
 
@@ -864,28 +945,21 @@ describe("the words", () => {
 
   it("counts the uploaded of the files meant to go", () => {
     expect(
-      describeQueue([
-        view("uploaded"),
-        view("uploading"),
-        view("failed"),
-        view("skipped"),
-        view("canceled"),
-      ]),
+      describeQueue([view("uploaded"), view("uploading"), view("failed"), view("canceled")]),
     ).toBe("1 of 3 uploaded");
   });
 
-  it("gives the header's trigger its state in words", () => {
+  it("gives the header's trigger its state in words, with no conflict state", () => {
     expect(uploadsStatus([])).toBeNull();
     expect(describeUploadsStatus([])).toBe("");
 
-    // The file the run is on: one past those settled, skipped and canceled left out.
+    // The file the run is on: one past those settled, canceled left out.
     const running = [
       view("uploaded"),
-      view("exists"),
+      view("failed"),
       view("uploading"),
       view("signing"),
       view("waiting"),
-      view("skipped"),
       view("canceled"),
     ];
     expect(uploadsStatus(running)).toBe("running");
@@ -895,13 +969,13 @@ describe("the words", () => {
       "Uploading 1 of 1,200",
     );
 
-    // Conflicts and failures, once nothing is left to go.
-    const waiting = [view("uploaded"), view("exists"), view("failed"), view("skipped")];
+    // Failures only, once nothing is left to go.
+    const waiting = [view("uploaded"), view("failed"), view("failed"), view("canceled")];
     expect(uploadsStatus(waiting)).toBe("attention");
     expect(describeUploadsStatus(waiting)).toBe("2 need attention");
     expect(describeUploadsStatus([view("uploaded"), view("failed")])).toBe("1 needs attention");
 
-    const done = [view("uploaded"), view("skipped"), view("canceled")];
+    const done = [view("uploaded"), view("canceled")];
     expect(uploadsStatus(done)).toBe("done");
     expect(describeUploadsStatus(done)).toBe("Uploads done");
   });
@@ -924,6 +998,9 @@ describe("the words", () => {
     expect(describeFailure({ code: "put_failed", status: 0 }, "a.flac", CONFIG)).toBe(
       "the upload did not reach the bucket",
     );
+    expect(describeFailure({ code: "exists_now" }, "a.flac", CONFIG)).toBe(
+      "uploaded elsewhere just now. Upload it again to replace it.",
+    );
     expect(
       describeFailure(
         { code: "sign_failed", error: new ApiError(0, "network", "") },
@@ -934,7 +1011,7 @@ describe("the words", () => {
   });
 
   it("toasts what a run did", () => {
-    const summary = { uploaded: 12, notUploaded: 2, conflicts: 1, scanUnknown: false };
+    const summary = { uploaded: 12, notUploaded: 2, scanUnknown: false };
     expect(uploadedToast(summary)).toEqual({
       title: "Uploaded 12 files",
       description: "Tracks join the library at the next scan.",
@@ -945,11 +1022,9 @@ describe("the words", () => {
     });
     expect(notUploadedToast(summary)).toEqual({
       title: "2 files were not uploaded",
-      description: "Uploads lists why. Replace or skip the files that already exist.",
+      description: "Uploads lists why.",
     });
-    expect(notUploadedToast({ ...summary, notUploaded: 1, conflicts: 0 }).title).toBe(
-      "1 file was not uploaded",
-    );
+    expect(notUploadedToast({ ...summary, notUploaded: 1 }).title).toBe("1 file was not uploaded");
   });
 
   it("describes replace_unavailable as a refusal with rclone", () => {
@@ -1012,30 +1087,29 @@ describe("a large queue", () => {
     const items = [
       ...Array.from({ length: 100 }, (_, i) => view(i, "uploaded")),
       view(100, "failed"),
-      view(101, "exists"),
-      view(102, "skipped"),
+      view(101, "canceled"),
       view(103, "uploading"),
       ...Array.from({ length: 80 }, (_, i) => view(200 + i, "waiting")),
     ];
     const { rows, hidden } = shownRows(items, { finished: 10, waiting: 5 });
     expect(rows.map((row) => row.id)).toEqual([
-      91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 200, 201, 202, 203, 204,
+      91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 103, 200, 201, 202, 203, 204,
     ]);
-    expect(hidden).toEqual({ uploaded: 91, skipped: 0, canceled: 0, waiting: 75 });
+    expect(hidden).toEqual({ uploaded: 91, canceled: 0, waiting: 75 });
     expect(describeHidden(hidden)).toEqual({
       earlier: "91 more uploaded earlier",
       later: "and 75 more waiting",
     });
-    expect(describeHidden({ uploaded: 1940, skipped: 2, canceled: 1, waiting: 0 })).toEqual({
-      earlier: "1,940 more uploaded, 2 skipped and 1 canceled earlier",
+    expect(describeHidden({ uploaded: 1940, canceled: 1, waiting: 0 })).toEqual({
+      earlier: "1,940 more uploaded and 1 canceled earlier",
       later: null,
     });
-    expect(describeHidden({ uploaded: 0, skipped: 3, canceled: 0, waiting: 0 }).earlier).toBe(
-      "3 more skipped earlier",
+    expect(describeHidden({ uploaded: 0, canceled: 3, waiting: 0 }).earlier).toBe(
+      "3 more canceled earlier",
     );
   });
 
-  it("keeps every failure and conflict on screen", () => {
+  it("keeps every failure on screen", () => {
     const items = Array.from(
       { length: 300 },
       (_, i): UploadView => ({
@@ -1043,7 +1117,7 @@ describe("a large queue", () => {
         key: `${i}.flac`,
         size: 1,
         loaded: 0,
-        state: i % 2 ? "failed" : "exists",
+        state: "failed",
       }),
     );
     expect(shownRows(items).rows).toHaveLength(300);
@@ -1098,7 +1172,7 @@ describe("the queue's end", () => {
     expect(h.refresh.mock.calls.length).toBe(refreshed);
   });
 
-  it("reports a skipped file whose earlier upload may have landed with its answer lost", async () => {
+  it("takes a retry's exists of the same size as its own upload, whose answer was lost", async () => {
     const h = harness();
     h.queue.add(plan("", "1.flac"), 10);
     await h.signAll(0);
@@ -1115,13 +1189,33 @@ describe("the queue's end", () => {
       clock: clock(),
     });
     await tick();
-    expect(h.item("1.flac").state).toBe("exists");
-    h.queue.skip(h.item("1.flac").id);
+    expect(h.item("1.flac").state).toBe("uploaded");
     await h.quiet();
     expect(h.completes.map((call) => call.keys)).toEqual([["1.flac"]]);
   });
 
-  it("reports no skipped file it never sent", async () => {
+  it("fails a retry's exists of another size, but still reports what may be its upload", async () => {
+    const h = harness();
+    h.queue.add(plan("", "1.flac"), 10);
+    await h.signAll(0);
+    await h.putDone(0, 0);
+    h.signs[1]?.resolve({
+      uploads: [
+        {
+          key: "1.flac",
+          error: "exists",
+          existing: { size: 7, uploadedAt: "2026-10-02T12:00:00Z" },
+        },
+      ],
+      clock: clock(),
+    });
+    await tick();
+    expect(h.item("1.flac")).toMatchObject({ state: "failed", failure: { code: "exists_now" } });
+    await h.quiet();
+    expect(h.completes.map((call) => call.keys)).toEqual([["1.flac"]]);
+  });
+
+  it("reports no file that exists and that it never sent", async () => {
     const h = harness();
     h.queue.add(plan("", "1.flac"), 10);
     h.signs[0]?.resolve({
@@ -1135,7 +1229,8 @@ describe("the queue's end", () => {
       clock: clock(),
     });
     await tick();
-    h.queue.skip(h.item("1.flac").id);
+    await h.quiet();
+    expect(h.item("1.flac").state).toBe("failed");
     expect(h.completes).toHaveLength(0);
   });
 

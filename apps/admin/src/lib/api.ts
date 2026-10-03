@@ -688,6 +688,34 @@ export async function signUploads(
   );
 }
 
+/** A picked key that already exists, as `POST /api/files/uploads/check` answers it. */
+export interface ExistingUpload {
+  /** The key as asked. */
+  key: string;
+  /** The key exactly as R2 lists it, which may be another Unicode spelling. */
+  storedKey: string;
+  size: number;
+  uploadedAt: string;
+}
+
+/**
+ * `POST /api/files/uploads/check`: which keys exist, and which the server
+ * could not check (their folder was too large to list to its end).
+ */
+export interface UploadCheckResult {
+  existing: ExistingUpload[];
+  unchecked: string[];
+}
+
+/**
+ * Asks which of 1–1,000 keys in the folder `prefix` (as browse listed it)
+ * already exist, before any is signed (#141). A key the upload rules refuse
+ * is in neither list.
+ */
+export function checkUploads(prefix: string, keys: readonly string[]): Promise<UploadCheckResult> {
+  return call<UploadCheckResult>("POST", "/api/files/uploads/check", { prefix, keys });
+}
+
 /** What `POST /api/files/uploads/complete` said the scan will do. */
 export interface CompleteUploadsResult {
   scan: ScanSchedule | null;
