@@ -94,8 +94,16 @@ function FilesPage({ me }: { me: Me | null }) {
   const navigate = Route.useNavigate();
   const queryClient = useQueryClient();
 
-  const config = useQuery(filesConfigQuery);
-  const folder = useInfiniteQuery(folderQuery(prefix));
+  // The page reads only while signed in. Signing out clears the cache
+  // while the page is still on screen, until the sign-in screen replaces
+  // it (lib/sign-out.ts, `leaveSignedOut`): any redraw then, such as the
+  // upload queue ending, would build these queries again and read them
+  // without a session, two 401s (#141). The session is read here, not
+  // from `me`, which such a redraw does not renew.
+  const { data: session } = useQuery(meQuery);
+  const signedIn = session != null;
+  const config = useQuery({ ...filesConfigQuery, enabled: signedIn });
+  const folder = useInfiniteQuery({ ...folderQuery(prefix), enabled: signedIn });
   const [selection, setSelection] = useState<Selection>(NO_SELECTION);
   // Leaving a folder cuts its listing back to its first page, so that a
   // return to it once stale reads one page, not every page loaded, and
@@ -132,6 +140,7 @@ function FilesPage({ me }: { me: Me | null }) {
   const live = useQuery({
     ...liveQuery,
     enabled: (query) =>
+      signedIn &&
       canReadLibrary &&
       scanActive(latestView(written, uploadView, query.state.data && viewOfLive(query.state.data))),
   });
