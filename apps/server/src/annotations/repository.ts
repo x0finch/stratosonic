@@ -15,14 +15,22 @@
  * platform rather than to the scan, and D1's ceiling of 100 bound parameters
  * per query would otherwise throw `too many SQL variables` in production for
  * a request naming more than a hundred ids, while passing every test, because
- * Miniflare is real SQLite, whose limit is 999.
+ * Miniflare is real SQLite, whose limit is 999. A scope binds parameters of
+ * its own, so a scoped read takes that many fewer ids a statement.
+ *
+ * **An item out of the caller's libraries is not there** (#84): the reads
+ * that check what a write names keep to the caller's scope, so a star, a
+ * rating or a play on it is refused as one on an unknown id is, and nothing
+ * is written. A playlist is not in a library's scope: who may see it is the
+ * playlist's own rule, as in Navidrome.
  */
 
 import { album, annotation, artist, playlist, track } from "@stratosonic/db";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, type SQL, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import type { Database } from "../db";
-import { chunked } from "../scanner/repository";
+import { artistInScope, type LibraryScope, libraryFilter, scopeParameters } from "../library/scope";
+import { chunked, KEYS_PER_STATEMENT } from "../scanner/repository";
 
 /**
  * The kinds of item a star or a rating can attach to — every kind the
@@ -43,18 +51,19 @@ export interface AnnotatedItem {
 const ITEM_TABLES = { track, album, artist, playlist } as const;
 
 /**
- * Which of these items name nothing in the library.
+ * Which of these items name nothing in the caller's libraries.
  *
  * `star` on an id that resolves to no row of its kind is error 70, so
  * the items are checked before anything is written — one query per kind that
- * appears, and per `KEYS_PER_STATEMENT` ids of that kind, never one per id.
- * The kinds are asked together, as the reads ask their statements together.
- * An id whose row is present is fine; the rest are returned for the endpoint
- * to refuse.
+ * appears, and per `KEYS_PER_STATEMENT` ids of that kind (less what the scope
+ * binds), never one per id. The kinds are asked together, as the reads ask
+ * their statements together. An id whose row is present in scope is fine;
+ * the rest are returned for the endpoint to refuse.
  */
 export async function findMissingItems(
   db: Database,
   items: readonly AnnotatedItem[],
+  scope: LibraryScope,
 ): Promise<AnnotatedItem[]> {
   const lookups: Promise<string[]>[] = [];
 
@@ -64,8 +73,8 @@ export async function findMissingItems(
       continue;
     }
 
-    for (const chunk of chunked(ofType)) {
-      lookups.push(findPresentOfType(db, type, chunk));
+    for (const chunk of chunked(ofType, KEYS_PER_STATEMENT - scopeParameters(scope))) {
+      lookups.push(findPresentOfType(db, type, chunk, scope));
     }
   }
 
@@ -75,24 +84,46 @@ export async function findMissingItems(
   return items.filter((item) => !present.has(itemKey(item.type, item.id)));
 }
 
-/** The ids of this chunk that a row of this kind answers to, as keys. */
+/** The ids of this chunk that a row of this kind in scope answers to, as keys. */
 async function findPresentOfType(
   db: Database,
   type: AnnotatedType,
   chunk: readonly AnnotatedItem[],
+  scope: LibraryScope,
 ): Promise<string[]> {
   const idColumn = ITEM_TABLES[type].id;
   const rows = await db
     .select({ id: idColumn })
     .from(ITEM_TABLES[type])
     .where(
-      inArray(
-        idColumn,
-        chunk.map((item) => item.id),
+      and(
+        inArray(
+          idColumn,
+          chunk.map((item) => item.id),
+        ),
+        inScopeOfType(type, scope),
       ),
     );
 
   return rows.map((row) => itemKey(type, row.id));
+}
+
+/**
+ * What keeps an item of this kind to the scope: a track or an album by its
+ * library, an artist by its albums (library/scope.ts), and a playlist not
+ * at all. Nothing on the fast path.
+ */
+function inScopeOfType(type: AnnotatedType, scope: LibraryScope): SQL | undefined {
+  switch (type) {
+    case "track":
+      return libraryFilter(scope, track.libraryId);
+    case "album":
+      return libraryFilter(scope, album.libraryId);
+    case "artist":
+      return artistInScope(scope);
+    case "playlist":
+      return undefined;
+  }
 }
 
 function itemKey(type: AnnotatedType, id: string): string {
@@ -240,10 +271,13 @@ export interface TrackParents {
  * artist(s)), and a track carries a single `artist_id` — its album artist — so
  * one query answers both parents at once. Reading the artist here rather than
  * in a second lookup keeps the submission path's D1 cost unchanged.
+ *
+ * A track out of scope is absent, as an unknown one is.
  */
 export async function findTrackParents(
   db: Database,
   trackIds: readonly string[],
+  scope: LibraryScope,
 ): Promise<Map<string, TrackParents>> {
   // One parameter is bound per id, so the ids are taken
   // `KEYS_PER_STATEMENT` at a time, as the existence check above takes them:
@@ -251,11 +285,11 @@ export async function findTrackParents(
   // would otherwise throw `too many SQL variables` against D1 while passing
   // every test, because Miniflare is SQLite and allows 999. The chunks are
   // asked together, as that check asks its statements together.
-  const lookups = [...chunked(trackIds)].map((chunk) =>
+  const lookups = [...chunked(trackIds, KEYS_PER_STATEMENT - scopeParameters(scope))].map((chunk) =>
     db
       .select({ id: track.id, albumId: track.albumId, artistId: track.artistId })
       .from(track)
-      .where(inArray(track.id, chunk)),
+      .where(and(inArray(track.id, chunk), libraryFilter(scope, track.libraryId))),
   );
 
   return new Map(

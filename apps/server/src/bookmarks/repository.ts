@@ -14,6 +14,7 @@ import { and, asc, desc, eq } from "drizzle-orm";
 import type { Database } from "../db";
 import { annotationColumns, annotationJoin } from "../library/annotations";
 import { toSongView } from "../library/repository";
+import { type LibraryScope, libraryFilter } from "../library/scope";
 import type { SongView } from "../library/serializers";
 
 /**
@@ -84,8 +85,15 @@ export interface BookmarkEntry {
  * drops out of the list rather than rendering an `<entry>` with nothing in it.
  * The song carries the caller's annotation, as every other read of a song
  * does.
+ *
+ * A bookmark on a track out of the caller's libraries is left out the same
+ * way (#84), and kept: it is listed again if the library is granted again.
  */
-export async function listBookmarks(db: Database, userId: string): Promise<BookmarkEntry[]> {
+export async function listBookmarks(
+  db: Database,
+  userId: string,
+  scope: LibraryScope,
+): Promise<BookmarkEntry[]> {
   const rows = await db
     .select({
       track,
@@ -101,7 +109,7 @@ export async function listBookmarks(db: Database, userId: string): Promise<Bookm
     .innerJoin(track, eq(track.id, bookmark.trackId))
     .leftJoin(album, eq(album.id, track.albumId))
     .leftJoin(annotation, annotationJoin(userId, "track", track.id))
-    .where(eq(bookmark.userId, userId))
+    .where(and(eq(bookmark.userId, userId), libraryFilter(scope, track.libraryId)))
     .orderBy(desc(bookmark.changedAt), asc(bookmark.trackId));
 
   return rows.map((row) => ({

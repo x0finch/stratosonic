@@ -1,6 +1,10 @@
 /**
  * The Playback-state module: what a client saves to resume a session — the
  * now-playing feed, the play queue and the bookmarks.
+ *
+ * The queue and the bookmarks keep to the caller's libraries (#84): what is
+ * out of them is left out of a read, and refused by a write as an unknown
+ * track is. The now-playing feed does not, as Navidrome's does not.
  */
 
 import { parseIdOfType, prefixedId } from "@stratosonic/db";
@@ -13,6 +17,7 @@ import {
 } from "../bookmarks/repository";
 import { database } from "../db";
 import { findSongsByIds } from "../library/repository";
+import { scopeOf } from "../library/scope";
 import {
   omitWhenEmpty,
   type SongView,
@@ -102,12 +107,22 @@ function nowPlayingEntryElement(entry: NowPlayingEntry, index: number, now: numb
  * that is not a track id at all is error 70, as it is everywhere a client
  * sends one.
  *
+ * **A caller who does not see every library is checked**, though: each id,
+ * and `current`, must name a track in their libraries, or the save is error
+ * 70 and nothing is written (#84, "Out of scope means not found"). An unknown
+ * id gets the same answer then, so the answer never tells an id in a library
+ * the caller cannot see from one that names nothing. A caller who sees every
+ * library has no such id to send, and their save is v0.5.0's one statement.
+ * The check (`findMissingItems`) takes 90 ids a select, less one for each
+ * library the scope lists (at most 20), so at most fifteen at the cap below.
+ *
  * More than `MAX_QUEUE_TRACKS` of them is error 0. The save itself is one
  * statement however long the queue, but reading it back is one `in (...)` per
  * `KEYS_PER_STATEMENT` ids, and a Worker invocation on the free plan has
  * fifty subrequests - so an unbounded queue would save happily and then be
  * unreadable, which is the worse of the two failures. At the cap a
- * `getPlayQueue` is thirteen subrequests. Navidrome stores whatever arrives,
+ * `getPlayQueue` is thirteen subrequests, and sixteen for a caller whose scope
+ * lists twenty libraries. Navidrome stores whatever arrives,
  * having no such budget; `star` and `scrobble` carry the same kind of cap.
  *
  * `position` follows Navidrome's `Int64Or`: absent or unreadable means 0
@@ -133,11 +148,25 @@ export const savePlayQueue: SubsonicHandler = async (request) => {
     return {};
   }
 
-  const current = params.get("current");
+  const requestedCurrent = params.get("current");
+  const current = requestedCurrent === null ? null : queueTrackId(requestedCurrent);
+
+  const scope = scopeOf(request.user);
+  if (!scope.all) {
+    const queued = new Set(current === null ? trackIds : [...trackIds, current]);
+    const missing = await findMissingItems(
+      db,
+      [...queued].map((id) => ({ type: "track", id })),
+      scope,
+    );
+    if (missing.length > 0) {
+      throw new SubsonicError(SubsonicErrorCode.NotFound);
+    }
+  }
 
   await storePlayQueue(db, request.user.id, {
     trackIds,
-    current: current === null ? null : queueTrackId(current),
+    current,
     position: integerParameterOr(params, "position", 0),
     changedBy: params.get("c") ?? "",
     changedAt: new Date(),
@@ -151,7 +180,8 @@ export const savePlayQueue: SubsonicHandler = async (request) => {
  *
  * The saved ids are resolved to `<entry>` songs in the order they were saved;
  * a track that has since left the library is left out rather than failing the
- * response, so a queue survives a rescan that removed one of its files. A
+ * response, so a queue survives a rescan that removed one of its files, and
+ * so is a track in a library the caller no longer sees. A
  * caller who has saved nothing gets an empty `<playQueue/>`, not an error, as
  * Navidrome answers.
  *
@@ -164,7 +194,7 @@ export const getPlayQueue: SubsonicHandler = async (request) => {
     return { playQueue: {} };
   }
 
-  const songs = await findSongsByIds(db, queue.trackIds, request.user.id);
+  const songs = await findSongsByIds(db, queue.trackIds, request.user.id, scopeOf(request.user));
   const entries = queue.trackIds
     .map((id) => songs.get(id))
     .filter((song): song is SongView => song !== undefined);
@@ -209,7 +239,11 @@ function queueTrackId(value: string): string {
  * Only the caller's own bookmarks are read: the rows are keyed by user.
  */
 export const getBookmarks: SubsonicHandler = async (request) => {
-  const entries = await listBookmarks(database(request.env), request.user.id);
+  const entries = await listBookmarks(
+    database(request.env),
+    request.user.id,
+    scopeOf(request.user),
+  );
 
   return {
     bookmarks: {
@@ -228,7 +262,8 @@ export const getBookmarks: SubsonicHandler = async (request) => {
  * the comment, keeping the instant the bookmark was first made — so a client
  * re-sending one is an update, not a failure.
  *
- * An `id` that names no track is error 70. Navidrome does not check: its
+ * An `id` that names no track in the caller's libraries is error 70, with
+ * nothing written. Navidrome does not check an unknown id: its
  * bookmark rows point at whatever id arrives, and a bookmark on a track that
  * does not exist is one no `getBookmarks` can ever show. Refusing it costs one
  * query and tells the client what happened.
@@ -239,7 +274,11 @@ export const createBookmark: SubsonicHandler = async (request) => {
   const position = requiredIntegerParameter(params, "position");
   const db = database(request.env);
 
-  const missing = await findMissingItems(db, [{ type: "track", id: trackId }]);
+  const missing = await findMissingItems(
+    db,
+    [{ type: "track", id: trackId }],
+    scopeOf(request.user),
+  );
   if (missing.length > 0) {
     throw new SubsonicError(SubsonicErrorCode.NotFound);
   }
