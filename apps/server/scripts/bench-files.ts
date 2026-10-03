@@ -20,11 +20,22 @@
  * for and is not billed CPU for; the session check before the handler is
  * measured by bench-console-auth.ts. Confirm on the edge with Workers
  * Observability (`cpuTime`).
+ *
+ * For a library over the S3 API (#84, "Files across libraries"), the route
+ * also parses R2's `ListObjectsV2` XML (storage/s3-list.ts), which the
+ * binding never does: the `S3:` rows time it at 500 and 1,000 entries (the
+ * gate is <= 4 ms per 1,000, measured in workerd by
+ * bench-s3-list-workerd.ts), the 1,000-entry browse built on it, and a
+ * connected library's presigned upload with its sealed token opened.
  */
 
 import { CHECK_BATCH, type ExistingKey, groupCheckKeys, matchListing } from "../src/files/check";
 import { folderListing, playlistKeysOf } from "../src/files/listing";
 import { fromR2Listing } from "../src/storage/binding";
+import { openCredentials, sealCredentials } from "../src/storage/credentials";
+import { s3Storage } from "../src/storage/s3";
+import { parseListObjectsV2 } from "../src/storage/s3-list";
+import { LISTING_PREFIX, listingXml } from "./bench-s3-xml";
 
 const RUNS = 2_000;
 const WARM_UP = 200;
@@ -170,6 +181,85 @@ const results = [
   // The former bound, for comparison.
   bench("POST /api/files/uploads/check, 1,000 keys, 2,000 entries", () => check(check1000)),
 ];
+
+/* ------------------------------------------------------- S3 libraries -- */
+
+// #84, "Files across libraries": the gate is <= 4 ms per 1,000 entries
+// parsed, in workerd (bench-s3-list-workerd.ts measures it there).
+const xml500 = listingXml(500);
+const xml1000 = listingXml(1000);
+
+results.push(
+  bench("S3: ListObjectsV2 XML parsed, 500 entries", () => parseListObjectsV2(xml500)),
+  bench("S3: ListObjectsV2 XML parsed, 1,000 entries", () => parseListObjectsV2(xml1000)),
+  bench("S3: GET /api/files?library=2, 1,000 entries (parse, listing, JSON)", () =>
+    JSON.stringify(folderListing(LISTING_PREFIX, parseListObjectsV2(xml1000))),
+  ),
+);
+
+/** Times an async operation, as `bench` times a synchronous one. */
+async function benchAsync(
+  name: string,
+  work: () => Promise<unknown>,
+  runs = RUNS,
+): Promise<Record<string, string>> {
+  for (let run = 0; run < WARM_UP; run++) {
+    await work();
+  }
+  const times: number[] = [];
+  for (let run = 0; run < runs; run++) {
+    const start = performance.now();
+    await work();
+    times.push(performance.now() - start);
+  }
+  return {
+    name,
+    "p50 ms": percentile(times, 50).toFixed(3),
+    "p95 ms": percentile(times, 95).toFixed(3),
+  };
+}
+
+// A connected library's upload URL as a Files route signs it: the row's
+// sealed token opened (one AES-GCM decrypt, the key derived once per
+// isolate), then the URL signed with the library's client (cached per
+// isolate, its signing key per day). Every credential here is made up.
+const PASSPHRASE = "bench-password-encryption-key";
+const ACCOUNT = "fedcba9876543210fedcba9876543210";
+const PATH = `s3://${ACCOUNT}.r2.cloudflarestorage.com/archive`;
+const sealed = await sealCredentials(PASSPHRASE, PATH, {
+  accessKeyId: "bench-access-key-id",
+  secretAccessKey: "bench-secret-access-key-not-real",
+});
+const location = {
+  libraryId: 2,
+  endpoint: `https://${ACCOUNT}.r2.cloudflarestorage.com`,
+  bucket: "archive",
+};
+const upload = {
+  key: "Artist/Album/01 Title.flac",
+  size: 41_234_567,
+  contentType: "audio/flac",
+  replace: false,
+};
+
+results.push(
+  await benchAsync("S3: open sealed credentials (AES-GCM decrypt)", () =>
+    openCredentials(PASSPHRASE, PATH, sealed),
+  ),
+  await benchAsync("S3: presignPut with decrypt (a fresh storage, warm client)", () =>
+    s3Storage(location, () => openCredentials(PASSPHRASE, PATH, sealed)).presignPut(upload),
+  ),
+  await benchAsync(
+    "S3: 10 presignPut, one decrypt (POST /api/files/uploads, 10 files)",
+    async () => {
+      const storage = s3Storage(location, () => openCredentials(PASSPHRASE, PATH, sealed));
+      for (let index = 0; index < 10; index++) {
+        await storage.presignPut({ ...upload, key: `Artist/Album/${index} Title.flac` });
+      }
+    },
+    500,
+  ),
+);
 
 console.log(`node ${process.version}, ${process.arch}`);
 console.table(results);

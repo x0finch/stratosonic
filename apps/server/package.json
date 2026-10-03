@@ -9,6 +9,7 @@
     "bench:console-auth": "tsx --import ./scripts/bench-register.mjs scripts/bench-console-auth.ts",
     "bench:file-uploads": "tsx --import ./scripts/bench-register.mjs scripts/bench-file-uploads.ts",
     "bench:files": "tsx scripts/bench-files.ts",
+    "bench:s3-list": "tsx scripts/bench-s3-list-workerd.ts",
     "bench:startup": "node scripts/bench-startup.mjs",
     "cf-typegen": "wrangler types --include-runtime=false --strict-vars=false --env-file /dev/null",
     "typecheck": "pnpm run cf-typegen && tsc --noEmit",

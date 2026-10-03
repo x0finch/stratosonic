@@ -1,0 +1,9 @@
+// The bench Worker of bench-s3-list-workerd.ts, run locally by `wrangler dev`
+// and never deployed: no bindings, the main Worker's compatibility settings.
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "stratosonic-bench-s3-list",
+  "main": "bench-s3-list-worker.ts",
+  "compatibility_date": "2026-08-15",
+  "compatibility_flags": ["nodejs_compat"]
+}
