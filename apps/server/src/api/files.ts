@@ -142,8 +142,10 @@ import { requireSameOrigin } from "./same-origin";
  *    exactly as given; each folder is listed with a delimiter, page after
  *    page, and the names compared in NFC, since the stored spelling may
  *    differ. At most `CHECK_LISTINGS` (40) listings a request, and
- *    `CHECK_PAGES_PER_FOLDER` (10) a folder: a key whose folder was not
- *    listed to its end is answered in `unchecked`, never as new. A folder
+ *    `CHECK_ENTRIES` (2,000) entries listed in all, as much as one
+ *    `delete-folder` round: a key whose folder was not listed to its end
+ *    is answered in `unchecked`, never as new, and the console asks again
+ *    for those, each request with a fresh budget. A folder
  *    stored in another spelling than the one given lists nothing, so its
  *    keys read as new; the `PUT`'s `If-None-Match: *` still refuses them.
  *    Its cost: one `ListObjects` (Class A) per page, no D1 statement past
@@ -208,10 +210,17 @@ export const CHECK_BATCH = 1000;
  */
 export const CHECK_LISTINGS = 40;
 
-/** The most pages one folder of an upload check is listed: 10,000 entries. */
-export const CHECK_PAGES_PER_FOLDER = 10;
+/**
+ * The most entries (objects and subfolders) one upload check lists, across
+ * its listings: two of R2's pages, what one `delete-folder` round reaches
+ * (`FOLDER_DELETE_PAGES`), so a request stays as far inside its 10 ms of
+ * CPU. Each listing asks for no more than is left, so the bound is exact.
+ * A folder of more entries is never listed to its end: its keys come back
+ * `unchecked`.
+ */
+export const CHECK_ENTRIES = 2000;
 
-/** The keys one listing of an upload check reaches: R2's own most. */
+/** The keys one listing of an upload check reaches at most: R2's own most. */
 const CHECK_PAGE = 1000;
 
 /** The most keys one `POST /api/files/delete` takes; the body cap is sized for it. */
@@ -681,7 +690,7 @@ export interface ExistingKey {
 /**
  * Which of `keys` exist, by listing each one's folder (as given) and
  * comparing names in NFC, in at most `CHECK_LISTINGS` listings and
- * `CHECK_PAGES_PER_FOLDER` a folder. A folder listed to its end answers for
+ * `CHECK_ENTRIES` entries listed. A folder listed to its end answers for
  * every key in it; the keys of one that was not are `unchecked`. A key the
  * upload rules refuse is in neither.
  */
@@ -699,24 +708,34 @@ async function checkExisting(
     const slash = key.lastIndexOf("/");
     const folder = key.slice(0, slash + 1);
     const name = inNfc(key.slice(slash + 1));
-    const names = folders.get(folder) ?? new Map<string, string[]>();
-    folders.set(folder, names);
-    names.set(name, [...(names.get(name) ?? []), key]);
+    let names = folders.get(folder);
+    if (names === undefined) {
+      names = new Map();
+      folders.set(folder, names);
+    }
+    const same = names.get(name);
+    if (same === undefined) {
+      names.set(name, [key]);
+    } else {
+      same.push(key);
+    }
   }
 
   const existing: ExistingKey[] = [];
   const unchecked: string[] = [];
-  let budget = CHECK_LISTINGS;
+  let listings = CHECK_LISTINGS;
+  let entries = CHECK_ENTRIES;
   for (const [folder, names] of folders) {
     let cursor: string | undefined;
-    for (let page = 0; names.size > 0 && budget > 0 && page < CHECK_PAGES_PER_FOLDER; page++) {
+    while (names.size > 0 && listings > 0 && entries > 0) {
       const listing = await env.MUSIC.list({
         prefix: folder,
         delimiter: "/",
-        limit: CHECK_PAGE,
+        limit: Math.min(CHECK_PAGE, entries),
         cursor,
       });
-      budget--;
+      listings--;
+      entries -= listing.objects.length + listing.delimitedPrefixes.length;
       for (const object of listing.objects) {
         const name = inNfc(object.key.slice(folder.length));
         for (const key of names.get(name) ?? []) {
@@ -736,6 +755,7 @@ async function checkExisting(
       }
       cursor = listing.cursor;
     }
+    // Every folder after the budget ran out goes back unchecked too.
     for (const asked of names.values()) {
       unchecked.push(...asked);
     }

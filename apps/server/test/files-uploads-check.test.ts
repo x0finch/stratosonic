@@ -1,9 +1,10 @@
 import { SELF } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { CHECK_BATCH, CHECK_LISTINGS, CHECK_PAGES_PER_FOLDER } from "../src/api/files";
+import { CHECK_BATCH, CHECK_ENTRIES, CHECK_LISTINGS } from "../src/api/files";
 import { MAX_FILE_CHECK_BODY_BYTES } from "../src/api/json-body";
 import { type CookieJar, GUEST_ROLE, seedConsoleUser, signIn } from "./console-auth-support";
 import {
+  allKeys,
   expectRefusal,
   type FilesHarness,
   filesHarness,
@@ -37,6 +38,11 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await resetLibrary();
+  // resetLibrary deletes one page of objects; the large seeds here take more.
+  const left = await allKeys();
+  for (let start = 0; start < left.length; start += 1000) {
+    await testEnv.MUSIC.delete(left.slice(start, start + 1000));
+  }
   harness.r2Calls.length = 0;
 });
 
@@ -125,17 +131,43 @@ describe("POST /api/files/uploads/check", () => {
     expect(listings(paged)).toHaveLength(3);
   });
 
-  it("answers unchecked, never new, past the pages a folder may take", async () => {
-    const paged = filesHarness(ORIGIN, { listLimit: 1 });
+  it("answers unchecked, never new, past the entries a request may list", {
+    timeout: 60_000,
+  }, async () => {
     await seedObjects(
-      Array.from({ length: CHECK_PAGES_PER_FOLDER + 2 }, (_, index) => `Big/${index + 10}.flac`),
+      Array.from(
+        { length: CHECK_ENTRIES + 1 },
+        (_, index) => `Big/${String(index).padStart(4, "0")}.flac`,
+      ),
+      100,
     );
 
-    const { body } = await check({ keys: ["Big/10.flac", "Big/99.flac"] }, paged);
+    const { body } = await check({
+      keys: ["Big/0000.flac", "Big/9999.flac", "Other/a.flac"],
+    });
 
-    expect(body.existing.map((entry) => entry.key)).toEqual(["Big/10.flac"]);
-    expect(body.unchecked).toEqual(["Big/99.flac"]);
-    expect(listings(paged)).toHaveLength(CHECK_PAGES_PER_FOLDER);
+    expect(body.existing.map((entry) => entry.key)).toEqual(["Big/0000.flac"]);
+    // Big/ was not listed to its end, and the budget ran out before Other/.
+    expect(body.unchecked).toEqual(["Big/9999.flac", "Other/a.flac"]);
+    // Two full pages, exactly the entries allowed, and nothing more.
+    expect(listings().map((call) => (call.argument as R2ListOptions).limit)).toEqual([1000, 1000]);
+  });
+
+  it("asks each listing for no more than the entries left", { timeout: 60_000 }, async () => {
+    await seedObjects(
+      Array.from({ length: 1500 }, (_, index) => `Mid/${String(index).padStart(4, "0")}.flac`),
+      100,
+    );
+
+    const { body } = await check({ keys: ["Mid/9999.flac", "Other/a.flac"] });
+
+    // Mid/ ends on its second page (1,500 entries), so Other/ may list the 500 left.
+    expect(body).toEqual({ existing: [], unchecked: [] });
+    expect(listings().map((call) => (call.argument as R2ListOptions).limit)).toEqual([
+      1000,
+      1000,
+      CHECK_ENTRIES - 1500,
+    ]);
   });
 
   it("answers unchecked past the listings a request may make, and makes no more", async () => {

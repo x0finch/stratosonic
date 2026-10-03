@@ -260,11 +260,16 @@ or skip them, before any upload starts:
   grouped by folder, exactly as given; each folder is listed (with a
   delimiter, a page of 1,000 at a time) and the names compared in NFC, so
   a file stored in another Unicode spelling is found too.
-- At most 40 listings a request, and 10 pages a folder. A key whose folder
-  was not listed to its end comes back in `unchecked`, never as new; the
-  console then treats it as new, and the `PUT`'s `If-None-Match: *` still
-  refuses it if it exists. So does a folder stored in another spelling
-  than the one given, whose listing finds nothing.
+- At most 40 listings a request, and 2,000 entries listed in all (as much
+  as one folder-delete round reaches, so the request stays well inside its
+  10 ms of CPU). A key whose folder was not listed to its end comes back in
+  `unchecked`, never as new. The console asks again for those, each
+  request with a fresh budget, so a pick across many folders is checked
+  in a few requests; a key whose folder holds more than 2,000 entries
+  stays unchecked, and the console asks about it as "could not be
+  checked". A folder stored in another spelling than the one given lists
+  nothing, so its keys read as new; the `PUT`'s `If-None-Match: *` still
+  refuses them if they exist.
 - It costs one Class A operation per page listed (a 25-file album in one
   folder: one), no D1 statement past the session check's two, and no scan
   driver call: at most 42 subrequests.
