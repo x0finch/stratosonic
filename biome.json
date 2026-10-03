@@ -36,6 +36,20 @@
       "preset": "recommended"
     }
   },
+  "overrides": [
+    {
+      "includes": ["apps/admin/**"],
+      "linter": {
+        "rules": {
+          "correctness": {
+            "noUnusedImports": "error",
+            "noUnusedVariables": "error",
+            "noUnusedPrivateClassMembers": "error"
+          }
+        }
+      }
+    }
+  ],
   "javascript": {
     "formatter": {
       "quoteStyle": "double",
