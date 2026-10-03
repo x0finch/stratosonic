@@ -339,16 +339,35 @@ describe("objectUrl", () => {
     expect(encodeSegment("!'()*")).toBe("%21%27%28%29%2A");
   });
 
-  it("refuses a key with a dot segment, which the URL parser would collapse", () => {
+  it("refuses a key with a . or .. segment, which the URL parser would collapse", () => {
     const bucket = { endpoint: r2Endpoint(CONFIG.accountId), bucket: CONFIG.bucket };
-    for (const key of ["a/../b.flac", "a/./b.flac", "..", "a/%2e%2E/b", "a/.%2e/b", "%2E/b"]) {
+    for (const key of ["a/../b.flac", "a/./b.flac", "..", ".", "../x", "x/.."]) {
       expect(isAddressableKey(key)).toBe(false);
       expect(() => objectUrl(bucket, key)).toThrow(UnaddressableKeyError);
     }
-    // A dot inside a segment, or three dots, is an ordinary name.
-    for (const key of ["a/.../b", "a/..b/c", "a/b./c", ".hidden/x", "a/%2e%2e%2e/b"]) {
+    // A lone surrogate has no UTF-8 for a URL to carry.
+    expect(isAddressableKey("a/\ud800.flac")).toBe(false);
+    expect(() => objectUrl(bucket, "a/\ud800.flac")).toThrow(UnaddressableKeyError);
+  });
+
+  it("keeps %2e segments, and dots inside a segment, as the names they are", () => {
+    const bucket = { endpoint: r2Endpoint(CONFIG.accountId), bucket: CONFIG.bucket };
+    for (const key of [
+      "%2E%2E/x.mp3",
+      "a/%2e/x.mp3",
+      "a/.%2e/b",
+      "a/%2e./b",
+      "a/.../b",
+      "a/..b/c",
+      "a/b./c",
+      ".hidden/x",
+    ]) {
       expect(isAddressableKey(key)).toBe(true);
-      expect(objectUrl(bucket, key).pathname).toBe(canonicalObjectPath(CONFIG.bucket, key));
+      const url = objectUrl(bucket, key);
+      // The path is the canonical one, so it names this key and no other:
+      // a `%` goes as `%25`, and nothing collapses.
+      expect(url.pathname).toBe(canonicalObjectPath(CONFIG.bucket, key));
+      expect(url.pathname.split("/").slice(2).map(decodeURIComponent).join("/")).toBe(key);
     }
   });
 });

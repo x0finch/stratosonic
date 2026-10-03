@@ -15,7 +15,7 @@ import { UnaddressableKeyError } from "./storage";
  * give, and the only host a presigned URL works on (never a bucket's custom
  * domain). Each segment of the bucket and the key is percent-encoded as
  * RFC 3986 asks, so the path the URL carries is exactly the canonical path
- * that is signed. A key with a `.` or `..` segment, however spelled, is
+ * that is signed. A key with a segment that is exactly `.` or `..` is
  * refused (`UnaddressableKeyError`): the WHATWG URL parser would collapse
  * it, and the request would name another object.
  *
@@ -166,14 +166,13 @@ export async function presignUpload(
 
 /**
  * The object's path-style URL on the bucket's S3 endpoint, without a query.
- * Throws `UnaddressableKeyError` for a key with a dot segment.
+ * Throws `UnaddressableKeyError` for a key `isAddressableKey` refuses.
  */
 export function objectUrl({ endpoint, bucket }: S3Bucket, key: string): URL {
-  const segments = key.split("/");
-  if (segments.some(isDotSegment)) {
+  if (!isAddressableKey(key)) {
     throw new UnaddressableKeyError(key);
   }
-  const path = [bucket, ...segments].map(encodeSegment).join("/");
+  const path = [bucket, ...key.split("/")].map(encodeSegment).join("/");
   return new URL(`${endpoint}/${path}`);
 }
 
@@ -183,16 +182,20 @@ export function bucketUrl({ endpoint, bucket }: S3Bucket): URL {
 }
 
 /**
- * Whether a key can be requested path-style: none of its segments is one
- * the URL parser treats as `.` or `..` (`.`, `..`, `%2e`, `.%2e`, `%2e.`,
- * `%2e%2e`, in any case), which it would collapse.
+ * Whether a key can be requested path-style:
+ *
+ * - none of its segments is exactly `.` or `..`, which `encodeSegment`
+ *   leaves as they are (both are unreserved) and the URL parser would
+ *   collapse. A segment spelled `%2e` is an ordinary name: its `%` is sent
+ *   as `%25`, which the parser leaves alone;
+ * - it is well-formed UTF-16, as every key R2 lists is: a lone surrogate has
+ *   no UTF-8, so no URL can carry it.
  */
 export function isAddressableKey(key: string): boolean {
-  return !key.split("/").some(isDotSegment);
-}
-
-function isDotSegment(segment: string): boolean {
-  return /^(?:\.|%2e){1,2}$/i.test(segment);
+  if (!(key as string & { isWellFormed(): boolean }).isWellFormed()) {
+    return false;
+  }
+  return !key.split("/").some((segment) => segment === "." || segment === "..");
 }
 
 /**

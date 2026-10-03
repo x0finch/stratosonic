@@ -185,15 +185,16 @@ export function emptyBody(object: StoredObject): StoredBody {
 /**
  * A key the storage cannot name in a request, raised before any request is
  * made. Over the S3 API that is a key with a `.` or `..` segment, which the
- * URL parser would collapse into another object's path
- * (storage/presign.ts, `objectUrl`). It is a property of the key, not a
- * failure of the bucket: the scan counts such an object broken.
+ * URL parser would collapse into another object's path, or one with a lone
+ * surrogate, which has no UTF-8 (storage/presign.ts, `isAddressableKey`).
+ * It is a property of the key, not a failure of the bucket: the scan counts
+ * such an object broken.
  */
 export class UnaddressableKeyError extends Error {
   readonly key: string;
 
   constructor(key: string) {
-    super("the key has a dot segment, which a path-style URL cannot carry");
+    super("the key cannot be carried in a path-style URL");
     this.name = "UnaddressableKeyError";
     this.key = key;
   }

@@ -30,7 +30,7 @@ import { BASE, testEnv } from "./support";
  * which records the change once R2 has taken the files, through the Worker's
  * app over the pool's D1, R2 and scan driver, each recorded by the harness
  * (test/files-support.ts). The signatures themselves are checked against an
- * independent SigV4 in test/files-sign.test.ts; miniflare has no S3 endpoint,
+ * independent SigV4 in test/storage-presign.test.ts; miniflare has no S3 endpoint,
  * so no URL is sent anywhere.
  *
  * Every credential here is made up (`UPLOADS_ENV`).
@@ -553,6 +553,28 @@ describe("POST /api/files/uploads", () => {
     expect(uploads[0]).toMatchObject({ error: "invalid_path" });
     expect(signed(uploads[1]).key).toBe("Artist/02 Fine.flac");
     expect(harness.r2Calls).toEqual([{ method: "head", argument: "Artist/02 Fine.flac" }]);
+  });
+
+  it("signs a key with a %2e segment, which is a name and never a dot segment", async () => {
+    // Encoded, `%` is `%25`, so the URL parser has nothing to collapse.
+    const keys = ["%2E%2E/x.mp3", "a/%2e/x.mp3", "x/%2e%2E/y.flac"];
+    const { status, uploads } = await sign([
+      ...keys.map((key) => ({ key, size: 10 })),
+      { key: "a/../x.mp3", size: 10 },
+      { key: "a/./x.mp3", size: 10 },
+    ]);
+
+    expect(status).toBe(200);
+    for (const [index, key] of keys.entries()) {
+      const upload = signed(uploads[index]);
+      expect(upload.key).toBe(key);
+      expect(new URL(upload.url).pathname).toBe(canonicalObjectPath("navidrome", key));
+    }
+    // Literal dot segments are still refused before anything is signed.
+    expect(uploads.slice(3)).toEqual([
+      { key: "a/../x.mp3", error: "invalid_path" },
+      { key: "a/./x.mp3", error: "invalid_path" },
+    ]);
   });
 
   it("refuses every malformed key with invalid_path or path_too_long, and heads none", async () => {
