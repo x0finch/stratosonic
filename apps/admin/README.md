@@ -341,13 +341,18 @@ credentials, **Upload**.
 - **Conflicts are settled before anything uploads** (#141, as Drive,
   OneDrive and Windows settle them). Once a pick is planned, the page asks
   `POST /api/files/uploads/check` which of its keys exist (one request per
-  folder prefix, up to 1,000 keys each), while **Upload** shows a spinner
+  folder prefix, up to 500 keys each), while **Upload** shows a spinner
   and "Checking 25 files…"; focus comes back to **Upload** when it ends.
-  The server lists at most 2,000 entries a request and answers the rest
-  `unchecked`, so those keys are asked again, each request with a fresh
-  budget, while every round checks more: a pick across many folders takes
-  a few requests. A folder too large to list to its end (over 2,000
-  entries) is set aside, and its files may exist. With no conflict and
+  The server lists at most 2,000 entries a request, looks for a few more
+  keys one `HeadObject` each, and answers the rest `unchecked`, so those
+  keys are asked again, each distinct key once a round and each request
+  with a fresh budget, while every round checks more: a pick across many
+  folders, or into a large flat one, takes a few requests. A round that
+  checks nothing sets the first folder of each request aside, and after
+  20 rounds whatever is left is set aside too; those files may exist. A
+  pick of two files that map to one key (a disk that keeps both Unicode
+  spellings of a name) uploads the first, and the second fails with
+  "another file in this pick has the same name". With no conflict and
   nothing unchecked the files go at once, never with `overwrite`.
   Otherwise one dialog (`src/components/files/conflict-dialog.tsx`) asks
   once for all of them: "3 of 25 files already exist", up to ten names,
@@ -433,7 +438,7 @@ scheduled or running, with `library:read`, at the Overview's pace (every
 30 s, every 10 s while a pass runs). Nothing else is polled, a return to
 the tab reads nothing, a hidden tab reads nothing, and once signed out the
 page reads nothing more. An upload costs its share of one check request
-(up to 1,000 files; one Class A listing a folder on the server), its
+(up to 500 files; one Class A listing a folder on the server), its
 share of one sign request (1–3 files), one `PUT` straight to R2 (no Worker
 request), and its share of one complete request (up to 10 landed
 files). Each `PUT` also has its own CORS preflight, to R2
