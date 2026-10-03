@@ -11,6 +11,7 @@ import { attachmentDisposition, baseName } from "../media/content-disposition";
 import { coverContentType, declaredCoverContentType } from "../media/images";
 import { headStoredObject, serveStoredObject } from "../media/objects";
 import { findCoverKey } from "../media/repository";
+import { bindingStorage, boundStorage } from "../storage/binding";
 import { requiredParameter } from "../subsonic/params";
 import { SubsonicError, SubsonicErrorCode } from "../subsonic/response";
 import type { AuthenticatedSubsonicRequest, SubsonicHandler } from "../subsonic/router";
@@ -42,9 +43,10 @@ const ARTWORK_NOT_FOUND = "Artwork not found";
  */
 export const stream: SubsonicHandler = async (request) => {
   const track = await requireTrack(request);
-  const head = await headStoredObject(request.env, track.r2Key);
+  const storage = bindingStorage(request.env);
+  const head = await headStoredObject(storage, track.r2Key);
 
-  return serveStoredObject(request.env, track.r2Key, head, request.raw, {
+  return serveStoredObject(storage, track.r2Key, head, request.raw, {
     contentType: audioContentType(track.suffix) ?? UNKNOWN_CONTENT_TYPE,
   });
 };
@@ -59,9 +61,10 @@ export const stream: SubsonicHandler = async (request) => {
  */
 export const download: SubsonicHandler = async (request) => {
   const track = await requireTrack(request);
-  const head = await headStoredObject(request.env, track.r2Key);
+  const storage = bindingStorage(request.env);
+  const head = await headStoredObject(storage, track.r2Key);
 
-  return serveStoredObject(request.env, track.r2Key, head, request.raw, {
+  return serveStoredObject(storage, track.r2Key, head, request.raw, {
     contentType: audioContentType(track.suffix) ?? UNKNOWN_CONTENT_TYPE,
     contentDisposition: attachmentDisposition(baseName(track.r2Key)),
   });
@@ -133,8 +136,10 @@ async function serveCover(env: Env, entity: EntityId, raw: Request): Promise<Res
   }
 
   // An album can name a cover the bucket no longer holds, which is the same
-  // "no artwork" to a client as an album that never had one.
-  const head = await env.MUSIC.head(key);
+  // "no artwork" to a client as an album that never had one. Every library's
+  // covers are in the bound bucket.
+  const covers = boundStorage(env);
+  const head = await covers.head(key);
   if (head === null) {
     return null;
   }
@@ -143,9 +148,11 @@ async function serveCover(env: Env, entity: EntityId, raw: Request): Promise<Res
   // the image's signature would spend a second R2 operation on a response
   // that carries no image. Such a request is told what the object says it is.
   const contentType =
-    raw.method === "HEAD" ? declaredCoverContentType(head) : await coverContentType(env, key, head);
+    raw.method === "HEAD"
+      ? declaredCoverContentType(head)
+      : await coverContentType(covers, key, head);
 
-  return serveStoredObject(env, key, head, raw, { contentType });
+  return serveStoredObject(covers, key, head, raw, { contentType });
 }
 
 /**

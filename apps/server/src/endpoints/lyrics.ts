@@ -22,6 +22,7 @@ import {
   readSidecarLyricsWithSuffix,
   SIDECAR_SUFFIXES,
 } from "../lyrics/sidecar";
+import { bindingStorage } from "../storage/binding";
 import { requiredParameter } from "../subsonic/params";
 import { SubsonicError, SubsonicErrorCode, type SubsonicNode } from "../subsonic/response";
 import type { SubsonicHandler } from "../subsonic/router";
@@ -66,9 +67,10 @@ export const getLyrics: SubsonicHandler = async (request) => {
   // Source first, then candidate, as Navidrome's `getLyricsForCandidates`
   // nests them: an older take's `.lrc` beats the newest take's `.txt`, and
   // any sidecar beats a lyric in the tags.
+  const storage = bindingStorage(request.env);
   for (const suffix of SIDECAR_SUFFIXES) {
     for (const candidate of candidates) {
-      const lyrics = await readSidecarLyricsWithSuffix(request.env, candidate.r2Key, suffix);
+      const lyrics = await readSidecarLyricsWithSuffix(storage, candidate.r2Key, suffix);
 
       if (lyrics !== null) {
         return plainLyricsElement(artist, title, lyrics);
@@ -106,7 +108,8 @@ export const getLyricsBySongId: SubsonicHandler = async (request) => {
     throw new SubsonicError(SubsonicErrorCode.NotFound, TRACK_NOT_FOUND);
   }
 
-  const lyrics = (await readSidecarLyrics(request.env, song.r2Key)) ?? embeddedLyrics(song);
+  const lyrics =
+    (await readSidecarLyrics(bindingStorage(request.env), song.r2Key)) ?? embeddedLyrics(song);
 
   return {
     lyricsList:

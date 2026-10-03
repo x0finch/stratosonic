@@ -12,7 +12,8 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAX_JSON_BODY_BYTES } from "../src/api/json-body";
 import { database } from "../src/db";
 import type { Env } from "../src/env";
-import { erasePlaylistFiles, R2_DELETE_KEYS_PER_CALL } from "../src/playlists/writes";
+import { erasePlaylistFiles } from "../src/playlists/writes";
+import { DELETE_KEYS_PER_CALL } from "../src/storage/storage";
 import {
   type CookieJar,
   GUEST_ROLE,
@@ -395,16 +396,16 @@ describe("erasePlaylistFiles", () => {
     return { env, calls };
   }
 
-  it(`deletes at most ${R2_DELETE_KEYS_PER_CALL} keys per R2 call`, async () => {
+  it(`deletes at most ${DELETE_KEYS_PER_CALL} keys per R2 call`, async () => {
     const keys = Array.from(
-      { length: R2_DELETE_KEYS_PER_CALL + 1 },
+      { length: DELETE_KEYS_PER_CALL + 1 },
       (_, index) => `playlists/${index}.m3u`,
     );
     const { env, calls } = recordingBucket();
 
     await erasePlaylistFiles(env, keys);
 
-    expect(calls.map((call) => call.length)).toEqual([R2_DELETE_KEYS_PER_CALL, 1]);
+    expect(calls.map((call) => call.length)).toEqual([DELETE_KEYS_PER_CALL, 1]);
     expect(calls.flat()).toEqual(keys);
   });
 

@@ -5,15 +5,17 @@
  * the library needs to know about it - its tags, its cover, the numbers a
  * duration is derived from - sits in a few kilobytes of header. A `ByteSource`
  * is the one thing the metadata extractor is given: a size, and a way to ask
- * for a range. The scan backs it with `r2Source`, which turns a range into an
- * R2 `get()`; a test backs it with bytes it already holds. Nothing downstream
- * of this interface knows which.
+ * for a range. The scan backs it with `storageSource`, which turns a range
+ * into a storage `get()`; a test backs it with bytes it already holds.
+ * Nothing downstream of this interface knows which.
  *
  * Every underlying read is a Cloudflare subrequest, and a scheduled run has a
  * budget of them, so `chunkedSource` sits between the parser - which asks for
  * four bytes at a time - and the object, and turns those many small reads into
  * a handful of large ones.
  */
+
+import type { LibraryStorage } from "../storage/storage";
 
 /** A stored object of a known size, readable a range at a time. */
 export interface ByteSource {
@@ -144,18 +146,19 @@ export function chunkedSource(source: ByteSource, options: ChunkedSourceOptions 
 }
 
 /**
- * A source over an object in the R2 bucket.
+ * A source over an object in a library's bucket.
  *
- * This is the one the scan uses, and the only place a range becomes an R2
- * request. `size` comes from the listing or the `head()` the scan already
- * did, so nothing here asks R2 how long the object is.
+ * This is the one the scan uses, and the only place a range becomes a
+ * storage read (storage/storage.ts, `get`). `size` comes from the listing or
+ * the `head()` the scan already did, so nothing here asks the bucket how
+ * long the object is.
  *
  * The object can go away between the listing and the read - someone deletes a
- * file with rclone mid-scan - and R2 answers that with `null` rather than an
- * error, which would otherwise surface as a parser complaining about empty
- * bytes.
+ * file with rclone mid-scan - and the bucket answers that with `null` rather
+ * than an error, which would otherwise surface as a parser complaining about
+ * empty bytes.
  */
-export function r2Source(bucket: R2Bucket, key: string, size: number): ByteSource {
+export function storageSource(storage: LibraryStorage, key: string, size: number): ByteSource {
   return {
     size,
 
@@ -166,12 +169,12 @@ export function r2Source(bucket: R2Bucket, key: string, size: number): ByteSourc
         return new Uint8Array(0);
       }
 
-      const object = await bucket.get(key, { range: { offset: start, length: wanted } });
+      const object = await storage.get(key, { offset: start, length: wanted });
       if (!object) {
         throw new Error(`${key} is no longer in the bucket`);
       }
 
-      return new Uint8Array(await object.arrayBuffer());
+      return object.bytes();
     },
   };
 }

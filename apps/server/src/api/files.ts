@@ -3,13 +3,7 @@ import { requireFreshSession, requirePermission, requireSession } from "../conso
 import { database } from "../db";
 import type { Env } from "../env";
 import { CHECK_BATCH, type ExistingKey, groupCheckKeys, matchListing } from "../files/check";
-import {
-  bucketName,
-  fileWritesEnabled,
-  requireFileWrites,
-  type UploadsConfig,
-  uploadsStatus,
-} from "../files/config";
+import { bucketName, fileWritesEnabled, requireFileWrites, uploadsStatus } from "../files/config";
 import {
   ALLOWED,
   checkBrowsePrefix,
@@ -29,9 +23,10 @@ import {
 } from "../files/keys";
 import { RESCAN_QUIET_MS, recordLibraryChange, type ScanSchedule } from "../files/library-change";
 import { folderListing, playlistKeysOf } from "../files/listing";
-import { type PresignedUpload, presignUpload } from "../files/sign";
+import type { PresignedUpload } from "../files/sign";
 import { deletePlaylistRowsByKeys } from "../playlists/repository";
-import { eraseObjects } from "../playlists/writes";
+import { bindingStorage } from "../storage/binding";
+import type { LibraryStorage, StorageListing } from "../storage/storage";
 import type { ApiApp } from "./app";
 import {
   invalidRequest,
@@ -45,8 +40,9 @@ import { requireSameOrigin } from "./same-origin";
 /**
  * The console's Files page (#83): the bound bucket, `MUSIC`, browsed one
  * folder at a time, files and folders deleted from it, and files uploaded to
- * it. An upload's bytes go from the browser straight to R2, with a URL this
- * API presigns (files/sign.ts), and never through the Worker.
+ * it, all through its storage (storage/binding.ts). An upload's bytes go from
+ * the browser straight to R2, with a URL the storage presigns
+ * (`presignPut`, files/sign.ts), and never through the Worker.
  *
  * R2 has no folders: a folder is a common key prefix ending in `/`, as a
  * delimited listing reports it. Keys are used exactly as R2 lists them, never
@@ -298,9 +294,14 @@ export function registerFileRoutes(api: ApiApp): void {
     }
 
     const cursor = c.req.query("cursor") || undefined;
-    let listing: R2Objects;
+    let listing: StorageListing;
     try {
-      listing = await c.env.MUSIC.list({ prefix, delimiter: "/", limit: BROWSE_PAGE, cursor });
+      listing = await bindingStorage(c.env).list({
+        prefix,
+        delimiter: "/",
+        limit: BROWSE_PAGE,
+        cursor,
+      });
     } catch (error) {
       if (cursor === undefined) {
         throw error;
@@ -328,7 +329,7 @@ export function registerFileRoutes(api: ApiApp): void {
     }
 
     const distinct = [...new Set(keys)];
-    await eraseObjects(c.env, distinct);
+    await bindingStorage(c.env).delete(distinct);
     const scan = await afterDelete(c.env, distinct);
 
     return c.json({ deleted: distinct.length, scan });
@@ -355,17 +356,18 @@ export function registerFileRoutes(api: ApiApp): void {
       return refused(c, refusal);
     }
 
+    const storage = bindingStorage(c.env);
     // The keys of every delete call that succeeded.
     const deleted: string[] = [];
     let done = false;
     let completed = false;
     try {
       for (let page = 0; page < FOLDER_DELETE_PAGES && !done; page++) {
-        const listing = await c.env.MUSIC.list({ prefix, limit: FOLDER_DELETE_PAGE });
+        const listing = await storage.list({ prefix, limit: FOLDER_DELETE_PAGE });
         const keys = listing.objects.map((object) => object.key);
-        await eraseObjects(c.env, keys);
+        await storage.delete(keys);
         deleted.push(...keys);
-        done = !listing.truncated;
+        done = listing.cursor === null;
       }
       completed = true;
     } finally {
@@ -411,8 +413,9 @@ export function registerFileRoutes(api: ApiApp): void {
 
     // One instant for the whole batch: every URL expires together.
     const now = Date.now();
+    const storage = bindingStorage(c.env);
     const uploads = await mapInFlight(requested, HEADS_IN_FLIGHT, (file) =>
-      signUpload(c.env, status.config, prefix, file, now),
+      signUpload(storage, prefix, file, now),
     );
 
     return c.json({ uploads });
@@ -434,7 +437,7 @@ export function registerFileRoutes(api: ApiApp): void {
       return refused(c, prefixRefusal);
     }
 
-    return c.json(await checkExisting(c.env, prefix, keys));
+    return c.json(await checkExisting(bindingStorage(c.env), prefix, keys));
   });
 
   /**
@@ -533,8 +536,7 @@ function readUploadRequests(files: unknown): UploadRequest[] | null {
  * key exactly as R2 stores it.
  */
 async function signUpload(
-  env: Env,
-  config: UploadsConfig,
+  storage: LibraryStorage,
   prefix: string,
   file: UploadRequest,
   now: number,
@@ -550,7 +552,7 @@ async function signUpload(
 
   // One Class B operation. R2 treats NFC-equivalent keys as one object, so
   // this finds an object stored under another spelling too.
-  const stored = await env.MUSIC.head(checked.key);
+  const stored = await storage.head(checked.key);
   if (stored !== null && !file.overwrite) {
     return {
       key: checked.key,
@@ -561,15 +563,18 @@ async function signUpload(
 
   // The lookup compares in NFC, whatever spelling the prefix kept.
   const key =
-    stored === null ? checked.key : await storedSpelling(env, checked.key.normalize("NFC"));
+    stored === null ? checked.key : await storedSpelling(storage, checked.key.normalize("NFC"));
   if (key === null) {
     return { key: checked.key, error: "replace_unavailable" };
   }
-  const presigned = await presignUpload(
-    config,
+  const presigned = await storage.presignPut(
     { key, size: file.size, contentType: checked.contentType, replace: stored !== null },
     now,
   );
+  if (presigned === null) {
+    // The route checked that uploads are configured before signing anything.
+    throw new Error("files: uploads stopped being configured mid-request");
+  }
 
   return { key, ...presigned };
 }
@@ -599,7 +604,7 @@ async function signUpload(
  * Null when a lookup finds no match (not in the pages listed), more than
  * one, or would make more than `SPELLING_LISTINGS` listings in all.
  */
-async function storedSpelling(env: Env, key: string): Promise<string | null> {
+async function storedSpelling(storage: LibraryStorage, key: string): Promise<string | null> {
   const segments = key.split("/");
   const name = segments.pop() ?? "";
   let budget = SPELLING_LISTINGS;
@@ -611,7 +616,7 @@ async function storedSpelling(env: Env, key: string): Promise<string | null> {
       resolved += `${segment}/`;
       continue;
     }
-    const lookup = await lookUpSpelling(env, resolved, segment, "folder", budget);
+    const lookup = await lookUpSpelling(storage, resolved, segment, "folder", budget);
     if (lookup.found === null) {
       return null;
     }
@@ -623,7 +628,7 @@ async function storedSpelling(env: Env, key: string): Promise<string | null> {
   if (hasOneSpelling(name) && !lookedUp) {
     return resolved + name;
   }
-  const lookup = await lookUpSpelling(env, resolved, name, "object", budget);
+  const lookup = await lookUpSpelling(storage, resolved, name, "object", budget);
 
   return lookup.found;
 }
@@ -636,7 +641,7 @@ async function storedSpelling(env: Env, key: string): Promise<string | null> {
  * than one.
  */
 async function lookUpSpelling(
-  env: Env,
+  storage: LibraryStorage,
   parent: string,
   segment: string,
   kind: "folder" | "object",
@@ -647,10 +652,10 @@ async function lookUpSpelling(
   let cursor: string | undefined;
 
   while (listings < Math.min(budget, SPELLING_PAGES_PER_SEGMENT)) {
-    const listing = await env.MUSIC.list({ prefix, delimiter: "/", limit: SPELLING_PAGE, cursor });
+    const listing = await storage.list({ prefix, delimiter: "/", limit: SPELLING_PAGE, cursor });
     listings++;
     const entries =
-      kind === "folder" ? listing.delimitedPrefixes : listing.objects.map((object) => object.key);
+      kind === "folder" ? listing.prefixes : listing.objects.map((object) => object.key);
     const matches = entries.filter((entry) => {
       if (!entry.startsWith(parent)) {
         return false;
@@ -659,7 +664,7 @@ async function lookUpSpelling(
       // An ASCII name is its own NFC: no need to normalise it.
       return isAscii(entryName) ? entryName === segment : entryName.normalize("NFC") === segment;
     });
-    if (matches.length > 0 || !listing.truncated) {
+    if (matches.length > 0 || listing.cursor === null) {
       return { found: matches.length === 1 ? (matches[0] ?? null) : null, listings };
     }
     cursor = listing.cursor;
@@ -701,7 +706,7 @@ async function mapInFlight<T, R>(
  * the upload rules refuse is in neither list.
  */
 async function checkExisting(
-  env: Env,
+  storage: LibraryStorage,
   prefix: string,
   keys: readonly string[],
 ): Promise<{ existing: ExistingKey[]; unchecked: string[] }> {
@@ -713,16 +718,16 @@ async function checkExisting(
   for (const [folder, names] of folders) {
     let cursor: string | undefined;
     while (names.size > 0 && listings < CHECK_LISTINGS && entries > 0) {
-      const listing = await env.MUSIC.list({
+      const listing = await storage.list({
         prefix: folder,
         delimiter: "/",
         limit: Math.min(CHECK_PAGE, entries),
         cursor,
       });
       listings++;
-      entries -= listing.objects.length + listing.delimitedPrefixes.length;
+      entries -= listing.objects.length + listing.prefixes.length;
       matchListing(folder, names, listing.objects, existing);
-      if (!listing.truncated) {
+      if (listing.cursor === null) {
         // Listed to its end: no other key of it exists.
         names.clear();
         break;
@@ -739,7 +744,7 @@ async function checkExisting(
   // are grouped under one name for the listings, but each still gets its
   // own head() here, which R2 answers for either spelling.
   const heads = unknown.slice(0, Math.max(CHECK_CALLS - listings, 0));
-  const found = await mapInFlight(heads, HEADS_IN_FLIGHT, (key) => env.MUSIC.head(key));
+  const found = await mapInFlight(heads, HEADS_IN_FLIGHT, (key) => storage.head(key));
   heads.forEach((key, index) => {
     const object = found[index];
     if (object) {
