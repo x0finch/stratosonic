@@ -66,7 +66,7 @@ async function seedTakes(keys: readonly string[], title: string, artist: string)
 async function seedEmbedded(trackKey: string, text: string, lang = "xxx"): Promise<void> {
   await database(testEnv)
     .insert(trackLyrics)
-    .values({ trackId: trackId(trackKey), text, lang });
+    .values({ trackId: trackId(1, trackKey), text, lang });
 }
 
 beforeAll(async () => {

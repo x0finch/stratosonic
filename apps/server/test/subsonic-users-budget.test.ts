@@ -1,7 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { encryptPassword } from "../src/auth/crypto";
 import { database } from "../src/db";
-import { insertUser } from "../src/users/repository";
 import {
   type CookieJar,
   cost,
@@ -11,7 +10,7 @@ import {
   signIn,
 } from "./console-auth-support";
 import { subsonicUsersHarness } from "./subsonic-users-support";
-import { encryptionKey, testEnv } from "./support";
+import { encryptionKey, insertUser, testEnv } from "./support";
 
 /**
  * What the Subsonic-user routes cost D1 on #82's reference library ("Free-tier
@@ -140,7 +139,7 @@ describe("the Subsonic users' budget on the reference library", () => {
     expect(cost(route)).toEqual({ statements: 1, roundTrips: 1, rowsRead: 34, rowsWritten: 0 });
   });
 
-  it("POST /api/subsonic-users: one statement past the session", async () => {
+  it("POST /api/subsonic-users: one batch past the session, the user and their libraries", async () => {
     const { status, session, route } = await measured("POST", "/subsonic-users", {
       username: "eve",
       password: "pw",
@@ -149,18 +148,33 @@ describe("the Subsonic users' budget on the reference library", () => {
     expect(status).toBe(201);
     expect(session).toEqual(["select session", "select user"]);
     // The admin check stops at the first admin; the row, its primary key and
-    // its `lower(user_name)` index entry are written.
-    expect(rows(route)).toEqual([["insert subsonic_user", 3, 3]]);
+    // its `lower(user_name)` index entry are written. Then the default
+    // library, library 1, is granted: the library row and the new user read,
+    // and the grant's row, its primary key and its `library_id` index entry
+    // written (#84, "Per-user access").
+    expect(rows(route)).toEqual([
+      ["insert subsonic_user", 3, 3],
+      ["insert user_library", 3, 3],
+    ]);
+    expect(cost(route).roundTrips).toBe(1);
   });
 
   it("PATCH /api/subsonic-users/:id: one guarded statement, and a read on refusal", async () => {
+    // A promotion also grants every library, in the same batch: here library
+    // 1, which this user, seeded without libraries, did not have yet.
     const id = userIds[2] ?? "";
     const cases = [
       // The row by primary key, and the answer's playlist count: the user's 4
       // entries in `playlist_owner_id_idx` and the one past them. A rename
       // rewrites the row's index entry too.
       [{ username: "benedict" }, [["update subsonic_user", 7, 2]]],
-      [{ isAdmin: true }, [["update subsonic_user", 7, 1]]],
+      [
+        { isAdmin: true },
+        [
+          ["update subsonic_user", 7, 1],
+          ["insert user_library", 3, 3],
+        ],
+      ],
       // A demotion also looks for another admin, and finds one at once.
       [{ isAdmin: false }, [["update subsonic_user", 8, 1]]],
       [{ username: "ben", isAdmin: false }, [["update subsonic_user", 7, 2]]],

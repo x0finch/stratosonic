@@ -28,7 +28,15 @@
  * what `KEYS_PER_STATEMENT` is for.
  */
 
-import { type Album, album, artist, playlistTrack, track, trackLyrics } from "@stratosonic/db";
+import {
+  type Album,
+  album,
+  artist,
+  DEFAULT_LIBRARY_ID,
+  playlistTrack,
+  track,
+  trackLyrics,
+} from "@stratosonic/db";
 import { and, eq, gt, inArray, lte, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { D1_MAX_BOUND_PARAMETERS } from "../d1-limits";
@@ -92,7 +100,16 @@ export async function findTracksInRange(
     })
     .from(track)
     .leftJoin(trackLyrics, eq(trackLyrics.trackId, track.id))
-    .where(and(gt(track.r2Key, after), through === null ? undefined : lte(track.r2Key, through)))
+    .where(
+      and(
+        // The scan walks library 1, the bound bucket, until it walks every
+        // library (#84, ticket E). Naming it is also what lets the unique
+        // index on `(library_id, r2_key)` serve the range in key order.
+        eq(track.libraryId, DEFAULT_LIBRARY_ID),
+        gt(track.r2Key, after),
+        through === null ? undefined : lte(track.r2Key, through),
+      ),
+    )
     .orderBy(track.r2Key)
     .limit(limit);
 
@@ -185,6 +202,15 @@ export function upsertStatements(db: Database, rows: DerivedRows, now: Date): Sc
           createdAt: rows.track.createdAt,
           updatedAt: rows.track.updatedAt,
         },
+        // The collision guard (ADR-0009). Another library's id hashes its
+        // library id as a leading part, so a library-1 key that begins with
+        // that library's digits and U+200B would hash to the same id. This
+        // leaves such a row alone rather than moving it into this library,
+        // but it guards the track row only: the batch's `lyricsStatement`
+        // still writes the lyrics of that id. Nothing reaches this while
+        // every caller passes library 1; the scan across libraries (#84,
+        // ticket E) must detect the refused upsert before writing the rest.
+        setWhere: sql`${track.libraryId} = excluded.${sql.identifier(track.libraryId.name)}`,
       }),
   ];
 }

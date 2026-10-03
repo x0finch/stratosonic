@@ -48,9 +48,9 @@ const VARIOUS = ["Various Artists/Hits/01 Three.mp3", "Various Artists/Hits/02 F
 
 const LISTENER = { user: "listener", password: "hunter2" };
 
-const song = (key: string) => prefixedId("track", trackId(key));
-const QUIET = prefixedId("album", albumId("Silent Artist", "Quiet Album", 2001));
-const FALLBACK_ALBUM = prefixedId("album", albumId("Fallback Artist", "Fallback Album", null));
+const song = (key: string) => prefixedId("track", trackId(1, key));
+const QUIET = prefixedId("album", albumId(1, "Silent Artist", "Quiet Album", 2001));
+const FALLBACK_ALBUM = prefixedId("album", albumId(1, "Fallback Artist", "Fallback Album", null));
 const MUTE = prefixedId("artist", artistId("Mute Ensemble"));
 const FALLBACK_ARTIST = prefixedId("artist", artistId("Fallback Artist"));
 const CHORUS = prefixedId("artist", artistId("Chorus"));
@@ -86,10 +86,15 @@ beforeAll(async () => {
   ] as const) {
     await seedTrack({ r2Key: key, title });
   }
-  await seedAnnotation({ userId: admin, itemId: trackId(ALPHA), itemType: "track", playCount: 1 });
   await seedAnnotation({
     userId: admin,
-    itemId: trackId(BETA),
+    itemId: trackId(1, ALPHA),
+    itemType: "track",
+    playCount: 1,
+  });
+  await seedAnnotation({
+    userId: admin,
+    itemId: trackId(1, BETA),
     itemType: "track",
     starred: false,
     rating: 5,
@@ -97,7 +102,7 @@ beforeAll(async () => {
   });
   await seedAnnotation({
     userId: admin,
-    itemId: trackId(GAMMA),
+    itemId: trackId(1, GAMMA),
     itemType: "track",
     starred: false,
     rating: 4,
@@ -112,7 +117,12 @@ beforeAll(async () => {
     await seedAlbum({ name: albumName, albumArtist: name, songCount: keys.length });
     for (const key of keys) {
       await seedTrack({ r2Key: key });
-      await seedAnnotation({ userId: admin, itemId: trackId(key), itemType: "track", rating: 5 });
+      await seedAnnotation({
+        userId: admin,
+        itemId: trackId(1, key),
+        itemType: "track",
+        rating: 5,
+      });
     }
   }
 
@@ -174,7 +184,7 @@ describe.each([
 
   it.each([
     ["a song that does not exist", () => song("Nobody/None/01.mp3")],
-    ["an album that does not exist", () => prefixedId("album", albumId("Nobody", "None", null))],
+    ["an album that does not exist", () => prefixedId("album", albumId(1, "Nobody", "None", null))],
     ["an artist that does not exist", () => prefixedId("artist", artistId("Nobody"))],
     ["a malformed id", () => "tr-nope"],
   ])("answers error 70 for %s", async (_label, id) => {

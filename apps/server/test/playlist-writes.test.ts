@@ -30,7 +30,7 @@ const KEYS = [
   "Silent Artist/Quiet Album/03 Three.mp3",
 ];
 
-const SONG_IDS = KEYS.map((key) => prefixedId("track", trackId(key)));
+const SONG_IDS = KEYS.map((key) => prefixedId("track", trackId(1, key)));
 
 const LISTENER: PlaylistCaller = { user: "listener", password: "hunter2" };
 
@@ -41,7 +41,7 @@ let mixKey: string;
 /** The `.m3u` of a playlist this file created, by the playlist's client id. */
 async function fileOf(id: string): Promise<{ key: string; text: string } | null> {
   for (const [key, text] of await playlistObjects()) {
-    if (prefixedId("playlist", playlistId(key)) === id) {
+    if (prefixedId("playlist", playlistId(1, key)) === id) {
       return { key, text };
     }
   }
@@ -246,7 +246,7 @@ describe("what the write endpoints refuse", () => {
   });
 
   it("answers a songId that names no track with error 70, and writes nothing", async () => {
-    const unknown = prefixedId("track", trackId("Nobody/No Album/nothing.mp3"));
+    const unknown = prefixedId("track", trackId(1, "Nobody/No Album/nothing.mp3"));
     const before = await playlistObjects();
 
     const response = await callPlaylists("createPlaylist", [
@@ -270,13 +270,13 @@ describe("what the write endpoints refuse", () => {
   });
 
   it("answers a playlistId that names nothing with error 70", async () => {
-    const unknown = prefixedId("playlist", playlistId("playlists/nowhere.m3u"));
+    const unknown = prefixedId("playlist", playlistId(1, "playlists/nowhere.m3u"));
 
     expect((await callPlaylists("createPlaylist", [["playlistId", unknown]])).error?.code).toBe(70);
   });
 
   it("answers a delete with no id with error 10, and an unknown id with error 70", async () => {
-    const unknown = prefixedId("playlist", playlistId("playlists/nowhere.m3u"));
+    const unknown = prefixedId("playlist", playlistId(1, "playlists/nowhere.m3u"));
 
     expect((await callPlaylists("deletePlaylist", [])).error?.code).toBe(10);
     expect((await callPlaylists("deletePlaylist", [["id", unknown]])).error?.code).toBe(70);
@@ -299,7 +299,7 @@ describe("what the write endpoints refuse", () => {
     const before = (await playlistObjects()).size;
     const tooMany: [string, string][] = Array.from({ length: 1001 }, (_, index) => [
       "songId",
-      prefixedId("track", trackId(`Silent Artist/Quiet Album/never-${index}.mp3`)),
+      prefixedId("track", trackId(1, `Silent Artist/Quiet Album/never-${index}.mp3`)),
     ]);
 
     const response = await callPlaylists("createPlaylist", [["name", "Too Long"], ...tooMany]);

@@ -30,6 +30,7 @@
 import {
   albumId,
   artistId,
+  DEFAULT_LIBRARY_ID,
   type NewAlbum,
   type NewArtist,
   type NewTrack,
@@ -126,8 +127,12 @@ export function deriveRows(object: LibraryObject, metadata: TrackMetadata, now: 
   const year = metadata.year ?? null;
   const genre = metadata.genre ?? null;
 
+  // Every object is in the bound bucket until the scan walks other
+  // libraries (#84, ticket E).
+  const libraryId = DEFAULT_LIBRARY_ID;
   const ofArtist = artistId(albumArtist);
-  const ofAlbum = albumId(albumArtist, albumName, year);
+  const ofAlbum = albumId(libraryId, albumArtist, albumName, year);
+  const ofTrack = trackId(libraryId, object.key);
 
   return {
     artist: {
@@ -153,9 +158,10 @@ export function deriveRows(object: LibraryObject, metadata: TrackMetadata, now: 
       coverKey: null,
       createdAt: object.uploaded,
       updatedAt: now,
+      libraryId,
     },
     track: {
-      id: trackId(object.key),
+      id: ofTrack,
       r2Key: object.key,
       title,
       albumId: ofAlbum,
@@ -177,11 +183,12 @@ export function deriveRows(object: LibraryObject, metadata: TrackMetadata, now: 
       scanVersion: SCAN_VERSION,
       createdAt: object.uploaded,
       updatedAt: now,
+      libraryId,
     },
     lyrics:
       metadata.lyrics === undefined
         ? null
-        : { trackId: trackId(object.key), text: metadata.lyrics.text, lang: metadata.lyrics.lang },
+        : { trackId: ofTrack, text: metadata.lyrics.text, lang: metadata.lyrics.lang },
   };
 }
 

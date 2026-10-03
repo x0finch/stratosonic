@@ -6,9 +6,10 @@ audio headers via Range GET, parses tags, extracts embedded cover art, upserts
 artist/album/track into D1, incrementally, skipping unchanged objects by
 etag+size) and imports `.m3u` playlists from R2. Music is uploaded to R2 out of
 band with rclone; the first admin user is created on first run from the
-`INITIAL_USER` / `INITIAL_PASSWORD` variables. We use only D1, R2, the Cache
-API and one Durable Object (no Queues), and v1 runs on the `workers.dev` domain
-without a custom domain.
+`INITIAL_USER` / `INITIAL_PASSWORD` variables. The Worker binds one bucket,
+library 1; further buckets are reached through the S3 API (ADR-0009). We use
+only D1, R2, the Cache API and one Durable Object (no Queues), and v1 runs on
+the `workers.dev` domain without a custom domain.
 
 **Amendment (#31): one Durable Object drives the scan.** A step of the scan is
 bounded by the free plan's 50 subrequests per invocation, which is about six
@@ -45,3 +46,8 @@ named below, because a cron invocation now only pokes.
 _Supersedes the earlier plan to run ingestion in a local CLI: Workers cron
 triggers make server-side scheduled ingestion possible, which is both simpler
 and closer to Navidrome._
+
+_Amended by ADR-0009: the Worker binds one bucket, which is library 1.
+Further R2 buckets are reached through the S3 API with credentials stored
+in D1, at the same per-step subrequest budget, and the scan spends at most
+`SCAN_DAILY_WRITE_BUDGET` D1 rows a day._

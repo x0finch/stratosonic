@@ -85,7 +85,7 @@ let before: {
 
 beforeAll(async () => {
   const upTo0007 = TEST_MIGRATIONS.filter((migration) => migration.name < "0008");
-  expect(upTo0007).toHaveLength(TEST_MIGRATIONS.length - 1);
+  expect(upTo0007).toHaveLength(8);
   await applyD1Migrations(MIGRATION_DB, upTo0007);
 
   const users = await Promise.all(

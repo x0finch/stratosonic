@@ -57,7 +57,7 @@ function idOf(name: string): string {
     throw new Error(`no seeded album named ${name}`);
   }
 
-  return prefixedId("album", albumId(album.albumArtist, album.name, album.year));
+  return prefixedId("album", albumId(1, album.albumArtist, album.name, album.year));
 }
 
 let admin = "";
@@ -239,13 +239,13 @@ describe("getAlbumList2 starred", () => {
   it("returns the caller's starred albums, most recently starred first", async () => {
     await seedAnnotation({
       userId: admin,
-      itemId: albumId("Meridian", "Beacon", 2005),
+      itemId: albumId(1, "Meridian", "Beacon", 2005),
       itemType: "album",
       starredAt: created(5),
     });
     await seedAnnotation({
       userId: admin,
-      itemId: albumId("Aster", "Delta", 2011),
+      itemId: albumId(1, "Aster", "Delta", 2011),
       itemType: "album",
       starredAt: created(9),
     });
@@ -260,7 +260,7 @@ describe("getAlbumList2 starred", () => {
     const other = await seedUser("listener", "open-sesame");
     await seedAnnotation({
       userId: other,
-      itemId: albumId("Zephyr", "Aurora", 1999),
+      itemId: albumId(1, "Zephyr", "Aurora", 1999),
       itemType: "album",
       starredAt: created(99),
     });
@@ -276,7 +276,7 @@ describe("getAlbumList2 starred", () => {
   it("ignores a row that records something other than a star", async () => {
     await seedAnnotation({
       userId: admin,
-      itemId: albumId("Nimbus", "Fathom", null),
+      itemId: albumId(1, "Nimbus", "Fathom", null),
       itemType: "album",
       starred: false,
       rating: 5,

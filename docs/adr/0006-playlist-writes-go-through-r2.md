@@ -8,8 +8,8 @@ produce the row.
 
 Concretely, a create renders the `.m3u`, `put`s it to R2, and *then* upserts the
 row with the importer's own statements, with the id derived from the key by
-`playlistId(r2Key)` exactly as the import derives it. A delete removes the
-object first and the row second. Both orders follow from one rule: a failure
+`playlistId(libraryId, r2Key)` exactly as the import derives it (ADR-0009). A
+delete removes the object first and the row second. Both orders follow from one rule: a failure
 between the two writes must leave an `.m3u` with no row — which the next pass
 imports — never a row with no file, which the sweep would delete and a listener
 would watch vanish. The timestamps come from the object R2 just stored, not
