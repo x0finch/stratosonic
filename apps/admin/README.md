@@ -226,7 +226,7 @@ uploads"); otherwise they are skipped. They upload a folder into
 `FILES_PREFIX` (two FLACs, their `.lrc` and a cover), see the toast, the
 scan line, the header's Uploads trigger and one row a file in its
 popover, pick one of its files again, see the conflict dialog before
-anything is signed and choose **Replace them**, and delete the folder
+anything is signed and choose **Replace it**, and delete the folder
 again. Each step's note counts the check, sign, complete and `PUT`
 requests its run made. A `.pdf`, refused before any request,
 needs no bucket: that step runs on any Worker whose uploads are
@@ -342,16 +342,23 @@ credentials, **Upload**.
   OneDrive and Windows settle them). Once a pick is planned, the page asks
   `POST /api/files/uploads/check` which of its keys exist (one request per
   folder prefix, up to 1,000 keys each), while **Upload** shows a spinner
-  and "Checking 25 files…". With no conflict the files go at once, never
-  with `overwrite`. With conflicts, one dialog
-  (`src/components/files/conflict-dialog.tsx`) asks once for all of them:
-  "3 of 25 files already exist", up to ten names, each with its stored
-  size and age, then "and 12 more", and **Replace them** (signed with
-  `overwrite: true`, which keeps a track's id), **Skip them** (the rest
-  go) or **Cancel** (nothing goes; so does Escape). There is no choice per
-  file and no "keep both". A key the server could not check (its folder
-  too large to list) goes as new. A check that fails uploads nothing, and
-  its toast says so.
+  and "Checking 25 files…"; focus comes back to **Upload** when it ends.
+  The server lists at most 2,000 entries a request and answers the rest
+  `unchecked`, so those keys are asked again, each request with a fresh
+  budget, while every round checks more: a pick across many folders takes
+  a few requests. A folder too large to list to its end (over 2,000
+  entries) is set aside, and its files may exist. With no conflict and
+  nothing unchecked the files go at once, never with `overwrite`.
+  Otherwise one dialog (`src/components/files/conflict-dialog.tsx`) asks
+  once for all of them: "3 of 25 files already exist", up to ten names,
+  each with its stored size and age, then "and 12 more", a line for the
+  files that "could not be checked, and may already exist" (or, with no
+  conflict, the title "2 of 25 files could not be checked"), and
+  **Replace them** (signed with `overwrite: true`, which keeps a track's
+  id; a key that turns out new is signed as new), **Skip them** (the rest
+  go) or **Cancel** (nothing goes; so does Escape); for one file, **Replace
+  it** and **Skip it**. There is no choice per file and no "keep both". A
+  check that fails uploads nothing, and its toast says so.
 - **A key that appears after the check** (the server's `exists` when it
   signs, or R2's `412` for the `PUT`'s `If-None-Match: *`) fails with
   "uploaded elsewhere just now. Upload it again to replace it.", with no
@@ -367,9 +374,11 @@ credentials, **Upload**.
   "Uploading 3 of 12" (the file the run is on) while a file waits or is
   sent, "2 need attention" once only failures wait, and "Uploads done"
   once everything has finished. It redraws only when those words change.
-  Its accessible name says what the words are about ("Uploading 3 of 12
-  files", "2 uploads need attention"), and in a narrow header the words
-  are cut short rather than overflow. It opens the upload list in the
+  Its accessible name is its words and a hidden suffix that says what they
+  are about ("Uploading 3 of 12 files", "2 need attention in uploads"), so
+  the visible label stays the start of the name (WCAG 2.5.3). In a narrow
+  header it shrinks (`shrink` over the button's own `shrink-0`) and its
+  words are cut short rather than overflow. It opens the upload list in the
   shadcn `Popover`, which never opens by itself: a run's failures are told
   by its toast and by the label. Opening it puts focus on the popover's
   heading, never on a button, so a second Enter cancels nothing; Escape

@@ -81,7 +81,7 @@
  * the scan line, the header's Uploads trigger ("Uploads done") and one row
  * a file in its popover; pick one of its files again, which already
  * exists, see the conflict dialog ("1 of 1 file already exists") before
- * anything is signed, and choose Replace them, which signs it with
+ * anything is signed, and choose Replace it, which signs it with
  * `overwrite`; and delete the folder again. On any Worker with uploads
  * configured (fake credentials will do), they pick a `.pdf` and see it
  * refused before any request, the check's included: the trigger says
@@ -502,14 +502,14 @@ async function pick(page, item, paths) {
 
 /**
  * The header's Uploads trigger (#141), on every page while the upload queue
- * holds a file, by its accessible name ("1 upload needs attention", where
+ * holds a file, by its accessible name ("1 needs attention in uploads", where
  * it shows "1 needs attention"): this one, or whichever it has.
  */
 function uploadsTrigger(page, label) {
   return page.getByRole("button", {
     name:
       label ??
-      /^(Uploading [\d,]+ of [\d,]+ files?|[\d,]+ uploads? needs? attention|Uploads done)$/,
+      /^(Uploading [\d,]+ of [\d,]+ files?|[\d,]+ needs? attention in uploads|Uploads done)$/,
     exact: true,
   });
 }
@@ -1236,7 +1236,7 @@ async function main() {
       await markToasts(page);
       await pick(page, "Files…", join(uploads.dir, "notes.pdf"));
       // The header's trigger says so; the popover never opens by itself.
-      await uploadsTrigger(page, "1 upload needs attention").waitFor();
+      await uploadsTrigger(page, "1 needs attention in uploads").waitFor();
       await expectToast(page, "1 file was not uploaded");
       check((await uploadsPopover(page).count()) === 0, "the Uploads popover opened by itself");
       // The folder stays the page's one block: no h2, no region.
@@ -1291,6 +1291,12 @@ async function main() {
         const counted = countUploadRequests(page);
         await markToasts(page);
         await pick(page, "Folder…", join(uploads.dir, "walkthrough upload"));
+        // "Checking 5 files…" ends with no conflict: Upload has its focus back.
+        await page.getByRole("button", { name: "Upload", exact: true }).first().waitFor();
+        check(
+          await page.evaluate(() => document.activeElement?.hasAttribute("data-upload-trigger")),
+          "Upload lost its focus to the check",
+        );
         await expectToast(page, "Uploaded 5 files");
         await uploadsTrigger(page, "Uploads done").waitFor();
         await page.getByText(SCAN_LINE).first().waitFor();
@@ -1314,7 +1320,7 @@ async function main() {
     );
 
     await step(
-      "Files: picking a file that exists asks first, and Replace them replaces it",
+      "Files: picking a file that exists asks first, and Replace it replaces it",
       async () => {
         if (!uploads.on) {
           return "skipped";
@@ -1338,11 +1344,11 @@ async function main() {
         );
         await shot(page, "files-upload-exists");
         await markToasts(page);
-        await dialog.getByRole("button", { name: "Replace them" }).click();
+        await dialog.getByRole("button", { name: "Replace it" }).click();
         await expectToast(page, "Uploaded 1 file");
         check(
           counted.overwrite === 1,
-          `Replace them signed ${counted.overwrite} file(s) with overwrite, not 1`,
+          `Replace it signed ${counted.overwrite} file(s) with overwrite, not 1`,
         );
         await uploadsTrigger(page, "Uploads done").waitFor();
         await clearUploads(page);
@@ -1424,7 +1430,7 @@ async function main() {
         writeFileSync(join(dir, "notes.pdf"), "%PDF-1.4\n");
         try {
           await pick(page, "Files…", join(dir, "notes.pdf"));
-          await uploadsTrigger(page, "1 upload needs attention").waitFor();
+          await uploadsTrigger(page, "1 needs attention in uploads").waitFor();
         } finally {
           rmSync(dir, { recursive: true, force: true });
         }
