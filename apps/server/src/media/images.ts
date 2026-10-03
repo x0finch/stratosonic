@@ -10,7 +10,7 @@
  * the tag would have said anyway.
  */
 
-import type { Env } from "../env";
+import type { LibraryStorage, StoredObject } from "../storage/storage";
 
 /** Enough bytes for every signature below, RIFF's trailing marker included. */
 const SIGNATURE_LENGTH = 12;
@@ -30,11 +30,11 @@ const UNKNOWN_IMAGE_TYPE = "application/octet-stream";
  * image, and otherwise nothing better than "bytes".
  *
  * This is the whole answer for a HEAD, which must cost the `head()` and
- * nothing else — reading the signature would spend a second R2 operation on a
- * request that carries no body.
+ * nothing else — reading the signature would spend a second bucket operation
+ * on a request that carries no body.
  */
-export function declaredCoverContentType(head: R2Object): string {
-  const stored = head.httpMetadata?.contentType;
+export function declaredCoverContentType(head: StoredObject): string {
+  const stored = head.contentType;
 
   return stored?.startsWith("image/") ? stored : UNKNOWN_IMAGE_TYPE;
 }
@@ -43,7 +43,11 @@ export function declaredCoverContentType(head: R2Object): string {
  * The content type of a cover object: what it was stored with, or what its
  * first bytes say it is.
  */
-export async function coverContentType(env: Env, key: string, head: R2Object): Promise<string> {
+export async function coverContentType(
+  covers: LibraryStorage,
+  key: string,
+  head: StoredObject,
+): Promise<string> {
   const declared = declaredCoverContentType(head);
   if (declared !== UNKNOWN_IMAGE_TYPE) {
     return declared;
@@ -56,12 +60,12 @@ export async function coverContentType(env: Env, key: string, head: R2Object): P
     return UNKNOWN_IMAGE_TYPE;
   }
 
-  const probe = await env.MUSIC.get(key, { range: { offset: 0, length } });
+  const probe = await covers.get(key, { offset: 0, length });
   if (probe === null) {
     return UNKNOWN_IMAGE_TYPE;
   }
 
-  return sniffImageType(new Uint8Array(await probe.arrayBuffer()));
+  return sniffImageType(await probe.bytes());
 }
 
 /** The format these leading bytes belong to. */

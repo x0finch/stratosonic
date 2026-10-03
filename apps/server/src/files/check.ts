@@ -1,7 +1,8 @@
+import type { StoredObject } from "../storage/storage";
 import { checkUploadKey, isAscii } from "./keys";
 
 /**
- * The upload check's own work (#141), apart from its R2 calls so
+ * The upload check's own work (#141), apart from its storage calls so
  * scripts/bench-files.ts can time it: which keys to look for, grouped by
  * the folder they are listed in, and which of a listing's objects they
  * are. The route (api/files.ts, `POST /api/files/uploads/check`) makes the
@@ -66,11 +67,7 @@ export function groupCheckKeys(prefix: string, keys: readonly string[]): CheckGr
 }
 
 /** One object of a listing, as the check reads it. */
-export interface ListedObject {
-  readonly key: string;
-  readonly size: number;
-  readonly uploaded: Date;
-}
+export type ListedObject = Pick<StoredObject, "key" | "size" | "uploaded">;
 
 /**
  * Matches one listing page of `folder` against the names still looked for

@@ -31,6 +31,8 @@
 import { newRandomId, playlistId } from "@stratosonic/db";
 import type { Database } from "../db";
 import type { Env } from "../env";
+import { bindingStorage } from "../storage/binding";
+import { DELETE_KEYS_PER_CALL } from "../storage/storage";
 import { playlistNameForFile, renderM3u } from "./m3u";
 import {
   deletePlaylistRow,
@@ -82,7 +84,7 @@ export async function writePlaylist(env: Env, db: Database, write: PlaylistWrite
     write.tracks.map((entry) => entry.r2Key),
   );
 
-  const object = await env.MUSIC.put(write.r2Key, new TextEncoder().encode(text));
+  const object = await bindingStorage(env).put(write.r2Key, new TextEncoder().encode(text));
   if (object === null) {
     // R2 refused the write. Nothing goes to D1: a row whose file does not
     // exist is the one state this order exists to avoid.
@@ -127,39 +129,30 @@ export async function erasePlaylist(
   id: string,
   r2Key: string,
 ): Promise<void> {
-  await env.MUSIC.delete(r2Key);
+  await bindingStorage(env).delete([r2Key]);
   await deletePlaylistRow(db, id);
 }
 
 /**
  * The most keys one R2 `delete` takes (the Workers R2 API reference,
- * `R2Bucket.delete`).
+ * `R2Bucket.delete`), which the storage's `delete` splits its keys by.
  */
-export const R2_DELETE_KEYS_PER_CALL = 1000;
+export const R2_DELETE_KEYS_PER_CALL = DELETE_KEYS_PER_CALL;
 
 /**
- * Removes many objects, in one R2 binding call per thousand keys, and none
- * for no key. Deleting a key that is not there is not an error, and
- * `DeleteObject` is a free R2 operation. The keys are used exactly as given:
- * they name what a listing returned (files/keys.ts).
+ * Removes many playlists' files, in one R2 binding call per thousand keys,
+ * and none for no key (storage/storage.ts, `delete`). Deleting a key that is
+ * not there is not an error, and `DeleteObject` is a free R2 operation. The
+ * keys are used exactly as given: they name what a listing returned
+ * (files/keys.ts). A binding call counts against the Worker's 1,000 internal
+ * subrequests, not its 50 external ones.
  *
- * A binding call counts against the Worker's 1,000 internal subrequests, not
- * its 50 external ones. A call R2 fails throws; the keys of the calls before
- * it are gone.
- */
-export async function eraseObjects(env: Env, r2Keys: readonly string[]): Promise<void> {
-  for (let start = 0; start < r2Keys.length; start += R2_DELETE_KEYS_PER_CALL) {
-    await env.MUSIC.delete(r2Keys.slice(start, start + R2_DELETE_KEYS_PER_CALL));
-  }
-}
-
-/**
- * Removes many playlists' files (`eraseObjects`). The rows are the caller's
- * to delete afterwards, in the order `erasePlaylist` keeps and for its
- * reason: a crash in between leaves rows whose files have gone, which the
- * next sweep removes, never a file that the next pass would bring back as a
- * playlist. A call R2 fails throws, and the rows stay.
+ * The rows are the caller's to delete afterwards, in the order
+ * `erasePlaylist` keeps and for its reason: a crash in between leaves rows
+ * whose files have gone, which the next sweep removes, never a file that the
+ * next pass would bring back as a playlist. A call R2 fails throws, and the
+ * rows stay.
  */
 export function erasePlaylistFiles(env: Env, r2Keys: readonly string[]): Promise<void> {
-  return eraseObjects(env, r2Keys);
+  return bindingStorage(env).delete(r2Keys);
 }

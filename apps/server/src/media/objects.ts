@@ -1,21 +1,20 @@
 /**
- * Serving one R2 object to a client, whole or in part.
+ * Serving one stored object to a client, whole or in part.
  *
- * R2 gives us the bytes and almost none of the headers: `writeHttpMetadata`
- * writes only what was stored with the object, never `Content-Length`,
- * `Content-Range` or `Accept-Ranges`, and `get()` throws when the range it is
- * given lies outside the object. So every response is built here — `head()`
- * first for the size and the etag, the range decided against that size, and
- * only then a `get()` with a range R2 can serve — and the body is passed to
- * the `Response` as the stream R2 returned, never read into memory: a Worker
- * has 128 MB and a FLAC album side does not fit in it.
+ * The bucket gives us the bytes and almost none of the headers: never
+ * `Content-Length`, `Content-Range` or `Accept-Ranges`. So every response is
+ * built here — `head()` first for the size and the etag, the range decided
+ * against that size, and only then a `get()` of exactly that range — and the
+ * body is passed to the `Response` as the stream the bucket returned, never
+ * read into memory: a Worker has 128 MB and a FLAC album side does not fit
+ * in it.
  */
 
-import type { Env } from "../env";
+import type { LibraryStorage, StoredObject } from "../storage/storage";
 import { SubsonicError, SubsonicErrorCode } from "../subsonic/response";
 import { contentRange, parseByteRange, unsatisfiedContentRange } from "./range";
 
-/** What to say about the bytes, beyond what R2 already knows. */
+/** What to say about the bytes, beyond what the bucket already knows. */
 export interface StoredObjectHeaders {
   /** The content type the client is told, decided by the caller. */
   readonly contentType: string;
@@ -24,15 +23,20 @@ export interface StoredObjectHeaders {
 }
 
 /**
- * What R2 knows about an object, or error 70 when it holds no such object.
+ * What the bucket knows about an object, or error 70 when it holds no such
+ * object.
  *
  * A track's row can outlive the object it names — the bucket is written to out
  * of band with rclone, and a scan may not have swept the deletion yet — so
  * "not found" here is an ordinary answer, reported inside the envelope as any
  * other missing thing is.
  */
-export async function headStoredObject(env: Env, key: string, message?: string): Promise<R2Object> {
-  const head = await env.MUSIC.head(key);
+export async function headStoredObject(
+  storage: LibraryStorage,
+  key: string,
+  message?: string,
+): Promise<StoredObject> {
+  const head = await storage.head(key);
   if (head === null) {
     throw new SubsonicError(SubsonicErrorCode.NotFound, message);
   }
@@ -47,9 +51,9 @@ export async function headStoredObject(env: Env, key: string, message?: string):
  * described once per request rather than twice.
  */
 export async function serveStoredObject(
-  env: Env,
+  storage: LibraryStorage,
   key: string,
-  head: R2Object,
+  head: StoredObject,
   request: Request,
   options: StoredObjectHeaders,
 ): Promise<Response> {
@@ -73,7 +77,8 @@ export async function serveStoredObject(
     "Content-Type": options.contentType,
     "Content-Length": String(length),
     "Accept-Ranges": "bytes",
-    ETag: head.httpEtag,
+    // The etag is stored unquoted; HTTP quotes it.
+    ETag: `"${head.etag}"`,
   });
 
   if (partial) {
@@ -86,13 +91,13 @@ export async function serveStoredObject(
   const status = partial ? 206 : 200;
 
   // A HEAD asks what the bytes would be, not for them, and is answered from
-  // the head() already in hand — a player probing a stream URL costs one R2
-  // operation and no egress.
+  // the head() already in hand — a player probing a stream URL costs one
+  // bucket operation and no egress.
   if (request.method === "HEAD") {
     return new Response(null, { status, headers });
   }
 
-  const object = await env.MUSIC.get(key, partial ? { range: { offset, length } } : undefined);
+  const object = await storage.get(key, partial ? { offset, length } : undefined);
   if (object === null) {
     // Deleted between the head and the get.
     throw new SubsonicError(SubsonicErrorCode.NotFound);

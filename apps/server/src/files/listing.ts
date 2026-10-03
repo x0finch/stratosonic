@@ -1,5 +1,6 @@
 import { suffixOf } from "../library/audio-formats";
 import { PLAYLIST_SUFFIXES } from "../playlists/m3u";
+import type { StoredObject } from "../storage/storage";
 import { kindOf, type ListedKind, RESERVED_PREFIX } from "./keys";
 
 /**
@@ -29,21 +30,20 @@ export interface FolderListing {
   readonly prefix: string;
   readonly folders: readonly FolderView[];
   readonly files: readonly FileView[];
-  /** R2's cursor when the listing was truncated, else null. */
+  /** The listing's cursor when there is another page, else null. */
   readonly cursor: string | null;
 }
 
-/** What `folderListing` reads of an R2 delimited listing. */
+/** What `folderListing` reads of a delimited listing (storage/storage.ts). */
 export interface DelimitedListing {
-  readonly delimitedPrefixes: readonly string[];
-  readonly objects: readonly Pick<R2Object, "key" | "size" | "uploaded">[];
-  readonly truncated: boolean;
-  readonly cursor?: string;
+  readonly prefixes: readonly string[];
+  readonly objects: readonly Pick<StoredObject, "key" | "size" | "uploaded">[];
+  readonly cursor: string | null;
 }
 
 /**
  * A delimited listing of `prefix` as the console sees it: folders and
- * files, each in R2's order (lexicographic by key). `_covers/`, the
+ * files, each in the bucket's order (lexicographic by key). `_covers/`, the
  * scanner's, is dropped from the root's folders, and an object named like
  * the folder itself, a "folder marker" some S3 tools write, is not a file
  * in it.
@@ -51,7 +51,7 @@ export interface DelimitedListing {
 export function folderListing(prefix: string, listing: DelimitedListing): FolderListing {
   return {
     prefix,
-    folders: listing.delimitedPrefixes
+    folders: listing.prefixes
       .filter((folder) => folder !== RESERVED_PREFIX)
       .map((folder) => ({ name: folder.slice(prefix.length, -1), prefix: folder })),
     files: listing.objects
@@ -63,7 +63,7 @@ export function folderListing(prefix: string, listing: DelimitedListing): Folder
         uploadedAt: object.uploaded.toISOString(),
         kind: kindOf(object.key),
       })),
-    cursor: listing.truncated ? (listing.cursor ?? null) : null,
+    cursor: listing.cursor,
   };
 }
 
