@@ -77,12 +77,19 @@
  * scratch bucket named in `UPLOADS_BUCKET` (and the CORS rule for
  * `BASE_URL`'s origin, apps/server README "File uploads"), and are skipped
  * otherwise. In `FILES_PREFIX` they upload a folder (two FLACs, their
- * `.lrc` and a cover, from the server's test fixtures), seeing each file's
- * progress row, the toast and the scan line; upload one of its files again,
- * which already exists, and replace it; and delete the folder again. On
- * any Worker with uploads configured (fake credentials will do), they pick
- * a `.pdf` and see it refused before any request. Each step's note gives
- * the requests its run made (sign, complete and `PUT`), for the budget.
+ * `.lrc` and a cover, from the server's test fixtures), seeing the toast,
+ * the scan line, the header's Uploads trigger ("Uploads done") and one row
+ * a file in its popover; upload one of its files again, which already
+ * exists ("1 needs attention"), and replace it from the popover; and
+ * delete the folder again. On any Worker with uploads configured (fake
+ * credentials will do), they pick a `.pdf` and see it refused before any
+ * request: the trigger says "1 needs attention" while the popover stays
+ * closed and the folder stays the page's one block, the keyboard opens the
+ * popover, Escape closes it with focus back on the trigger, and Clear
+ * finished takes the trigger away with focus on Upload. Each step's note
+ * gives the requests its run made (sign, complete and `PUT`), for the
+ * budget. Signing out from the Files page then reads nothing more from the
+ * files API (#141).
  *
  * Any console error or uncaught exception on a page fails the walkthrough,
  * except the browser's own "Failed to load resource" line for a response the
@@ -488,6 +495,32 @@ async function pick(page, item, paths) {
   const chooser = page.waitForEvent("filechooser");
   await page.getByRole("menuitem", { name: item }).click();
   await (await chooser).setFiles(paths);
+}
+
+/**
+ * The header's Uploads trigger (#141), on every page while the upload queue
+ * holds a file: with these words, or whatever its words.
+ */
+function uploadsTrigger(page, label) {
+  return page.getByRole("button", {
+    name: label ?? /^(Uploading [\d,]+ of [\d,]+|[\d,]+ needs? attention|Uploads done)$/,
+    exact: true,
+  });
+}
+
+/** The upload list, in the popover the trigger opens. */
+function uploadsPopover(page) {
+  return page.getByRole("dialog", { name: "Uploads" });
+}
+
+/** Clear finished in the Uploads popover, when there is a queue: the trigger goes. */
+async function clearUploads(page) {
+  if ((await uploadsTrigger(page).count()) === 0) {
+    return;
+  }
+  await uploadsTrigger(page).click();
+  await uploadsPopover(page).getByRole("button", { name: "Clear finished" }).click();
+  await uploadsTrigger(page).waitFor({ state: "detached" });
 }
 
 /**
@@ -1191,22 +1224,40 @@ async function main() {
       const counted = countUploadRequests(page);
       await markToasts(page);
       await pick(page, "Files…", join(uploads.dir, "notes.pdf"));
-      await page.getByRole("heading", { level: 2, name: "Uploads" }).waitFor();
-      // The folder's block is a region of its own now, named after it.
-      await page.getByRole("region", { name: FILES_PREFIX.split("/").at(-2) }).waitFor();
-      await page.getByText("Failed: not a type the server reads").waitFor();
+      // The header's trigger says so; the popover never opens by itself.
+      await uploadsTrigger(page, "1 needs attention").waitFor();
       await expectToast(page, "1 file was not uploaded");
+      check((await uploadsPopover(page).count()) === 0, "the Uploads popover opened by itself");
+      // The folder stays the page's one block: no h2, no region.
+      check(
+        (await page.getByRole("main").getByRole("region").count()) === 0,
+        "the Files page shows a region beside its folder",
+      );
       check(
         counted.sign === 0 && counted.put === 0,
         `a refused .pdf made requests: ${counted.note()}`,
       );
+      // The keyboard opens it, Escape closes it, and focus returns to the trigger.
+      await uploadsTrigger(page).focus();
+      await page.keyboard.press("Enter");
+      await uploadsPopover(page).getByText("Failed: not a type the server reads").waitFor();
       await shot(page, "files-upload-refused");
-      await page.getByRole("button", { name: "Clear finished" }).click();
-      await page.getByRole("heading", { level: 2, name: "Uploads" }).waitFor({ state: "detached" });
+      await page.keyboard.press("Escape");
+      await uploadsPopover(page).waitFor({ state: "detached" });
+      check(
+        await uploadsTrigger(page).evaluate((element) => element === document.activeElement),
+        "Escape did not return focus to the Uploads trigger",
+      );
+      // Clear finished empties the queue: the trigger goes, and focus goes to Upload.
+      await clearUploads(page);
+      check(
+        await page.evaluate(() => document.activeElement?.hasAttribute("data-upload-trigger")),
+        "emptying the queue did not return focus to Upload",
+      );
     });
 
     await step(
-      "Files: upload a folder, with each file's progress, the toast and the scan line",
+      "Files: upload a folder, with the toast, the scan line and a row a file in the popover",
       async () => {
         if (!uploads.on) {
           if (uploads.configured) {
@@ -1221,16 +1272,19 @@ async function main() {
         const counted = countUploadRequests(page);
         await markToasts(page);
         await pick(page, "Folder…", join(uploads.dir, "walkthrough upload"));
-        await page.getByRole("heading", { level: 2, name: "Uploads" }).waitFor();
-        // One row a file; a progress bar shows only while a file is sent.
-        check(
-          (await page.getByRole("region", { name: "Uploads" }).getByRole("listitem").count()) === 5,
-          "the Uploads section does not show one row a file",
-        );
         await expectToast(page, "Uploaded 5 files");
-        await page.getByText("5 of 5 uploaded").waitFor();
+        await uploadsTrigger(page, "Uploads done").waitFor();
         await page.getByText(SCAN_LINE).first().waitFor();
+        // One row a file; a progress bar shows only while a file is sent.
+        await uploadsTrigger(page).click();
+        await uploadsPopover(page).getByText("5 of 5 uploaded").waitFor();
+        check(
+          (await uploadsPopover(page).getByRole("listitem").count()) === 5,
+          "the upload list does not show one row a file",
+        );
         await shot(page, "files-uploaded");
+        await page.keyboard.press("Escape");
+        await uploadsPopover(page).waitFor({ state: "detached" });
         const listed = await listFolder(page, uploads.album);
         check(
           listed.files.length === 5,
@@ -1246,7 +1300,7 @@ async function main() {
       }
       await page.goto(filesUrl(uploads.album));
       await inFolder(page, uploads.album);
-      await page.getByRole("button", { name: "Clear finished" }).click();
+      await clearUploads(page);
       const counted = countUploadRequests(page);
       await markToasts(page);
       await pick(
@@ -1254,13 +1308,16 @@ async function main() {
         "Files…",
         join(uploads.dir, "walkthrough upload", "01 Hushed Interlude.flac"),
       );
-      await page.getByText("Already exists").waitFor();
       await expectToast(page, "1 file was not uploaded");
+      await uploadsTrigger(page, "1 needs attention").click();
+      await uploadsPopover(page).getByText("Already exists").waitFor();
       await shot(page, "files-upload-exists");
       await markToasts(page);
-      await page.getByRole("button", { name: "Replace", exact: true }).click();
+      await uploadsPopover(page).getByRole("button", { name: "Replace", exact: true }).click();
       await expectToast(page, "Uploaded 1 file");
-      await page.getByRole("button", { name: "Clear finished" }).click();
+      await uploadsTrigger(page, "Uploads done").waitFor();
+      await uploadsPopover(page).getByRole("button", { name: "Clear finished" }).click();
+      await uploadsTrigger(page).waitFor({ state: "detached" });
       return counted.note();
     });
 
@@ -1320,6 +1377,32 @@ async function main() {
       );
       const after = await listFolder(page, FILES_PREFIX);
       check(after.files.length === listed.length, "a refused delete deleted something");
+    });
+
+    await step("Files: signing out from the Files page reads nothing more", async () => {
+      if (!files.present) {
+        return "skipped";
+      }
+      await page.goto(filesUrl(FILES_PREFIX));
+      await inFolder(page, FILES_PREFIX);
+      // The page used to read its folder and the files config again as the
+      // cache was cleared, both refused (#141).
+      const read = [];
+      let signedOut = false;
+      const onRequest = (request) => {
+        if (signedOut && pathOf(request).startsWith("/api/files")) {
+          read.push(`${request.method()} ${pathOf(request)}`);
+        }
+      };
+      page.on("request", onRequest);
+      await openUserMenu(page);
+      signedOut = true;
+      await clickSignOut(page);
+      await page.getByLabel("Username", { exact: true }).waitFor();
+      await page.waitForTimeout(1000);
+      page.off("request", onRequest);
+      check(read.length === 0, `signing out read the files API: ${read.join(", ")}`);
+      await signIn(page, password, { expectAt: "/" });
     });
 
     await step("dark mode", async () => {
