@@ -34,6 +34,7 @@ import type { BatchItem } from "drizzle-orm/batch";
 import type { Database } from "../db";
 import { annotationColumns, annotationJoin } from "../library/annotations";
 import { toSongView } from "../library/repository";
+import { type LibraryScope, libraryFilter, scopeParameters } from "../library/scope";
 import type { PlaylistView, SongView } from "../library/serializers";
 import { chunked, KEYS_PER_STATEMENT } from "../scanner/repository";
 
@@ -196,20 +197,26 @@ async function findPlaylistEntryIds(
  * This is `findTracksByKeys` asked the other way round, for the write
  * endpoints: a client sends the track ids it already holds, and the write
  * needs each one's key - which is what goes in the `.m3u` - and its duration.
- * The ids are bound, so they are chunked below D1's parameter limit: a
- * playlist of five hundred songs is six statements, not one that throws.
+ * The ids are bound, so they are chunked below D1's parameter limit, less
+ * what the scope binds: a playlist of five hundred songs is six statements,
+ * not one that throws.
+ *
+ * A track out of the caller's libraries is absent, as an unknown one is, so
+ * a write naming it is refused with the same "Song not found" (#84).
+ * Navidrome drops such ids silently instead (`keepAccessible`).
  */
 export async function findTracksByIds(
   db: Database,
   ids: readonly string[],
+  scope: LibraryScope,
 ): Promise<Map<string, EntryTrack>> {
   const found = new Map<string, EntryTrack>();
 
-  for (const chunk of chunked(ids)) {
+  for (const chunk of chunked(ids, KEYS_PER_STATEMENT - scopeParameters(scope))) {
     const rows = await db
       .select({ id: track.id, r2Key: track.r2Key, duration: track.duration })
       .from(track)
-      .where(inArray(track.id, chunk));
+      .where(and(inArray(track.id, chunk), libraryFilter(scope, track.libraryId)));
 
     for (const row of rows) {
       found.set(row.id, row);
@@ -227,17 +234,35 @@ export async function findTracksByIds(
  * `listPlaylistEntries` below answers the same question for a client, with the
  * album and the caller's annotation joined in for the `<song>` it renders.
  * `updatePlaylist` renders no song - it re-writes the file and the row - so it
- * asks for the three columns it uses and joins nothing. The join is inner, as
- * it is there: an entry pointing at a track that has gone is not an entry the
+ * asks for the columns it uses and joins nothing. The join is inner, as it
+ * is there: an entry pointing at a track that has gone is not an entry the
  * file can name.
+ *
+ * **Every entry is read, whoever asks** (#84): a listener who sees fewer
+ * libraries than the playlist holds must not drop the entries they cannot
+ * see by editing it. Each entry says its library, so the edit can tell
+ * which positions the caller saw (`songIndexToRemove`).
  */
-export async function listPlaylistEntryTracks(db: Database, id: string): Promise<EntryTrack[]> {
+export async function listPlaylistEntryTracks(
+  db: Database,
+  id: string,
+): Promise<StoredEntryTrack[]> {
   return db
-    .select({ id: track.id, r2Key: track.r2Key, duration: track.duration })
+    .select({
+      id: track.id,
+      r2Key: track.r2Key,
+      duration: track.duration,
+      libraryId: track.libraryId,
+    })
     .from(playlistTrack)
     .innerJoin(track, eq(track.id, playlistTrack.trackId))
     .where(eq(playlistTrack.playlistId, id))
     .orderBy(asc(playlistTrack.position));
+}
+
+/** A playlist's entry as `updatePlaylist` reads it: the track and its library. */
+export interface StoredEntryTrack extends EntryTrack {
+  readonly libraryId: number;
 }
 
 /** A stored playlist as a write endpoint needs it: everything it must keep. */
@@ -501,7 +526,35 @@ export interface PlaylistViewer {
   readonly isAdmin: boolean;
 }
 
-const playlistColumns = {
+/**
+ * A playlist as `<playlist>` needs it. `songCount` and `duration` are the
+ * stored totals, whoever asks, as Navidrome's counters are (#84); the cover
+ * is chosen among the entries in the caller's libraries, so it is one
+ * `getCoverArt` serves them.
+ */
+function playlistColumns(scope: LibraryScope) {
+  return {
+    ...playlistRowColumns,
+    // The cover of the earliest entry whose album has one. A playlist has no
+    // artwork of its own here - Navidrome answers with a `pl-` id and paints a
+    // mosaic of its albums, which needs an image pipeline this server does not
+    // have - so it borrows a cover that `getCoverArt` can already serve, and
+    // says nothing at all when no entry has one.
+    coverAlbumId: sql<string | null>`(select album.id from playlist_track
+    join track on track.id = playlist_track.track_id
+    join album on album.id = track.album_id
+    where playlist_track.playlist_id = playlist.id and album.cover_key is not null${albumInScope(scope)}
+    order by playlist_track.position limit 1)`,
+  };
+}
+
+/** ` and album.library_id in (...)` inside the cover subquery, or nothing on the fast path. */
+function albumInScope(scope: LibraryScope) {
+  const filter = libraryFilter(scope, sql.raw("album.library_id"));
+  return filter === undefined ? sql`` : sql` and ${filter}`;
+}
+
+const playlistRowColumns = {
   id: playlist.id,
   name: playlist.name,
   comment: playlist.comment,
@@ -512,16 +565,6 @@ const playlistColumns = {
   changedAt: playlist.changedAt,
   ownerName: sql<string>`coalesce((select subsonic_user.user_name from subsonic_user
     where subsonic_user.id = playlist.owner_id), '')`,
-  // The cover of the earliest entry whose album has one. A playlist has no
-  // artwork of its own here - Navidrome answers with a `pl-` id and paints a
-  // mosaic of its albums, which needs an image pipeline this server does not
-  // have - so it borrows a cover that `getCoverArt` can already serve, and
-  // says nothing at all when no entry has one.
-  coverAlbumId: sql<string | null>`(select album.id from playlist_track
-    join track on track.id = playlist_track.track_id
-    join album on album.id = track.album_id
-    where playlist_track.playlist_id = playlist.id and album.cover_key is not null
-    order by playlist_track.position limit 1)`,
 };
 
 /**
@@ -544,11 +587,16 @@ export function visibleTo(viewer: PlaylistViewer) {
  * breaks a tie so two playlists of the same name keep one order rather than
  * whatever the database happens to return. The list has no paging and no
  * filter: a client treats it as the authoritative set and deletes what is
- * missing from it (#9), so it is always complete.
+ * missing from it (#9), so it is always complete. Nor is it kept to the
+ * caller's libraries, as Navidrome's is not (#84); only the covers are.
  */
-export async function listPlaylists(db: Database, viewer: PlaylistViewer): Promise<PlaylistView[]> {
+export async function listPlaylists(
+  db: Database,
+  viewer: PlaylistViewer,
+  scope: LibraryScope,
+): Promise<PlaylistView[]> {
   return db
-    .select(playlistColumns)
+    .select(playlistColumns(scope))
     .from(playlist)
     .where(visibleTo(viewer))
     .orderBy(asc(playlist.name), asc(playlist.id));
@@ -582,14 +630,18 @@ export function playlistSummariesQuery(db: Database) {
     .orderBy(asc(playlist.name), asc(playlist.id));
 }
 
-/** One playlist, or null when there is none with this id the viewer may see. */
+/**
+ * One playlist, or null when there is none with this id the viewer may see;
+ * its cover is in the caller's libraries, as `listPlaylists`' are.
+ */
 export async function findPlaylist(
   db: Database,
   viewer: PlaylistViewer,
   id: string,
+  scope: LibraryScope,
 ): Promise<PlaylistView | null> {
   const rows = await db
-    .select(playlistColumns)
+    .select(playlistColumns(scope))
     .from(playlist)
     .where(and(eq(playlist.id, id), visibleTo(viewer)))
     .limit(1);
@@ -602,11 +654,15 @@ export async function findPlaylist(
  * and cover a `<song>` carries. The join is inner: an entry pointing at a
  * track that has gone is not an entry a client can play, and the scan's sweep
  * removes those rows anyway.
+ *
+ * Only the entries in the caller's libraries are listed (#84), Navidrome's
+ * `tracksQuery`; `updatePlaylist` reads them all (`listPlaylistEntryTracks`).
  */
 export async function listPlaylistEntries(
   db: Database,
   id: string,
   userId: string,
+  scope: LibraryScope,
 ): Promise<SongView[]> {
   const rows = await db
     .select({ track, albumName: album.name, albumCoverKey: album.coverKey, ...annotationColumns })
@@ -614,7 +670,7 @@ export async function listPlaylistEntries(
     .innerJoin(track, eq(track.id, playlistTrack.trackId))
     .leftJoin(album, eq(album.id, track.albumId))
     .leftJoin(annotation, annotationJoin(userId, "track", track.id))
-    .where(eq(playlistTrack.playlistId, id))
+    .where(and(eq(playlistTrack.playlistId, id), libraryFilter(scope, track.libraryId)))
     .orderBy(asc(playlistTrack.position));
 
   return rows.map(toSongView);
