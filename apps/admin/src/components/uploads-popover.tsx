@@ -1,8 +1,8 @@
-import { CircleAlertIcon, XIcon } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { CircleAlertIcon, CircleCheckIcon, XIcon } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 
 import { RelativeTime } from "@/components/relative-time";
-import { Section } from "@/components/section";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -14,20 +14,32 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverDescription,
+  PopoverHeader,
+  PopoverTitle,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Spinner } from "@/components/ui/spinner";
 import { useClock } from "@/hooks/use-clock";
-import { useUploads } from "@/hooks/use-upload-queue";
+import { useUploadQueue, useUploads } from "@/hooks/use-upload-queue";
 import type { FilesConfig } from "@/lib/api";
-import { countOf, LISTED_NAMES } from "@/lib/files";
+import { countOf, filesConfigQuery, LISTED_NAMES } from "@/lib/files";
 import { formatBytes, formatCount } from "@/lib/format";
 import {
   describeFailure,
   describeHidden,
   describeQueue,
+  describeUploadsStatus,
   percentOf,
   shownRows,
   type UploadQueue,
   type UploadView,
+  uploadsStatus,
 } from "@/lib/uploads";
 
 /** What a row's own buttons do. */
@@ -47,44 +59,146 @@ function actionable(item: UploadView): boolean {
 }
 
 /**
- * The Uploads section (#83, "Layout", item 6), while the queue holds a file:
- * "4 of 12 uploaded", then one row a file, its key in mono over its state.
- * While the file is sent, the state is a `Progress` labelled "Uploading"
- * with its percent; otherwise it is a line of text ("Waiting", "Uploaded",
- * "Already exists" with **Replace** and **Skip**, "Failed:" and why in
- * `destructive` with an icon, "Skipped", "Canceled"), with no empty track
- * to read as a divider (DESIGN.md: no decorative lines). A file still to go
- * has a cancel button. Several conflicts get **Replace all**, which asks
- * first, and **Skip all**.
+ * Where focus goes once the queue empties and the trigger goes with it:
+ * the Files page's Upload, where it is on screen (components/files/
+ * upload-menu.tsx marks it), or else the page's h1.
+ */
+function focusUploadAnchor(): void {
+  const upload = document.querySelector<HTMLElement>("[data-upload-trigger]");
+  if (upload) {
+    upload.focus();
+    return;
+  }
+  const heading = document.querySelector<HTMLElement>('[role="heading"][aria-level="1"]');
+  heading?.setAttribute("tabindex", "-1");
+  heading?.focus();
+}
+
+/**
+ * The header's Uploads trigger (#141), next to the theme toggle, while the
+ * session's upload queue holds a file: on every page of the shell, since
+ * the queue outlives the Files page. Its label is the queue's state in
+ * words: a spinner and "Uploading 3 of 12", "2 need attention" with an
+ * icon, or "Uploads done" (lib/uploads.ts, `describeUploadsStatus`).
  *
- * A pick of thousands of files stays light: the section draws the files in
- * flight, every failure and conflict, the next waiting files and the latest
- * finished ones (`shownRows`), counts the rest, and redraws a row only when
- * it changed (the queue keeps each row's object, and `UploadRow` is
- * memoised).
+ * It opens the upload list in a popover, which never opens by itself: a
+ * run's conflicts are told by its toast and by the label. The trigger
+ * redraws only when its words change, not on every upload's progress.
+ *
+ * The list's Replace all asks in an alert dialog rendered inside the
+ * popover's React tree, so Base UI counts a press or focus inside the
+ * dialog, or on its backdrop, as the popover's own, and the popover stays
+ * open under it. An Escape in the dialog would reach both, so the popover
+ * lets that one go: it closes the dialog alone.
+ */
+export function UploadsPopover() {
+  const queue = useUploadQueue();
+  const status = useUploads(queue, (snapshot) => uploadsStatus(snapshot.items));
+  const label = useUploads(queue, (snapshot) => describeUploadsStatus(snapshot.items));
+  // The rows' failure words read the upload limits, which the Files page
+  // read before any file joined the queue: read from the cache only, and
+  // kept there while the trigger shows.
+  const { data: config } = useQuery({ ...filesConfigQuery, enabled: false });
+  // Clear finished emptied the queue: focus goes to the page once the
+  // trigger has gone.
+  const emptied = useRef(false);
+  // Whether the list's Replace all dialog is open over the popover.
+  const asking = useRef(false);
+  const onAskingChange = useCallback((open: boolean) => {
+    asking.current = open;
+  }, []);
+
+  useEffect(() => {
+    if (status === null && emptied.current) {
+      emptied.current = false;
+      focusUploadAnchor();
+    }
+  }, [status]);
+
+  if (status === null) {
+    return null;
+  }
+
+  return (
+    <Popover
+      onOpenChange={(open, details) => {
+        // Base UI hears an Escape on the document for each open popup, the
+        // popover first: one pressed while the Replace all dialog is open
+        // is the dialog's alone.
+        if (!open && details.reason === "escape-key" && asking.current) {
+          details.cancel();
+        }
+      }}
+    >
+      <PopoverTrigger render={<Button variant="outline" />}>
+        {status === "running" ? (
+          <Spinner data-icon="inline-start" aria-hidden="true" />
+        ) : status === "attention" ? (
+          <CircleAlertIcon data-icon="inline-start" aria-hidden="true" />
+        ) : (
+          <CircleCheckIcon data-icon="inline-start" aria-hidden="true" />
+        )}
+        {label}
+      </PopoverTrigger>
+      {/* At most 32rem tall: a long list scrolls inside, below its heading
+          and buttons. Narrower than a phone's screen, wider from `sm`. */}
+      <PopoverContent align="end" className="max-h-128 w-80 gap-4 p-4 sm:w-md">
+        <UploadList
+          queue={queue}
+          config={config}
+          onEmptied={() => {
+            emptied.current = true;
+          }}
+          onAskingChange={onAskingChange}
+        />
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/**
+ * The upload list (#83, "Layout", item 6), in the Uploads popover: "4 of 12
+ * uploaded", then one row a file, its key in mono over its state. While
+ * the file is sent, the state is a `Progress` labelled "Uploading" with its
+ * percent; otherwise it is a line of text ("Waiting", "Uploaded", "Already
+ * exists" with **Replace** and **Skip**, "Failed:" and why in `destructive`
+ * with an icon, "Skipped", "Canceled"), with no empty track to read as a
+ * divider (DESIGN.md: no decorative lines). A file still to go has a
+ * cancel button. Several conflicts get **Replace all**, which asks first,
+ * and **Skip all**. The rows scroll in a `ScrollArea`, below the heading
+ * and the buttons.
+ *
+ * A pick of thousands of files stays light: the list draws the files in
+ * flight, every failure and conflict, the next waiting files and the
+ * latest finished ones (`shownRows`), counts the rest, and redraws a row
+ * only when it changed (the queue keeps each row's object, and `UploadRow`
+ * is memoised).
  *
  * When a row's buttons go (Replace, Skip, Cancel upload), focus moves to the
  * next row that has buttons, or to the heading when none is left; so it
  * does after Replace all, Skip all, Cancel all and Clear finished. A Clear
- * finished that empties the queue takes the section away with it, so
- * `onEmptied` hands focus back to the page.
+ * finished that empties the queue takes the trigger and the popover away
+ * with it, so `onEmptied` hands focus back to the page.
  */
-export function UploadsSection({
+function UploadList({
   queue,
   config,
   onEmptied,
+  onAskingChange,
 }: {
   queue: UploadQueue;
   config: Pick<FilesConfig, "allowed" | "limits"> | undefined;
-  /** The queue is empty and the section goes: the page places focus. */
+  /** The queue is empty, and the trigger goes: the page gets focus. */
   onEmptied: () => void;
+  /** The Replace all dialog opened or closed. */
+  onAskingChange: (open: boolean) => void;
 }) {
   const items = useUploads(queue, (snapshot) => snapshot.items);
   const now = useClock();
   const [confirming, setConfirming] = useState(false);
   const [focusTarget, setFocusTarget] = useState<FocusTarget>(null);
   const listRef = useRef<HTMLUListElement>(null);
-  const headingRef = useRef<HTMLSpanElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
   // Replace all confirmed: the dialog hands focus to the heading as it closes.
   const replacedAll = useRef(false);
 
@@ -97,6 +211,12 @@ export function UploadsSection({
     ["uploaded", "failed", "skipped", "canceled"].includes(item.state),
   );
   const running = items.some((item) => ["waiting", "signing", "uploading"].includes(item.state));
+  const asking = confirming && conflicts.length > 0;
+
+  useEffect(() => {
+    onAskingChange(asking);
+    return () => onAskingChange(false);
+  }, [asking, onAskingChange]);
 
   // A stable callback, so a memoised row is not redrawn for its sake.
   const act = useCallback(
@@ -136,40 +256,41 @@ export function UploadsSection({
   };
 
   return (
-    <Section
-      title={
-        // Focus lands here once no row has buttons left.
-        <span ref={headingRef} tabIndex={-1}>
-          Uploads
-        </span>
-      }
-      description={describeQueue(items)}
-      action={
-        <>
-          {running ? (
-            <Button variant="outline" size="sm" onClick={all(() => queue.cancelAll())}>
-              Cancel all
-            </Button>
-          ) : null}
-          {finished ? (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                queue.clearFinished();
-                if (queue.getSnapshot().items.length === 0) {
-                  onEmptied();
-                } else {
-                  setFocusTarget("heading");
-                }
-              }}
-            >
-              Clear finished
-            </Button>
-          ) : null}
-        </>
-      }
-    >
+    <>
+      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+        <PopoverHeader className="min-w-0">
+          {/* Focus lands here once no row has buttons left. */}
+          <PopoverTitle ref={headingRef} tabIndex={-1}>
+            Uploads
+          </PopoverTitle>
+          <PopoverDescription>{describeQueue(items)}</PopoverDescription>
+        </PopoverHeader>
+        {running || finished ? (
+          <div className="flex shrink-0 items-center gap-2">
+            {running ? (
+              <Button variant="outline" size="sm" onClick={all(() => queue.cancelAll())}>
+                Cancel all
+              </Button>
+            ) : null}
+            {finished ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  queue.clearFinished();
+                  if (queue.getSnapshot().items.length === 0) {
+                    onEmptied();
+                  } else {
+                    setFocusTarget("heading");
+                  }
+                }}
+              >
+                Clear finished
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
       {conflicts.length > 1 ? (
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <p className="min-w-0 text-muted-foreground">
@@ -185,17 +306,24 @@ export function UploadsSection({
           </div>
         </div>
       ) : null}
-      {/* The older finished files, counted above the latest ones shown. */}
-      {earlier ? <p className="text-muted-foreground">{earlier}</p> : null}
-      <ul ref={listRef} className="flex flex-col gap-4">
-        {rows.map((item) => (
-          <UploadRow key={item.id} item={item} config={config} now={now} onAct={act} />
-        ))}
-      </ul>
-      {later ? <p className="text-muted-foreground">{later}</p> : null}
+      {/* The rows scroll here once the popover reaches its height: a scroll
+          container may shrink below its content in the popup's column. */}
+      <ScrollArea className="group/list flex min-h-0 flex-col">
+        {/* Clear of the scrollbar while there is one. */}
+        <div className="flex flex-col gap-4 group-data-has-overflow-y/list:pr-4">
+          {/* The older finished files, counted above the latest ones shown. */}
+          {earlier ? <p className="text-muted-foreground">{earlier}</p> : null}
+          <ul ref={listRef} className="flex flex-col gap-4">
+            {rows.map((item) => (
+              <UploadRow key={item.id} item={item} config={config} now={now} onAct={act} />
+            ))}
+          </ul>
+          {later ? <p className="text-muted-foreground">{later}</p> : null}
+        </div>
+      </ScrollArea>
       <ReplaceAllDialog
         conflicts={conflicts}
-        open={confirming && conflicts.length > 0}
+        open={asking}
         onOpenChange={setConfirming}
         finalFocus={() => {
           const replaced = replacedAll.current;
@@ -208,7 +336,7 @@ export function UploadsSection({
           setConfirming(false);
         }}
       />
-    </Section>
+    </>
   );
 }
 

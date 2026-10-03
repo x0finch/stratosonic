@@ -16,8 +16,8 @@ import { formatBytes, formatCount } from "@/lib/format";
 /**
  * The Files page's uploads (#83, "Upload queue", ticket E): which key each
  * picked file takes, the client's mirror of the allow-list, and the queue, a
- * plain state machine that signs, sends and reports each file. The page only
- * draws it (components/files/uploads-section.tsx).
+ * plain state machine that signs, sends and reports each file. The console
+ * only draws it (components/uploads-popover.tsx, in the header).
  *
  * ## One file's way
  *
@@ -341,7 +341,7 @@ export type UploadFailure =
   | { code: "put_failed"; status: number }
   | { code: "sign_failed"; error: unknown };
 
-/** One row of the Uploads section. */
+/** One row of the upload list. */
 export interface UploadView {
   id: number;
   /** The key: as asked for, then as the server signed it. */
@@ -1052,13 +1052,13 @@ export function watchPage(
 
 /* ---------------------------------------------------------------- rows -- */
 
-/** The most finished rows the Uploads section shows: the latest ones. */
+/** The most finished rows the upload list shows: the latest ones. */
 export const SHOWN_FINISHED = 50;
 
-/** The most waiting rows the Uploads section shows: the next ones. */
+/** The most waiting rows the upload list shows: the next ones. */
 export const SHOWN_WAITING = 50;
 
-/** The rows the Uploads section shows, and how many of each kind it leaves out. */
+/** The rows the upload list shows, and how many of each kind it leaves out. */
 export interface ShownRows {
   rows: UploadView[];
   hidden: { uploaded: number; skipped: number; canceled: number; waiting: number };
@@ -1133,7 +1133,7 @@ export function describeHidden(hidden: ShownRows["hidden"]): {
 
 /* --------------------------------------------------------------- words -- */
 
-/** The Uploads section's description: `4 of 12 uploaded`, skipped and canceled files left out. */
+/** The upload list's description: `4 of 12 uploaded`, skipped and canceled files left out. */
 export function describeQueue(items: readonly UploadView[]): string {
   const counted = items.filter((item) => item.state !== "skipped" && item.state !== "canceled");
   const uploaded = counted.filter((item) => item.state === "uploaded").length;

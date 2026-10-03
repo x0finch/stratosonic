@@ -51,9 +51,8 @@ export function Section({
 
   // A block with no visible heading on a page of several (DESIGN.md,
   // "Accessibility") is a region named by `aria-label`. It stays a `div`
-  // with `role="region"`, so a block that becomes one of several (the Files
-  // page's folder, once the Uploads section joins it) keeps its content
-  // mounted.
+  // with `role="region"`, so a block that becomes one of several keeps its
+  // content mounted.
   const labelled = !titled && ariaLabel !== undefined && ariaLabel !== "";
 
   return (

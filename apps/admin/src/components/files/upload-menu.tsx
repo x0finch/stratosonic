@@ -52,7 +52,8 @@ export function UploadMenu({
     <>
       <DropdownMenu>
         <DropdownMenuTrigger
-          // The page finds it here to give it focus back (routes/_shell/files.tsx).
+          // The Uploads popover finds it here to give it focus back once the
+          // queue empties (components/uploads-popover.tsx).
           data-upload-trigger=""
           disabled={preparing !== null}
           render={<Button variant={variant} size="sm" />}
