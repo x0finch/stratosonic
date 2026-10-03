@@ -5,7 +5,7 @@
  *   pnpm --filter @stratosonic/server bench:file-uploads
  *
  * Not part of the test suite or CI: its numbers depend on the machine.
- * Re-run it when aws4fetch, files/sign.ts, the upload routes or `SIGN_BATCH`
+ * Re-run it when aws4fetch, storage/presign.ts, the upload routes or `SIGN_BATCH`
  * change, and compare with the table in the PR that made the change.
  *
  * It runs in Node for the reason bench-console-auth.ts gives (workerd does
@@ -26,7 +26,7 @@ import { createConsoleUser } from "../src/console-auth/credentials";
 import { database } from "../src/db";
 import type { Env } from "../src/env";
 import type { UploadsConfig } from "../src/files/config";
-import { presignUpload } from "../src/files/sign";
+import { presignUpload, r2Endpoint, type SigningTarget } from "../src/storage/presign";
 import { apiRequest, bench, cookieHeader, expecting, migratedD1, report } from "./bench-support";
 
 const PASSPHRASE = "bench-password-encryption-key";
@@ -38,6 +38,16 @@ const UPLOADS: UploadsConfig = {
   accountId: "0123456789abcdef0123456789abcdef",
   bucket: "navidrome",
 };
+
+/** The bound bucket's signing target, as `bindingStorage` builds it. */
+function target(config: UploadsConfig): SigningTarget {
+  return {
+    libraryId: 1,
+    endpoint: r2Endpoint(config.accountId),
+    bucket: config.bucket,
+    credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey },
+  };
+}
 
 type StoredObject = Pick<R2Object, "key" | "size" | "uploaded">;
 
@@ -139,7 +149,7 @@ const ONE = { key: "Artist/Album/01 Title.flac", size: 41_234_567, contentType: 
 await bench(
   "presignUpload, signing key cached (warm client)",
   5000,
-  async () => () => presignUpload(UPLOADS, { ...ONE, replace: false }),
+  async () => () => presignUpload(target(UPLOADS), { ...ONE, replace: false }),
 );
 
 // A new token each run: the client is rebuilt and derives its signing key,
@@ -147,7 +157,7 @@ await bench(
 let rotations = 0;
 await bench("presignUpload, signing key derived (first of an isolate)", 2000, async () => {
   const config = { ...UPLOADS, secretAccessKey: `${UPLOADS.secretAccessKey}-${rotations++}` };
-  return () => presignUpload(config, { ...ONE, replace: false });
+  return () => presignUpload(target(config), { ...ONE, replace: false });
 });
 
 /* -------------------------------------------------------------- routes -- */

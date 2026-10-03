@@ -1,16 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { UploadsConfig } from "../src/files/config";
 import {
+  awsClientFor,
+  bucketUrl,
   encodeSegment,
+  isAddressableKey,
   objectUrl,
   type PresignedUpload,
   presignUpload,
+  r2Endpoint,
   UPLOAD_URL_TTL_SECONDS,
-} from "../src/files/sign";
+  type UploadToSign,
+} from "../src/storage/presign";
+import { UnaddressableKeyError } from "../src/storage/storage";
 import { canonicalObjectPath, oracleSignature, uriEncode } from "./sigv4-oracle";
 
 /**
- * Presigning an upload (#83, "Signing", "What a URL binds"; files/sign.ts),
+ * Presigning an upload (#83, "Signing", "What a URL binds"; storage/presign.ts),
  * in the Workers runtime the Worker signs in. Every URL is recomputed by an
  * independent SigV4 presigner (test/sigv4-oracle.ts), which is itself
  * checked against AWS's worked example first.
@@ -24,6 +30,20 @@ const CONFIG: UploadsConfig = {
   accountId: "0123456789abcdef0123456789abcdef",
   bucket: "navidrome",
 };
+
+/** Presigns for library 1, the bound bucket, as `bindingStorage` does. */
+function presign(config: UploadsConfig, upload: UploadToSign, now?: number) {
+  return presignUpload(
+    {
+      libraryId: 1,
+      endpoint: r2Endpoint(config.accountId),
+      bucket: config.bucket,
+      credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey },
+    },
+    upload,
+    now,
+  );
+}
 
 /** 2026-10-02 12:34:56.789 UTC: signed as 12:34:56. */
 const NOW = Date.UTC(2026, 9, 2, 12, 34, 56, 789);
@@ -100,6 +120,29 @@ describe("the SigV4 oracle", () => {
     expect(signature).toBe("aeeed9bbccd4d02ee5c0109b86d86835f995330da4c265957d157751f604d404");
   });
 
+  it("computes AWS's worked example of a header-signed GET", async () => {
+    // S3 API Reference, "Signature Calculations for the Authorization
+    // Header: Transferring Payload in a Single Chunk", the GET Object example.
+    const signature = await oracleSignature({
+      method: "GET",
+      host: "examplebucket.s3.amazonaws.com",
+      canonicalPath: "/test.txt",
+      query: {},
+      headers: {
+        range: "bytes=0-9",
+        "x-amz-content-sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "x-amz-date": "20130524T000000Z",
+      },
+      secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      amzDate: "20130524T000000Z",
+      region: "us-east-1",
+      service: "s3",
+      payloadHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    });
+
+    expect(signature).toBe("f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41");
+  });
+
   it("encodes every byte but the unreserved characters", () => {
     expect(uriEncode("a b+c&d#e?f%g'h/é~-._")).toBe("a%20b%2Bc%26d%23e%3Ff%25g%27h%2F%C3%A9~-._");
   });
@@ -108,7 +151,7 @@ describe("the SigV4 oracle", () => {
 describe("presignUpload", () => {
   it.each(KEYS)("signs %s as the oracle does", async (key) => {
     for (const replace of [false, true]) {
-      const presigned = await presignUpload(
+      const presigned = await presign(
         CONFIG,
         { key, size: 41_234_567, contentType: "audio/flac", replace },
         NOW,
@@ -125,12 +168,12 @@ describe("presignUpload", () => {
   });
 
   it("binds the size, the type and, unless replacing, If-None-Match: *", async () => {
-    const created = await presignUpload(
+    const created = await presign(
       CONFIG,
       { key: "A/b.lrc", size: 512, contentType: "text/plain", replace: false },
       NOW,
     );
-    const replaced = await presignUpload(
+    const replaced = await presign(
       CONFIG,
       { key: "A/b.lrc", size: 512, contentType: "text/plain", replace: true },
       NOW,
@@ -148,12 +191,12 @@ describe("presignUpload", () => {
     expect(replaced.headers).toEqual({ "Content-Type": "text/plain" });
 
     // Another size or type is another signature: the URL takes only these.
-    const larger = await presignUpload(
+    const larger = await presign(
       CONFIG,
       { key: "A/b.lrc", size: 513, contentType: "text/plain", replace: false },
       NOW,
     );
-    const otherType = await presignUpload(
+    const otherType = await presign(
       CONFIG,
       { key: "A/b.lrc", size: 512, contentType: "audio/flac", replace: false },
       NOW,
@@ -165,7 +208,7 @@ describe("presignUpload", () => {
   });
 
   it("expires in 300 seconds, and expiresAt agrees with X-Amz-Date and X-Amz-Expires", async () => {
-    const presigned = await presignUpload(
+    const presigned = await presign(
       CONFIG,
       { key: "A/b.mp3", size: 1, contentType: "audio/mpeg", replace: false },
       NOW,
@@ -180,7 +223,7 @@ describe("presignUpload", () => {
   });
 
   it("carries exactly SigV4's query parameters, with the credential's scope", async () => {
-    const presigned = await presignUpload(
+    const presigned = await presign(
       CONFIG,
       { key: "A/b.mp3", size: 1, contentType: "audio/mpeg", replace: false },
       NOW,
@@ -209,7 +252,7 @@ describe("presignUpload", () => {
       });
     }
 
-    const presigned = await presignUpload(
+    const presigned = await presign(
       CONFIG,
       { key: "A/b.mp3", size: 1, contentType: "audio/mpeg", replace: false },
       NOW,
@@ -231,9 +274,9 @@ describe("presignUpload", () => {
     // The isolate's client, and its cached signing key, must not outlive
     // the secret they were derived from.
     const upload = { key: "A/b.mp3", size: 1, contentType: "audio/mpeg", replace: false };
-    const before = await presignUpload(CONFIG, upload, NOW);
+    const before = await presign(CONFIG, upload, NOW);
     const rotated = { ...CONFIG, secretAccessKey: "rotated-secret-only" };
-    const after = await presignUpload(rotated, upload, NOW);
+    const after = await presign(rotated, upload, NOW);
     const query = new URL(after.url).searchParams;
 
     expect(query.get("X-Amz-Credential")).toBe(
@@ -260,8 +303,8 @@ describe("presignUpload", () => {
   it("signs with the new token once it changes", async () => {
     const rotated = { ...CONFIG, accessKeyId: "rotated-key-id", secretAccessKey: "rotated-secret" };
     const upload = { key: "A/b.mp3", size: 1, contentType: "audio/mpeg", replace: false };
-    const before = await presignUpload(CONFIG, upload, NOW);
-    const after = await presignUpload(rotated, upload, NOW);
+    const before = await presign(CONFIG, upload, NOW);
+    const after = await presign(rotated, upload, NOW);
     const query = new URL(after.url).searchParams;
 
     expect(query.get("X-Amz-Credential")).toBe("rotated-key-id/20261002/auto/s3/aws4_request");
@@ -286,9 +329,68 @@ describe("presignUpload", () => {
 
 describe("objectUrl", () => {
   it("is path-style on the account's S3 endpoint, each segment encoded", () => {
-    expect(objectUrl(CONFIG, "AC+DC/It's 100%/a b.flac").href).toBe(
+    const bucket = { endpoint: r2Endpoint(CONFIG.accountId), bucket: CONFIG.bucket };
+    expect(objectUrl(bucket, "AC+DC/It's 100%/a b.flac").href).toBe(
       "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/navidrome/AC%2BDC/It%27s%20100%25/a%20b.flac",
     );
+    expect(bucketUrl(bucket).href).toBe(
+      "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/navidrome",
+    );
     expect(encodeSegment("!'()*")).toBe("%21%27%28%29%2A");
+  });
+
+  it("refuses a key with a dot segment, which the URL parser would collapse", () => {
+    const bucket = { endpoint: r2Endpoint(CONFIG.accountId), bucket: CONFIG.bucket };
+    for (const key of ["a/../b.flac", "a/./b.flac", "..", "a/%2e%2E/b", "a/.%2e/b", "%2E/b"]) {
+      expect(isAddressableKey(key)).toBe(false);
+      expect(() => objectUrl(bucket, key)).toThrow(UnaddressableKeyError);
+    }
+    // A dot inside a segment, or three dots, is an ordinary name.
+    for (const key of ["a/.../b", "a/..b/c", "a/b./c", ".hidden/x", "a/%2e%2e%2e/b"]) {
+      expect(isAddressableKey(key)).toBe(true);
+      expect(objectUrl(bucket, key).pathname).toBe(canonicalObjectPath(CONFIG.bucket, key));
+    }
+  });
+});
+
+describe("awsClientFor", () => {
+  it("keeps one client per library, rebuilt when its token changes", () => {
+    const token = { accessKeyId: "id-a", secretAccessKey: "secret-a" };
+    const first = awsClientFor(71, token);
+
+    expect(awsClientFor(71, { ...token })).toBe(first);
+    expect(awsClientFor(72, token)).not.toBe(first);
+    expect(awsClientFor(71, { ...token, secretAccessKey: "secret-b" })).not.toBe(first);
+  });
+
+  it("signs another library's uploads for its own endpoint and bucket", async () => {
+    const endpoint = r2Endpoint("fedcba9876543210fedcba9876543210");
+    const presigned = await presignUpload(
+      {
+        libraryId: 2,
+        endpoint,
+        bucket: "archive",
+        credentials: { accessKeyId: "library-2-key", secretAccessKey: "library-2-secret" },
+      },
+      { key: "A/b.mp3", size: 1, contentType: "audio/mpeg", replace: false },
+      NOW,
+    );
+    const url = new URL(presigned.url);
+
+    expect(url.origin).toBe(endpoint);
+    expect(url.pathname).toBe("/archive/A/b.mp3");
+    expect(url.searchParams.get("X-Amz-Signature")).toBe(
+      await oracleSignature({
+        method: "PUT",
+        host: url.host,
+        canonicalPath: "/archive/A/b.mp3",
+        query: Object.fromEntries([...url.searchParams].filter(([n]) => n !== "X-Amz-Signature")),
+        headers: { "content-length": "1", "content-type": "audio/mpeg", "if-none-match": "*" },
+        secretAccessKey: "library-2-secret",
+        amzDate: AMZ_DATE,
+        region: "auto",
+        service: "s3",
+      }),
+    );
   });
 });

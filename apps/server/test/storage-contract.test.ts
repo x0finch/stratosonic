@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Env } from "../src/env";
-import type { PresignedUpload } from "../src/files/sign";
 import { BOUND_LIBRARY_ID, bindingStorage, boundStorage } from "../src/storage/binding";
+import type { PresignedUpload } from "../src/storage/presign";
 import type { LibraryStorage, StoredObject } from "../src/storage/storage";
 import { canonicalObjectPath, oracleSignature } from "./sigv4-oracle";
 import { testEnv } from "./support";

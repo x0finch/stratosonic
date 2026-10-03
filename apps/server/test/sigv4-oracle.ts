@@ -1,11 +1,12 @@
 /**
- * An independent SigV4 query presigner (AWS Signature Version 4, "Create a
- * signed request" and S3's "Authenticating Requests: Using Query
- * Parameters"), on WebCrypto and nothing else: the test oracle for
- * files/sign.ts, which signs with aws4fetch. It is written from the
- * specification, not from aws4fetch, and checked against AWS's own worked
- * example (test/files-sign.test.ts), so a signature both compute alike is
- * one R2 computes alike too.
+ * An independent SigV4 signer (AWS Signature Version 4, "Create a signed
+ * request", and S3's "Authenticating Requests: Using Query Parameters" and
+ * "Using the Authorization Header"), on WebCrypto and nothing else: the test
+ * oracle for storage/presign.ts and storage/s3.ts, which sign with aws4fetch,
+ * and what the fake S3 verifies every request with (test/fake-s3.ts). It is
+ * written from the specification, not from aws4fetch, and checked against
+ * AWS's own worked examples (test/storage-presign.test.ts), so a signature
+ * both compute alike is one R2 computes alike too.
  *
  * Used only in tests: production signs with aws4fetch (#83, "Signing").
  */
@@ -47,9 +48,17 @@ export interface OracleRequest {
   readonly amzDate: string;
   readonly region: string;
   readonly service: string;
+  /**
+   * The payload's hash as the request declares it (`x-amz-content-sha256`):
+   * `UNSIGNED-PAYLOAD`, a query-signed URL's, by default.
+   */
+  readonly payloadHash?: string;
 }
 
-/** The hex signature of a query-signed request with an unsigned payload. */
+/**
+ * The hex signature of a request: query-signed with an unsigned payload, or,
+ * with `payloadHash`, header-signed (`Authorization`) over that hash.
+ */
 export async function oracleSignature(request: OracleRequest): Promise<string> {
   const headers: Record<string, string> = { ...request.headers, host: request.host };
   const names = Object.keys(headers)
@@ -68,7 +77,7 @@ export async function oracleSignature(request: OracleRequest): Promise<string> {
     canonicalQuery,
     canonicalHeaders,
     names.join(";"),
-    "UNSIGNED-PAYLOAD",
+    request.payloadHash ?? "UNSIGNED-PAYLOAD",
   ].join("\n");
 
   const date = request.amzDate.slice(0, 8);
