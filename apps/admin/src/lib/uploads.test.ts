@@ -14,6 +14,7 @@ import {
 import { describeError } from "@/lib/errors";
 import {
   CHECK_BATCH,
+  CHECK_ROUNDS,
   COMPLETE_QUIET_MS,
   checkBatches,
   checkUpload,
@@ -303,6 +304,35 @@ describe("the key a picked file takes", () => {
       "Album/CD2/10 Ten.flac",
       "Album/cover.jpg",
     ]);
+  });
+
+  it("refuses the second file of a pick that maps to a key already planned", () => {
+    // A disk that keeps both Unicode spellings: both map to one NFC key.
+    const planned = planUploads(
+      [
+        picked("Café.flac".normalize("NFD"), 10, "Album/Café.flac".normalize("NFD")),
+        picked("Café.flac".normalize("NFC"), 10, "Album/Café.flac".normalize("NFC")),
+        picked("02.flac", 10, "Album/02.flac"),
+      ],
+      "",
+      CONFIG,
+      noFolders,
+    );
+    expect(planned.map(({ refusal }) => refusal).sort()).toEqual([null, null, "same_name"]);
+    const refused = planned.find((upload) => upload.refusal === "same_name");
+    expect(refused?.key).toBe("Album/Café.flac".normalize("NFC"));
+    expect(describeFailure({ code: "same_name" }, refused?.key ?? "", CONFIG)).toBe(
+      "another file in this pick has the same name",
+    );
+  });
+
+  it("refuses a same-name twin in a large pick planned in slices too", async () => {
+    const files = [
+      ...Array.from({ length: PLAN_SLICE + 1 }, (_, i) => picked(`${i}.flac`, 10, `A/${i}.flac`)),
+      picked("0.flac", 10, "A/0.flac"),
+    ];
+    const planned = await planUploadsInSlices(files, "", CONFIG, noFolders, async () => {});
+    expect(planned.filter(({ refusal }) => refusal === "same_name")).toHaveLength(1);
   });
 
   it("leaves a folder pick's hidden files out, and refuses one picked by name", () => {
@@ -842,7 +872,9 @@ describe("the check before anything is signed", () => {
   it("batches the files the mirror took by folder prefix, at most 1,000 a request", () => {
     const planned = planUploads(
       [
-        ...Array.from({ length: 1001 }, (_, i) => picked(`${i}.flac`, 10, `X/${i}.flac`)),
+        ...Array.from({ length: CHECK_BATCH * 2 + 1 }, (_, i) =>
+          picked(`${i}.flac`, 10, `X/${i}.flac`),
+        ),
         picked("2.flac", 10, "Y/2.flac"),
         picked("notes.pdf", 10, "Y/notes.pdf"),
       ],
@@ -858,6 +890,7 @@ describe("the check before anything is signed", () => {
     );
     const batches = checkBatches(planned);
     expect(batches.map(({ prefix, keys }) => [prefix, keys.length])).toEqual([
+      ["X/", CHECK_BATCH],
       ["X/", CHECK_BATCH],
       ["X/", 1],
       ["Y/", 1],
@@ -949,6 +982,42 @@ describe("the check before anything is signed", () => {
     expect(conflicts.map(({ upload }) => upload.key)).toEqual(["Pick/Small/2.flac"]);
     expect(unchecked.map((upload) => upload.key)).toEqual(["Pick/Big/1.flac"]);
     expect(check).toHaveBeenCalledTimes(2);
+  });
+
+  it("asks each key once, and ends, when two planned files share a key", async () => {
+    // Twins the planner would refuse, here given as they are: their folder
+    // takes the whole budget, so nothing is ever checked.
+    const [first] = plan("Big/", "Café.flac");
+    if (!first) {
+      throw new Error("nothing planned");
+    }
+    const planned = [first, { ...first }];
+    const check = vi.fn(async (_prefix: string, keys: readonly string[]) => ({
+      existing: [],
+      unchecked: [...keys],
+    }));
+
+    const { conflicts, unchecked } = await findConflicts(planned, check);
+
+    expect(check).toHaveBeenCalledTimes(1);
+    expect(check).toHaveBeenCalledWith("Big/", ["Big/Café.flac"]);
+    expect(conflicts).toEqual([]);
+    // Both files of the key may exist, so both are asked about.
+    expect(unchecked).toHaveLength(2);
+  });
+
+  it(`stops after ${CHECK_ROUNDS} rounds whatever the server answers`, async () => {
+    const planned = plan("A/", ...Array.from({ length: 30 }, (_, i) => `${i}.flac`));
+    // One key checked a round: progress, but slow.
+    const check = vi.fn(async (_prefix: string, keys: readonly string[]) => ({
+      existing: [],
+      unchecked: keys.slice(1),
+    }));
+
+    const { unchecked } = await findConflicts(planned, check);
+
+    expect(check).toHaveBeenCalledTimes(CHECK_ROUNDS);
+    expect(unchecked).toHaveLength(30 - CHECK_ROUNDS);
   });
 
   it("asks nothing for a pick the mirror refused whole", async () => {

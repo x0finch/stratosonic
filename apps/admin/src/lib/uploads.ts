@@ -161,8 +161,13 @@ function listedFolder(
   return same.length === 1 ? same[0] : undefined;
 }
 
-/** Why a file is refused before any request: the server's own codes. */
-export type ClientRefusal = Exclude<UploadRefusalCode, "replace_unavailable">;
+/**
+ * Why a file is refused before any request: the server's own codes, and
+ * `same_name`, a second file of one pick whose key another file of it
+ * takes already (in either Unicode spelling), so two uploads to one key
+ * never both go.
+ */
+export type ClientRefusal = Exclude<UploadRefusalCode, "replace_unavailable"> | "same_name";
 
 /** The server's prefix for the covers it extracts, which no upload may write under. */
 const RESERVED_PREFIX = "_covers/";
@@ -293,11 +298,28 @@ function planOne(
   return [{ file, prefix, key, refusal: checkUpload(key, file.size, config) }];
 }
 
+/**
+ * The plan in path order, the second file of any key refused as
+ * `same_name`: a folder picked from a disk that keeps both Unicode
+ * spellings of a name (`Café.flac` composed and decomposed) maps both to
+ * one key, and only the first may go.
+ */
 function inPathOrder(planned: readonly PlannedUpload[]): PlannedUpload[] {
+  const seen = new Set<string>();
   return planned
     .map((upload) => ({ upload, order: pathOrder(upload.key) }))
     .sort((a, b) => comparePathOrder(a.order, b.order))
-    .map(({ upload }) => upload);
+    .map(({ upload }) => {
+      if (upload.refusal !== null) {
+        return upload;
+      }
+      const key = sameKey(upload.key);
+      if (seen.has(key)) {
+        return { ...upload, refusal: "same_name" as const };
+      }
+      seen.add(key);
+      return upload;
+    });
 }
 
 /**
@@ -334,34 +356,63 @@ function comparePathOrder(
 
 /* --------------------------------------------------------------- check -- */
 
-/** The most keys one `POST /api/files/uploads/check` takes: the server's own most. */
-export const CHECK_BATCH = 1000;
+/**
+ * The most keys one `POST /api/files/uploads/check` takes: the server's own
+ * most, which keeps its CPU well inside 10 ms (bench-files.ts).
+ */
+export const CHECK_BATCH = 500;
 
-/** The check requests for these files: by folder prefix, `CHECK_BATCH` keys at most each. */
-function batchesOf(planned: readonly PlannedUpload[]): { prefix: string; keys: string[] }[] {
+/**
+ * The most rounds of check requests one pick makes, however the server
+ * answers: a backstop, since every round already checks more or sets a
+ * folder aside.
+ */
+export const CHECK_ROUNDS = 20;
+
+/** A key to check, and the folder prefix its request names. */
+interface CheckKey {
+  prefix: string;
+  key: string;
+}
+
+/** The check requests for these keys: by folder prefix, `CHECK_BATCH` keys at most each. */
+function batchesOf(keys: readonly CheckKey[]): { prefix: string; keys: string[] }[] {
   const byPrefix = new Map<string, string[]>();
-  for (const { prefix, key } of planned) {
-    const keys = byPrefix.get(prefix);
-    if (keys === undefined) {
+  for (const { prefix, key } of keys) {
+    const same = byPrefix.get(prefix);
+    if (same === undefined) {
       byPrefix.set(prefix, [key]);
     } else {
-      keys.push(key);
+      same.push(key);
     }
   }
   const batches: { prefix: string; keys: string[] }[] = [];
-  for (const [prefix, keys] of byPrefix) {
-    for (let start = 0; start < keys.length; start += CHECK_BATCH) {
-      batches.push({ prefix, keys: keys.slice(start, start + CHECK_BATCH) });
+  for (const [prefix, all] of byPrefix) {
+    for (let start = 0; start < all.length; start += CHECK_BATCH) {
+      batches.push({ prefix, keys: all.slice(start, start + CHECK_BATCH) });
     }
   }
   return batches;
+}
+
+/** The distinct keys of the files the mirror took, each once, in the order picked. */
+function keysToCheck(planned: readonly PlannedUpload[]): CheckKey[] {
+  const seen = new Set<string>();
+  const keys: CheckKey[] = [];
+  for (const { prefix, key, refusal } of planned) {
+    if (refusal === null && !seen.has(key)) {
+      seen.add(key);
+      keys.push({ prefix, key });
+    }
+  }
+  return keys;
 }
 
 /** The check requests a pick makes first: its files the mirror took, by folder prefix. */
 export function checkBatches(
   planned: readonly PlannedUpload[],
 ): { prefix: string; keys: string[] }[] {
-  return batchesOf(planned.filter((upload) => upload.refusal === null));
+  return batchesOf(keysToCheck(planned));
 }
 
 /** A planned file whose key already exists, with what is stored there. */
@@ -384,14 +435,15 @@ function folderOf(key: string): string {
 
 /**
  * Which planned files already exist, asked before anything is signed, in
- * the order picked (#141). The server lists at most so much a request and
- * answers the rest `unchecked`, so those are asked again, each request
- * with a fresh budget, while every round checks some more. A round that
- * checks none means the first folder of each request is too large to list
- * to its end: its files are set aside as unchecked, and the rest asked
- * again, so a large folder never keeps the others from being checked. The
- * files left unchecked may exist, so the conflict dialog asks about them
- * too; they are never taken as new.
+ * the order picked (#141). Each distinct key is asked about once a round.
+ * The server checks at most so much a request and answers the rest
+ * `unchecked`, so those are asked again, each request with a fresh budget,
+ * while every round checks some more. A round that checks none means the
+ * first folder of each request took the whole budget: its keys are set
+ * aside as unchecked, and the rest asked again, so a large folder never
+ * keeps the others from being checked. After `CHECK_ROUNDS` rounds, what
+ * is left is unchecked too. The files left unchecked may exist, so the
+ * conflict dialog asks about them; they are never taken as new.
  */
 export async function findConflicts(
   planned: readonly PlannedUpload[],
@@ -399,9 +451,16 @@ export async function findConflicts(
 ): Promise<CheckOutcome> {
   const found = new Map<string, ExistingUpload>();
   const unchecked = new Set<string>();
-  let asking = planned.filter((upload) => upload.refusal === null);
-  while (asking.length > 0) {
+  let asking = keysToCheck(planned);
+  for (let round = 0; asking.length > 0; round++) {
+    if (round === CHECK_ROUNDS) {
+      for (const { key } of asking) {
+        unchecked.add(key);
+      }
+      break;
+    }
     const batches = batchesOf(asking);
+    const asked = new Set(asking.map(({ key }) => key));
     const left = new Set<string>();
     for (const { prefix, keys } of batches) {
       const result = await check(prefix, keys);
@@ -409,10 +468,13 @@ export async function findConflicts(
         found.set(entry.key, entry);
       }
       for (const key of result.unchecked) {
-        left.add(key);
+        // Only what was asked: an answer naming another key changes nothing.
+        if (asked.has(key)) {
+          left.add(key);
+        }
       }
     }
-    if (left.size === asking.length) {
+    if (left.size === asked.size) {
       // Nothing more was checked: each request's first folder took the
       // whole budget. Those folders stay unchecked; the rest go again.
       const stuck = new Set(batches.map(({ keys }) => folderOf(keys[0] ?? "")));
@@ -423,7 +485,7 @@ export async function findConflicts(
         }
       }
     }
-    asking = asking.filter((upload) => left.has(upload.key));
+    asking = asking.filter(({ key }) => left.has(key));
   }
 
   const conflicts: UploadConflict[] = [];
@@ -493,6 +555,7 @@ export type UploadState = "waiting" | "signing" | "uploading" | "uploaded" | "fa
  */
 export type UploadFailure =
   | { code: UploadRefusalCode }
+  | { code: "same_name" }
   | { code: "exists_now" }
   | { code: "put_failed"; status: number }
   | { code: "sign_failed"; error: unknown };
@@ -1371,6 +1434,8 @@ export function describeFailure(
         : "the path or a name in it is too long";
     case "reserved_path":
       return "_covers/ is the scanner's own folder";
+    case "same_name":
+      return "another file in this pick has the same name";
     case "replace_unavailable":
       return "it cannot be replaced from here; replace it with rclone";
     case "exists_now":

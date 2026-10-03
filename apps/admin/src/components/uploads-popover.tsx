@@ -111,10 +111,10 @@ export function UploadsPopover() {
         ) : (
           <CircleCheckIcon data-icon="inline-start" aria-hidden="true" />
         )}
-        <span className="truncate">
-          {label}
-          <span className="sr-only">{suffix}</span>
-        </span>
+        <span className="truncate">{label}</span>
+        {/* Outside the cut-short words, so they read as one line; the name
+            is still the words, then this. */}
+        {suffix ? <span className="sr-only">{suffix}</span> : null}
       </PopoverTrigger>
       {/* Never taller than the room below the header, as the official
           dropdown menu is, and at most 32rem: a long list scrolls inside,
