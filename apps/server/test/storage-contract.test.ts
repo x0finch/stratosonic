@@ -1,16 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Env } from "../src/env";
 import { BOUND_LIBRARY_ID, bindingStorage, boundStorage } from "../src/storage/binding";
 import type { PresignedUpload } from "../src/storage/presign";
+import { s3Storage } from "../src/storage/s3";
 import type { LibraryStorage, StoredObject } from "../src/storage/storage";
+import { FakeS3, installFakeS3 } from "./fake-s3";
 import { canonicalObjectPath, oracleSignature } from "./sigv4-oracle";
 import { testEnv } from "./support";
 
 /**
  * The storage contract (#84, "Testing Decisions"): what every
  * `LibraryStorage` promises, written once and run against each
- * implementation. Here it runs against the binding (`bindingStorage`); the
- * S3 client runs the same suite against the fake S3.
+ * implementation: the binding (`bindingStorage`), and the S3 client
+ * (`s3Storage`) against the fake S3 (test/fake-s3.ts). What only the S3
+ * client does is tested in s3-storage.test.ts.
  *
  * Each test works under a prefix of its own, so the tests share the bucket
  * without seeing one another's keys.
@@ -31,6 +34,13 @@ interface ContractSubject {
   readonly unconfigured?: () => LibraryStorage;
   /** How many keys each bulk delete call so far carried, when it can be counted. */
   readonly deleteCalls?: () => readonly number[];
+  /**
+   * How closely a `put`'s `uploaded` matches the listing's: to the
+   * millisecond (the default), or within the second, as over the S3 API,
+   * where `PutObject` answers no `Last-Modified` and a listing is the
+   * authority (storage/storage.ts, `StoredObject.uploaded`).
+   */
+  readonly uploadedPrecision?: "millisecond" | "second";
 }
 
 const encoder = new TextEncoder();
@@ -118,7 +128,13 @@ function storageContract(name: string, subject: ContractSubject): void {
       expect(listed?.size).toBe(5);
       expect(listed?.etag).toBe(stored?.etag);
       expect(listed?.uploaded).toBeInstanceOf(Date);
-      expect(listed?.uploaded.getTime()).toBe(stored?.uploaded.getTime());
+      if (subject.uploadedPrecision === "second") {
+        expect(
+          Math.abs((listed?.uploaded.getTime() ?? 0) - (stored?.uploaded.getTime() ?? Number.NaN)),
+        ).toBeLessThan(1000);
+      } else {
+        expect(listed?.uploaded.getTime()).toBe(stored?.uploaded.getTime());
+      }
     });
 
     it("pages a listing with small limits, to the last page", async () => {
@@ -296,7 +312,9 @@ function storageContract(name: string, subject: ContractSubject): void {
       const calls = subject.deleteCalls?.().length;
       await storage.delete([]);
       expect(subject.deleteCalls?.().length).toBe(calls);
-    });
+      // 1,500 writes first, each a signed request over the S3 API: more than
+      // the default 5 s on a busy machine.
+    }, 30_000);
 
     it("answers etags unquoted, and equal for the same bytes", async () => {
       const storage = subject.storage();
@@ -434,6 +452,39 @@ storageContract("the R2 binding", {
   // The pinned environment leaves the token unset.
   unconfigured: () => bindingStorage(testEnv),
   deleteCalls: () => bindingDeletes,
+});
+
+/* ----------------------------------------------------------------- S3 -- */
+
+describe("over the S3 API", () => {
+  const fake = new FakeS3();
+  let restore: () => void = () => {};
+  beforeAll(() => {
+    const spy = installFakeS3(fake);
+    restore = () => spy.mockRestore();
+  });
+  afterAll(() => restore());
+
+  const storage = () => s3Storage(fake.location(), fake.credentials());
+
+  storageContract("the S3 API, on a fake R2", {
+    storage,
+    uploads: {
+      storage,
+      host: fake.host,
+      bucket: fake.bucket,
+      secretAccessKey: fake.secretAccessKey,
+    },
+    // A connected library always has its token, so its uploads are always
+    // configured.
+    deleteCalls: () => fake.deleteCalls(),
+    uploadedPrecision: "second",
+  });
+
+  it("signed every request the contract made, as the oracle verifies", () => {
+    expect(fake.calls.length).toBeGreaterThan(0);
+    expect(fake.calls.filter((call) => !call.signatureValid)).toEqual([]);
+  });
 });
 
 describe("bindingStorage", () => {
