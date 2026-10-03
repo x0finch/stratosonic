@@ -22,11 +22,11 @@ import {
   describeFailure,
   describeHidden,
   describeQueue,
+  describeUnchecked,
   describeUploadsStatus,
   EXPIRY_MARGIN_MS,
   findConflicts,
   NOTIFY_EVERY_MS,
-  nameUploadsStatus,
   notUploadedToast,
   type PickedFile,
   PLAN_SLICE,
@@ -42,6 +42,7 @@ import {
   type UploadView,
   uploadedToast,
   uploadsStatus,
+  uploadsStatusSuffix,
   uploadTarget,
   watchPage,
   xhrPut,
@@ -865,14 +866,14 @@ describe("the check before anything is signed", () => {
     expect(batches.flatMap((batch) => batch.keys)).not.toContain("Y/notes.pdf");
   });
 
-  it("finds the conflicts in the order picked, taking an unchecked key as new", async () => {
+  it("finds the conflicts in the order picked", async () => {
     const planned = plan("A/", "1.flac", "2.flac", "3.flac", "x.pdf");
     const check = vi.fn(async () => ({
       existing: [existing("A/3.flac"), existing("A/1.flac")],
-      unchecked: ["A/2.flac"],
+      unchecked: [],
     }));
 
-    const conflicts = await findConflicts(planned, check);
+    const { conflicts, unchecked } = await findConflicts(planned, check);
 
     expect(check).toHaveBeenCalledTimes(1);
     expect(check).toHaveBeenCalledWith("A/", ["A/1.flac", "A/2.flac", "A/3.flac"]);
@@ -880,56 +881,127 @@ describe("the check before anything is signed", () => {
       ["A/1.flac", 31_234_567],
       ["A/3.flac", 31_234_567],
     ]);
+    expect(unchecked).toEqual([]);
+  });
+
+  it("asks again for what the server left unchecked, past 40 folders, until all is checked", async () => {
+    // 45 album folders of a folder pick, one file each; the server lists 40
+    // folders a request, as CHECK_LISTINGS bounds it.
+    const planned = planUploads(
+      Array.from({ length: 45 }, (_, i) => picked("01.flac", 10, `Pick/CD${i}/01.flac`)),
+      "",
+      CONFIG,
+      noFolders,
+    );
+    const asked: number[] = [];
+    const check = vi.fn(async (_prefix: string, keys: readonly string[]) => {
+      asked.push(keys.length);
+      return {
+        // CD44 exists, in a folder past the first request's budget.
+        existing: keys
+          .slice(0, 40)
+          .filter((key) => key.includes("/CD44/"))
+          .map((key) => existing(key)),
+        unchecked: keys.slice(40),
+      };
+    });
+
+    const { conflicts, unchecked } = await findConflicts(planned, check);
+
+    expect(asked).toEqual([45, 5]);
+    expect(conflicts.map(({ upload }) => upload.key)).toEqual(["Pick/CD44/01.flac"]);
+    expect(unchecked).toEqual([]);
+  });
+
+  it("sets aside a folder too large to check, and checks the rest past it", async () => {
+    const planned = plan("A/", "1.flac", "2.flac", "3.flac");
+    // A/1.flac's folder is too large: whenever asked first, it takes the
+    // whole budget, so the server checks nothing else in that request.
+    const check = vi.fn(async (_prefix: string, keys: readonly string[]) =>
+      keys[0] === "A/1.flac"
+        ? { existing: [], unchecked: [...keys] }
+        : { existing: keys.includes("A/3.flac") ? [existing("A/3.flac")] : [], unchecked: [] },
+    );
+
+    const { conflicts, unchecked } = await findConflicts(planned, check);
+
+    // Every key of A/ is in that same folder here, so all of them stay unchecked.
+    expect(conflicts).toEqual([]);
+    expect(unchecked.map((upload) => upload.key)).toEqual(["A/1.flac", "A/2.flac", "A/3.flac"]);
+    expect(check).toHaveBeenCalledTimes(1);
+  });
+
+  it("checks the other folders of a pick once a too-large one is set aside", async () => {
+    const planned = planUploads(
+      [picked("1.flac", 10, "Pick/Big/1.flac"), picked("2.flac", 10, "Pick/Small/2.flac")],
+      "",
+      CONFIG,
+      noFolders,
+    );
+    const check = vi.fn(async (_prefix: string, keys: readonly string[]) =>
+      keys[0]?.includes("/Big/")
+        ? { existing: [], unchecked: [...keys] }
+        : { existing: keys.map((key) => existing(key)), unchecked: [] },
+    );
+
+    const { conflicts, unchecked } = await findConflicts(planned, check);
+
+    expect(conflicts.map(({ upload }) => upload.key)).toEqual(["Pick/Small/2.flac"]);
+    expect(unchecked.map((upload) => upload.key)).toEqual(["Pick/Big/1.flac"]);
+    expect(check).toHaveBeenCalledTimes(2);
   });
 
   it("asks nothing for a pick the mirror refused whole", async () => {
     const check = vi.fn();
-    expect(await findConflicts(plan("", "a.pdf"), check)).toEqual([]);
+    expect(await findConflicts(plan("", "a.pdf"), check)).toEqual({ conflicts: [], unchecked: [] });
     expect(check).not.toHaveBeenCalled();
   });
 
   describe("the owner's one answer", () => {
-    const planned = plan("A/", "1.flac", "2.flac", "3.flac");
-    const conflicts = [{ upload: planned[1] as PlannedUpload, existing: existing("A/2.flac") }];
+    const planned = plan("A/", "1.flac", "2.flac", "3.flac", "4.flac");
+    // 2.flac exists; 4.flac could not be checked.
+    const asked = [planned[1] as PlannedUpload, planned[3] as PlannedUpload];
 
-    it("Replace them: every file goes, the conflicts with overwrite", () => {
+    it("Replace: every file goes, those asked about with overwrite", () => {
       expect(
-        decideConflicts(planned, conflicts, "replace").map((u) => [u.key, u.overwrite === true]),
+        decideConflicts(planned, asked, "replace").map((u) => [u.key, u.overwrite === true]),
       ).toEqual([
         ["A/1.flac", false],
         ["A/2.flac", true],
         ["A/3.flac", false],
+        ["A/4.flac", true],
       ]);
     });
 
-    it("Skip them: only the rest go", () => {
-      expect(decideConflicts(planned, conflicts, "skip").map((u) => u.key)).toEqual([
+    it("Skip: only the rest go", () => {
+      expect(decideConflicts(planned, asked, "skip").map((u) => u.key)).toEqual([
         "A/1.flac",
         "A/3.flac",
       ]);
     });
 
     it("Cancel: nothing goes", () => {
-      expect(decideConflicts(planned, conflicts, "cancel")).toEqual([]);
+      expect(decideConflicts(planned, asked, "cancel")).toEqual([]);
     });
   });
 
   it("a Replace is signed with overwrite: true, and nothing else is", async () => {
     const h = harness();
     const planned = plan("A/", "1.flac", "2.flac");
-    const conflicts = [{ upload: planned[0] as PlannedUpload, existing: existing("A/1.flac") }];
-    h.queue.add(decideConflicts(planned, conflicts, "replace"), 10);
+    h.queue.add(decideConflicts(planned, [planned[0] as PlannedUpload], "replace"), 10);
     expect(h.signs[0]?.files).toEqual([
       { key: "A/1.flac", size: 1000, overwrite: true },
       { key: "A/2.flac", size: 1000, overwrite: false },
     ]);
   });
 
-  it("titles the dialog with how many of the pick exist", () => {
-    expect(describeConflicts(3, 25)).toBe("3 of 25 files already exist");
-    expect(describeConflicts(1, 25)).toBe("1 of 25 files already exists");
-    expect(describeConflicts(1, 1)).toBe("1 of 1 file already exists");
-    expect(describeConflicts(1200, 2000)).toBe("1,200 of 2,000 files already exist");
+  it("titles the dialog with how many of the pick exist, or could not be checked", () => {
+    expect(describeConflicts(3, 0, 25)).toBe("3 of 25 files already exist");
+    expect(describeConflicts(1, 2, 25)).toBe("1 of 25 files already exists");
+    expect(describeConflicts(1, 0, 1)).toBe("1 of 1 file already exists");
+    expect(describeConflicts(1200, 0, 2000)).toBe("1,200 of 2,000 files already exist");
+    expect(describeConflicts(0, 2, 25)).toBe("2 of 25 files could not be checked");
+    expect(describeUnchecked(2)).toBe("2 files could not be checked, and may already exist.");
   });
 });
 
@@ -1032,15 +1104,15 @@ describe("the words", () => {
     });
   });
 
-  it("names the trigger by what its words are about", () => {
-    expect(nameUploadsStatus([view("uploading"), view("waiting")])).toBe("Uploading 1 of 2 files");
-    expect(nameUploadsStatus([view("uploading")])).toBe("Uploading 1 of 1 file");
-    expect(nameUploadsStatus([view("failed"), view("failed"), view("uploaded")])).toBe(
-      "2 uploads need attention",
+  it("names the trigger by its words, then what they are about (label in name)", () => {
+    const name = (items: UploadView[]) => describeUploadsStatus(items) + uploadsStatusSuffix(items);
+    expect(name([view("uploading"), view("waiting")])).toBe("Uploading 1 of 2 files");
+    expect(name([view("uploading")])).toBe("Uploading 1 of 1 file");
+    expect(name([view("failed"), view("failed"), view("uploaded")])).toBe(
+      "2 need attention in uploads",
     );
-    expect(nameUploadsStatus([view("failed")])).toBe("1 upload needs attention");
-    expect(nameUploadsStatus([view("uploaded")])).toBe("Uploads done");
-    expect(nameUploadsStatus([])).toBe("");
+    expect(name([view("uploaded")])).toBe("Uploads done");
+    expect(name([])).toBe("");
   });
 
   it("counts the queue's failed rows for the toast", async () => {

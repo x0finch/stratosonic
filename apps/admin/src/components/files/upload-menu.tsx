@@ -31,6 +31,8 @@ export function UploadMenu({
 }) {
   const filesInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const wasBusy = useRef(false);
 
   useEffect(() => {
     // Not a React attribute: set on the element itself.
@@ -38,6 +40,23 @@ export function UploadMenu({
       folderInput.current.webkitdirectory = true;
     }
   }, []);
+
+  // The button is disabled while busy, which drops its focus to the page:
+  // once it is done, focus comes back to it, unless something else took
+  // it meanwhile (the conflict dialog).
+  useEffect(() => {
+    if (busy !== null) {
+      wasBusy.current = true;
+      return;
+    }
+    if (wasBusy.current) {
+      wasBusy.current = false;
+      const active = document.activeElement;
+      if (active === null || active === document.body) {
+        trigger.current?.focus();
+      }
+    }
+  }, [busy]);
 
   const take = (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.currentTarget.files ?? []);
@@ -52,6 +71,7 @@ export function UploadMenu({
     <>
       <DropdownMenu>
         <DropdownMenuTrigger
+          ref={trigger}
           // The Uploads popover finds it here to give it focus back once the
           // queue empties (components/uploads-popover.tsx).
           data-upload-trigger=""

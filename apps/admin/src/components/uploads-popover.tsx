@@ -22,13 +22,13 @@ import {
   describeHidden,
   describeQueue,
   describeUploadsStatus,
-  nameUploadsStatus,
   percentOf,
   shownRows,
   splitKey,
   type UploadQueue,
   type UploadView,
   uploadsStatus,
+  uploadsStatusSuffix,
 } from "@/lib/uploads";
 
 /** Where focus goes once the row it was on loses its button: a row, or the heading. */
@@ -68,14 +68,14 @@ function focusUploadAnchor(): void {
  * anything is signed. Opening it puts focus on its heading, never on a
  * button, so a second Enter cancels nothing. The trigger redraws only when
  * its words change, not on every upload's progress; its name says what
- * they are about ("2 uploads need attention", `nameUploadsStatus`), and in
+ * they are about ("2 need attention in uploads", `uploadsStatusSuffix`), and in
  * a narrow header the words are cut short rather than overflow.
  */
 export function UploadsPopover() {
   const queue = useUploadQueue();
   const status = useUploads(queue, (snapshot) => uploadsStatus(snapshot.items));
   const label = useUploads(queue, (snapshot) => describeUploadsStatus(snapshot.items));
-  const name = useUploads(queue, (snapshot) => nameUploadsStatus(snapshot.items));
+  const suffix = useUploads(queue, (snapshot) => uploadsStatusSuffix(snapshot.items));
   // The popover's heading: focus lands there when it opens, so a second
   // Enter cancels nothing (#142 review), and when a row's button goes.
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -100,9 +100,10 @@ export function UploadsPopover() {
 
   return (
     <Popover>
-      {/* It may shrink, its words cut short, so a narrow header never
-          overflows; its name says what the words are about. */}
-      <PopoverTrigger render={<Button variant="outline" className="min-w-0" aria-label={name} />}>
+      {/* It may shrink (`shrink` over the button's own `shrink-0`), its
+          words cut short, so a narrow header never overflows. Its name is
+          its words and a hidden suffix saying what they are about. */}
+      <PopoverTrigger render={<Button variant="outline" className="min-w-0 shrink" />}>
         {status === "running" ? (
           <Spinner data-icon="inline-start" aria-hidden="true" />
         ) : status === "attention" ? (
@@ -110,7 +111,10 @@ export function UploadsPopover() {
         ) : (
           <CircleCheckIcon data-icon="inline-start" aria-hidden="true" />
         )}
-        <span className="truncate">{label}</span>
+        <span className="truncate">
+          {label}
+          <span className="sr-only">{suffix}</span>
+        </span>
       </PopoverTrigger>
       {/* Never taller than the room below the header, as the official
           dropdown menu is, and at most 32rem: a long list scrolls inside,

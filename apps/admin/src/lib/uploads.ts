@@ -30,11 +30,12 @@ import { formatBytes, formatCount } from "@/lib/format";
  * 2. **Checked against the bucket** (#141), before anything is signed:
  *    `POST /api/files/uploads/check` (`findConflicts`, at most
  *    `CHECK_BATCH` keys a request, one request per folder prefix) says
- *    which picked keys already exist. If any do, the owner decides once,
- *    for all of them, in one dialog: **Replace them** (they are signed with
- *    `overwrite: true`), **Skip them** (only the rest go), or **Cancel**
- *    (nothing goes); `decideConflicts`. A key the server could not check
- *    goes as new, and its `PUT`'s `If-None-Match: *` still guards it.
+ *    which picked keys already exist; the keys it could not check yet are
+ *    asked again, each request with a fresh budget, and those it cannot
+ *    check at all (a folder too large to list) may exist. If any exist or
+ *    may, the owner decides once, for all of them, in one dialog:
+ *    **Replace** (they are signed with `overwrite: true`), **Skip** (only
+ *    the rest go), or **Cancel** (nothing goes); `decideConflicts`.
  * 3. **Waiting**, in the order picked.
  * 4. **Signing**, just in time: as uploads finish, the next files are signed
  *    with `POST /api/files/uploads`, as many as there are free places, at
@@ -336,22 +337,31 @@ function comparePathOrder(
 /** The most keys one `POST /api/files/uploads/check` takes: the server's own most. */
 export const CHECK_BATCH = 1000;
 
-/** The check requests a pick makes: its files the mirror took, by folder prefix, `CHECK_BATCH` at most each. */
+/** The check requests for these files: by folder prefix, `CHECK_BATCH` keys at most each. */
+function batchesOf(planned: readonly PlannedUpload[]): { prefix: string; keys: string[] }[] {
+  const byPrefix = new Map<string, string[]>();
+  for (const { prefix, key } of planned) {
+    const keys = byPrefix.get(prefix);
+    if (keys === undefined) {
+      byPrefix.set(prefix, [key]);
+    } else {
+      keys.push(key);
+    }
+  }
+  const batches: { prefix: string; keys: string[] }[] = [];
+  for (const [prefix, keys] of byPrefix) {
+    for (let start = 0; start < keys.length; start += CHECK_BATCH) {
+      batches.push({ prefix, keys: keys.slice(start, start + CHECK_BATCH) });
+    }
+  }
+  return batches;
+}
+
+/** The check requests a pick makes first: its files the mirror took, by folder prefix. */
 export function checkBatches(
   planned: readonly PlannedUpload[],
 ): { prefix: string; keys: string[] }[] {
-  const byPrefix = new Map<string, string[]>();
-  for (const { prefix, key, refusal } of planned) {
-    if (refusal === null) {
-      byPrefix.set(prefix, [...(byPrefix.get(prefix) ?? []), key]);
-    }
-  }
-  return [...byPrefix].flatMap(([prefix, keys]) =>
-    Array.from({ length: Math.ceil(keys.length / CHECK_BATCH) }, (_, index) => ({
-      prefix,
-      keys: keys.slice(index * CHECK_BATCH, (index + 1) * CHECK_BATCH),
-    })),
-  );
+  return batchesOf(planned.filter((upload) => upload.refusal === null));
 }
 
 /** A planned file whose key already exists, with what is stored there. */
@@ -360,27 +370,76 @@ export interface UploadConflict {
   existing: ExistingUpload;
 }
 
+/** What the check found: the files that exist, and those it could not check. */
+export interface CheckOutcome {
+  conflicts: UploadConflict[];
+  /** Files whose folder the server could not list to its end: they may exist. */
+  unchecked: PlannedUpload[];
+}
+
+/** A key's folder, as the server groups keys to list them. */
+function folderOf(key: string): string {
+  return key.slice(0, key.lastIndexOf("/") + 1);
+}
+
 /**
  * Which planned files already exist, asked before anything is signed, in
- * the order picked. A key the server could not check (`unchecked`) is
- * taken as new: its `PUT`'s `If-None-Match: *` still refuses it if it
- * exists, and the file then fails as uploaded elsewhere.
+ * the order picked (#141). The server lists at most so much a request and
+ * answers the rest `unchecked`, so those are asked again, each request
+ * with a fresh budget, while every round checks some more. A round that
+ * checks none means the first folder of each request is too large to list
+ * to its end: its files are set aside as unchecked, and the rest asked
+ * again, so a large folder never keeps the others from being checked. The
+ * files left unchecked may exist, so the conflict dialog asks about them
+ * too; they are never taken as new.
  */
 export async function findConflicts(
   planned: readonly PlannedUpload[],
   check: (prefix: string, keys: readonly string[]) => Promise<UploadCheckResult>,
-): Promise<UploadConflict[]> {
+): Promise<CheckOutcome> {
   const found = new Map<string, ExistingUpload>();
-  for (const { prefix, keys } of checkBatches(planned)) {
-    const { existing } = await check(prefix, keys);
-    for (const entry of existing) {
-      found.set(entry.key, entry);
+  const unchecked = new Set<string>();
+  let asking = planned.filter((upload) => upload.refusal === null);
+  while (asking.length > 0) {
+    const batches = batchesOf(asking);
+    const left = new Set<string>();
+    for (const { prefix, keys } of batches) {
+      const result = await check(prefix, keys);
+      for (const entry of result.existing) {
+        found.set(entry.key, entry);
+      }
+      for (const key of result.unchecked) {
+        left.add(key);
+      }
+    }
+    if (left.size === asking.length) {
+      // Nothing more was checked: each request's first folder took the
+      // whole budget. Those folders stay unchecked; the rest go again.
+      const stuck = new Set(batches.map(({ keys }) => folderOf(keys[0] ?? "")));
+      for (const key of left) {
+        if (stuck.has(folderOf(key))) {
+          unchecked.add(key);
+          left.delete(key);
+        }
+      }
+    }
+    asking = asking.filter((upload) => left.has(upload.key));
+  }
+
+  const conflicts: UploadConflict[] = [];
+  const notChecked: PlannedUpload[] = [];
+  for (const upload of planned) {
+    if (upload.refusal !== null) {
+      continue;
+    }
+    const existing = found.get(upload.key);
+    if (existing) {
+      conflicts.push({ upload, existing });
+    } else if (unchecked.has(upload.key)) {
+      notChecked.push(upload);
     }
   }
-  return planned.flatMap((upload) => {
-    const existing = upload.refusal === null ? found.get(upload.key) : undefined;
-    return existing ? [{ upload, existing }] : [];
-  });
+  return { conflicts, unchecked: notChecked };
 }
 
 /** The owner's one answer to the conflict dialog. */
@@ -388,26 +447,38 @@ export type ConflictDecision = "replace" | "skip" | "cancel";
 
 /**
  * What goes to the queue after the conflict dialog: every planned file,
- * the conflicts signed with `overwrite: true` (Replace them); the rest only
- * (Skip them); or nothing (Cancel).
+ * those asked about (that exist, or could not be checked) signed with
+ * `overwrite: true` (Replace); the rest only (Skip); or nothing (Cancel).
+ * A Replace of a key that turns out not to exist is signed as a new file.
  */
 export function decideConflicts(
   planned: readonly PlannedUpload[],
-  conflicts: readonly UploadConflict[],
+  asked: readonly PlannedUpload[],
   decision: ConflictDecision,
 ): PlannedUpload[] {
   if (decision === "cancel") {
     return [];
   }
-  const conflicting = new Set(conflicts.map((conflict) => conflict.upload));
+  const set = new Set(asked);
   return decision === "skip"
-    ? planned.filter((upload) => !conflicting.has(upload))
-    : planned.map((upload) => (conflicting.has(upload) ? { ...upload, overwrite: true } : upload));
+    ? planned.filter((upload) => !set.has(upload))
+    : planned.map((upload) => (set.has(upload) ? { ...upload, overwrite: true } : upload));
 }
 
-/** The conflict dialog's title: `3 of 25 files already exist`. */
-export function describeConflicts(conflicts: number, total: number): string {
-  return `${formatCount(conflicts)} of ${countOf(total, "file")} already ${conflicts === 1 ? "exists" : "exist"}`;
+/**
+ * The conflict dialog's title: `3 of 25 files already exist`, or, when
+ * none was found but some could not be checked, `2 of 25 files could not
+ * be checked`.
+ */
+export function describeConflicts(conflicts: number, unchecked: number, total: number): string {
+  return conflicts > 0
+    ? `${formatCount(conflicts)} of ${countOf(total, "file")} already ${conflicts === 1 ? "exists" : "exist"}`
+    : `${formatCount(unchecked)} of ${countOf(total, "file")} could not be checked`;
+}
+
+/** The dialog's line for the files it could not check, beside conflicts: `2 files could not be checked`. */
+export function describeUnchecked(unchecked: number): string {
+  return `${countOf(unchecked, "file")} could not be checked, and may already exist.`;
 }
 
 /* --------------------------------------------------------------- queue -- */
@@ -1249,22 +1320,20 @@ export function describeAttention(failed: number): string {
 }
 
 /**
- * The trigger's accessible name, which says what the words are about:
- * `Uploading 3 of 12 files`, `2 uploads need attention`, `Uploads done`.
+ * What the trigger's accessible name adds after its visible words, so the
+ * name says what they are about while the words stay its contiguous start
+ * (WCAG 2.5.3, label in name): ` files` (`Uploading 3 of 12 files`),
+ * ` in uploads` (`2 need attention in uploads`), or nothing (`Uploads
+ * done` says it already).
  */
-export function nameUploadsStatus(items: readonly UploadView[]): string {
-  const label = describeUploadsStatus(items);
+export function uploadsStatusSuffix(items: readonly UploadView[]): string {
   switch (uploadsStatus(items)) {
-    case "running": {
-      const counted = items.filter((item) => item.state !== "canceled").length;
-      return `${label} ${counted === 1 ? "file" : "files"}`;
-    }
-    case "attention": {
-      const failed = items.filter((item) => item.state === "failed").length;
-      return `${formatCount(failed)} ${failed === 1 ? "upload needs" : "uploads need"} attention`;
-    }
+    case "running":
+      return items.filter((item) => item.state !== "canceled").length === 1 ? " file" : " files";
+    case "attention":
+      return " in uploads";
     default:
-      return label;
+      return "";
   }
 }
 

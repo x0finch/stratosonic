@@ -55,6 +55,7 @@ import { can } from "@/lib/roles";
 import { signOutWhenUnauthenticated } from "@/lib/sign-out";
 import { toastError, toastFailure } from "@/lib/toasts";
 import {
+  type CheckOutcome,
   type ConflictDecision,
   decideConflicts,
   findConflicts,
@@ -106,6 +107,8 @@ interface AskingState {
   open: boolean;
   planned: readonly PlannedUpload[];
   conflicts: readonly UploadConflict[];
+  /** The files the server could not check, which may exist. */
+  unchecked: readonly PlannedUpload[];
   /** The files checked: the pick less what the mirror refused. */
   checked: number;
   /** The folder the pick went into, which every key starts with. */
@@ -181,6 +184,7 @@ function FilesPage({ me }: { me: Me | null }) {
     open: false,
     planned: [],
     conflicts: [],
+    unchecked: [],
     checked: 0,
     folder: "",
   });
@@ -234,11 +238,11 @@ function FilesPage({ me }: { me: Me | null }) {
     // The files the mirror took are checked; the refused ones fail in the
     // list without a request.
     const checked = planned.filter((upload) => upload.refusal === null).length;
-    let conflicts: UploadConflict[] = [];
+    let outcome: CheckOutcome = { conflicts: [], unchecked: [] };
     if (checked > 0) {
       setBusy(`Checking ${countOf(checked, "file")}…`);
       try {
-        conflicts = await findConflicts(planned, checkUploads);
+        outcome = await findConflicts(planned, checkUploads);
       } catch (error) {
         // Nothing is uploaded without the check: the owner picks again.
         if (!signOutWhenUnauthenticated(queryClient, error)) {
@@ -249,11 +253,12 @@ function FilesPage({ me }: { me: Me | null }) {
         setBusy(null);
       }
     }
-    if (conflicts.length === 0) {
+    const { conflicts, unchecked } = outcome;
+    if (conflicts.length === 0 && unchecked.length === 0) {
       queue.add(planned, settings.limits.signBatch);
       return;
     }
-    setAsking({ open: true, planned, conflicts, checked, folder: prefix });
+    setAsking({ open: true, planned, conflicts, unchecked, checked, folder: prefix });
   }
 
   /** The owner's one answer to the conflict dialog: what goes, if anything. */
@@ -262,7 +267,11 @@ function FilesPage({ me }: { me: Me | null }) {
       return;
     }
     setAsking((state) => ({ ...state, open: false }));
-    const going = decideConflicts(asking.planned, asking.conflicts, decision);
+    const going = decideConflicts(
+      asking.planned,
+      [...asking.conflicts.map((conflict) => conflict.upload), ...asking.unchecked],
+      decision,
+    );
     if (going.length > 0) {
       queue.add(going, config.data.limits.signBatch);
     }
@@ -412,6 +421,7 @@ function FilesPage({ me }: { me: Me | null }) {
           <ConflictDialog
             open={asking.open}
             conflicts={asking.conflicts}
+            unchecked={asking.unchecked}
             total={asking.checked}
             folder={asking.folder}
             onDecide={decide}
