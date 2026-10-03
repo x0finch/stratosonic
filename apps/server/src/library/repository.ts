@@ -64,8 +64,7 @@ export function artistColumns(scope: LibraryScope) {
   return {
     id: artist.id,
     name: artist.name,
-    albumCount: sql<number>`(select count(*) from album
-      where album.artist_id = artist.id${albumOfArtistInScope(scope)})`,
+    albumCount: sql<number>`(select count(*) from album where album.artist_id = artist.id${albumOfArtistInScope(scope)})`,
     coverAlbumId: coverAlbumOf(scope),
   };
 }

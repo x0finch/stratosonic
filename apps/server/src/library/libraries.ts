@@ -43,12 +43,15 @@ export function musicFolderElements(
  *   `Ints` drops whatever `strconv.ParseInt` cannot read, and a request whose
  *   every value was dropped named no folder at all, which means the user's
  *   whole scope.
- * - **The parameter may repeat**, and every value is checked. More than
- *   `MAX_LISTED_LIBRARIES` values is error 0: a scope binds one parameter per
- *   library (library/scope.ts), which Navidrome, binding none, does not need
- *   to cap.
+ * - **The parameter may repeat**, and every value is checked.
  * - **A library the user cannot see is error 70**, "Library N not found or
- *   not accessible", Navidrome's message, whether it exists or not.
+ *   not accessible", Navidrome's message, whether it exists or not. It is
+ *   checked first, so such a request gets Navidrome's answer whatever else
+ *   it carries.
+ * - **More than `MAX_LISTED_LIBRARIES` distinct libraries is error 0**: a
+ *   scope binds one parameter per library (library/scope.ts), which
+ *   Navidrome, binding none, does not need to cap. A library named twice
+ *   counts once.
  * - **Values narrow the scope, for admins too.** Values that name every
  *   library of a user who sees them all are no narrowing, and keep the fast
  *   path, as Navidrome's `searchScope` keeps it.
@@ -66,13 +69,6 @@ export function selectedLibraries(request: AuthenticatedSubsonicRequest): Librar
     .map(parseGoInt64)
     .filter((value) => value !== null);
 
-  if (values.length > MAX_LISTED_LIBRARIES) {
-    throw new SubsonicError(
-      SubsonicErrorCode.Generic,
-      `too many music folders: ${values.length}, at most ${MAX_LISTED_LIBRARIES} per request`,
-    );
-  }
-
   // Compared as bigints, so an id past 2^53 cannot round onto a real one.
   const visible = new Set(user.libraryIds.map(BigInt));
   for (const value of values) {
@@ -89,6 +85,13 @@ export function selectedLibraries(request: AuthenticatedSubsonicRequest): Librar
   }
 
   const selected = new Set(values.map(Number));
+  if (selected.size > MAX_LISTED_LIBRARIES) {
+    throw new SubsonicError(
+      SubsonicErrorCode.Generic,
+      `too many music folders: ${selected.size}, at most ${MAX_LISTED_LIBRARIES} per request`,
+    );
+  }
+
   if (user.seesAllLibraries && user.libraryIds.every((id) => selected.has(id))) {
     return ALL_LIBRARIES;
   }

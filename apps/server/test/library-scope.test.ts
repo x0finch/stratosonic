@@ -146,14 +146,18 @@ describe.each(MUSIC_FOLDER_ENDPOINTS)("%s and musicFolderId", (endpoint, params)
     ).toEqual(inLibraries(everything, [2]));
   });
 
-  it("answers error 0 for more than 20 values", async () => {
-    const values = Array.from({ length: 21 }, (): [string, string] => ["musicFolderId", "2"]);
+  it("counts a library named many times once, after checking access", async () => {
+    const twice = (id: string) =>
+      Array.from({ length: 21 }, (): [string, string] => ["musicFolderId", id]);
 
-    expect(await refused(LISTENER_TWO, values)).toEqual({
-      code: 0,
-      message: "too many music folders: 21, at most 20 per request",
+    // 21 values naming one library are one library, not too many.
+    expect(await seen(LISTENER_TWO, twice("2"))).toEqual(inLibraries(everything, [2]));
+    // A library the user cannot see is error 70 however often it is named;
+    // more than 20 distinct libraries is library-scope-many.test.ts's.
+    expect(await refused(LISTENER_TWO, twice("1"))).toEqual({
+      code: 70,
+      message: "Library 1 not found or not accessible",
     });
-    expect(await seen(LISTENER_TWO, values.slice(1))).toEqual(inLibraries(everything, [2]));
   });
 });
 
@@ -416,7 +420,14 @@ describe("a library being removed", () => {
     ]);
     expect((await call(ADMIN, "getUser", [["username", ADMIN]])).user.folder).toEqual([1]);
     expect(idsIn(await call(ADMIN, "search3", [["query", ""]]))).toEqual(
-      inLibraries(idsIn(await call(ADMIN, "search3", [["query", ""]])), [1]),
+      [
+        `ar-${ids.sharedArtist}`,
+        `ar-${ids.onlyOne}`,
+        `al-${ids.sharedAlbum1}`,
+        `al-${ids.firstOnly}`,
+        `tr-${ids.sharedTrack1}`,
+        `tr-${ids.jazzTrack}`,
+      ].sort(),
     );
     expect(idsIn(await call(ADMIN, "getAlbumList2", [["type", "newest"]]))).toEqual(
       [`al-${ids.firstOnly}`, `al-${ids.sharedAlbum1}`].sort(),

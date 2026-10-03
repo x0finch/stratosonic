@@ -181,6 +181,29 @@ describe(`a scope of more than ${MAX_LISTED_LIBRARIES} libraries`, () => {
     expect(afterAuthentication(d1.statements)[0]?.sql).not.toMatch(/user_library/);
   });
 
+  it.each([
+    ["getIndexes", []],
+    ["getArtists", []],
+    ["getAlbumList2", [["type", "newest"]]],
+    ["getStarred2", []],
+    ["getRandomSongs", []],
+    ["getSongsByGenre", [["genre", "Rock"]]],
+    ["search2", [["query", ""]]],
+    ["search3", [["query", ""]]],
+  ] as const)(
+    "%s answers error 0 for more than 20 distinct libraries",
+    async (endpoint, params) => {
+      const named = (count: number) =>
+        VISIBLE.slice(0, count).map((id): [string, string] => ["musicFolderId", String(id)]);
+
+      expect((await call(LISTENER, endpoint, [...params, ...named(21)])).error).toEqual({
+        code: 0,
+        message: "too many music folders: 21, at most 20 per request",
+      });
+      expect((await call(LISTENER, endpoint, [...params, ...named(20)])).status).toBe("ok");
+    },
+  );
+
   it("leaves search room for its words", async () => {
     const words = Array.from({ length: 40 }, (_, index) => `w${index}`).join(" ");
 

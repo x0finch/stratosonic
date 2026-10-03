@@ -82,7 +82,7 @@ export async function authenticate(env: Env, params: URLSearchParams): Promise<A
     // Navidrome's `userSeesAllLibraries`: the visible set is the whole
     // library table. A `removing` library is in the count and never visible,
     // so while one exists nobody, an admin included, takes the fast path.
-    seesAllLibraries: found.libraries.length === found.libraryCount,
+    seesAllLibraries: found.libraryCount > 0 && found.libraries.length === found.libraryCount,
   };
 }
 
