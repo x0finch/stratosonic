@@ -225,9 +225,10 @@ with the CORS rule for `BASE_URL`'s origin (apps/server README, "File
 uploads"); otherwise they are skipped. They upload a folder into
 `FILES_PREFIX` (two FLACs, their `.lrc` and a cover), see the toast, the
 scan line, the header's Uploads trigger and one row a file in its
-popover, upload one of its files again and replace it from the popover,
-and delete the folder again. Each step's note counts the sign, complete
-and `PUT` requests its run made. A `.pdf`, refused before any request,
+popover, pick one of its files again, see the conflict dialog before
+anything is signed and choose **Replace them**, and delete the folder
+again. Each step's note counts the check, sign, complete and `PUT`
+requests its run made. A `.pdf`, refused before any request,
 needs no bucket: that step runs on any Worker whose uploads are
 configured, which fake R2 credentials in `.dev.vars` are enough for. It
 also checks that the popover never opens by itself, that the keyboard
@@ -336,49 +337,62 @@ credentials, **Upload**.
   closing the tab while a file waits or is sent asks first
   (`beforeunload`). Signing out, or a session that ends, cancels what is
   still to go and clears the queue; an answer still on its way then starts
-  nothing, and nothing held is reported. A file whose earlier `PUT` lost its
-  answer and then shows as Already exists is reported even when skipped,
-  since what exists may be that upload.
-- **Already exists** (the server's `exists`, or R2's `412`) offers
-  **Replace** and **Skip**; several get **Replace all**, which asks first
-  ("Replace 3 files?"), and **Skip all**. Replace is never automatic: it
-  signs again with `overwrite: true`, which keeps a track's id. A Replace
-  the server cannot spell for certain (`replace_unavailable`) fails with
-  "replace it with rclone".
+  nothing, and nothing held is reported.
+- **Conflicts are settled before anything uploads** (#141, as Drive,
+  OneDrive and Windows settle them). Once a pick is planned, the page asks
+  `POST /api/files/uploads/check` which of its keys exist (one request per
+  folder prefix, up to 1,000 keys each), while **Upload** shows a spinner
+  and "Checking 25 files…". With no conflict the files go at once, never
+  with `overwrite`. With conflicts, one dialog
+  (`src/components/files/conflict-dialog.tsx`) asks once for all of them:
+  "3 of 25 files already exist", up to ten names, each with its stored
+  size and age, then "and 12 more", and **Replace them** (signed with
+  `overwrite: true`, which keeps a track's id), **Skip them** (the rest
+  go) or **Cancel** (nothing goes; so does Escape). There is no choice per
+  file and no "keep both". A key the server could not check (its folder
+  too large to list) goes as new. A check that fails uploads nothing, and
+  its toast says so.
+- **A key that appears after the check** (the server's `exists` when it
+  signs, or R2's `412` for the `PUT`'s `If-None-Match: *`) fails with
+  "uploaded elsewhere just now. Upload it again to replace it.", with no
+  prompt. A file whose earlier `PUT` lost its answer, and whose retry
+  finds its key holding as many bytes, is taken as uploaded; one that
+  finds another size fails the same way, and is still reported, since
+  what exists may be that upload. A Replace the server cannot spell for
+  certain (`replace_unavailable`) fails with "replace it with rclone".
 - **The Uploads trigger** (#141, `src/components/uploads-popover.tsx`)
   sits in the header, next to the theme toggle, on every page of the
   shell while the queue holds a file (only a role with `files:write` can
   fill it). Its label is the queue's state in words: a spinner and
   "Uploading 3 of 12" (the file the run is on) while a file waits or is
-  sent, "2 need attention" once only conflicts and failures wait, and
-  "Uploads done" once everything has finished. It redraws only when
-  those words change. It opens the upload list in the shadcn `Popover`,
-  which never opens by itself: a run's conflicts are told by its toast
-  and by the label. Escape closes it, and focus returns to the trigger.
+  sent, "2 need attention" once only failures wait, and "Uploads done"
+  once everything has finished. It redraws only when those words change.
+  It opens the upload list in the shadcn `Popover`, which never opens by
+  itself: a run's failures are told by its toast and by the label. Escape
+  closes it, and focus returns to the trigger.
 - **The upload list**, in that popover: "4 of 12
   uploaded", **Cancel all**, **Clear finished**, and one row a file: its
   name (on one line, cut short with the whole name in its title), the
   folder it goes to beneath as metadata, then its state: a progress bar
   with its percent while it is sent,
-  otherwise a line of text (Waiting, Uploaded, Already exists, Failed and
-  why, Skipped, Canceled), so no empty track reads as a divider; and
-  **Cancel upload** while it is still to go. The popover is at most 32rem
+  otherwise a line of text (Waiting, Uploaded, Failed and why, Canceled),
+  so no empty track reads as a divider; and **Cancel upload** while it is
+  still to go. It shows progress, what is done and what failed only: no
+  conflict, and no Replace or Skip. The popover is at most 32rem
   tall, and the rows scroll in the shadcn `ScrollArea` below the heading
   and the buttons. A pick of thousands stays
-  light: the list draws the files in flight, every failure and
-  conflict, the next 50 waiting and the latest 50 finished, and counts the
+  light: the list draws the files in flight, every failure, the next 50
+  waiting and the latest 50 finished, and counts the
   rest: the older finished files above the rows ("1,950 more uploaded
   earlier"), the waiting ones below ("and 300 more waiting"). A row
   redraws only when it changes, and the queue tells the page of progress
   at most ten times a second. A pick of more than 100 files is prepared in
   slices, with the page drawn between them, while **Upload** shows a
-  spinner and "Preparing 2,000 files…". When a row's buttons go, focus
-  moves to the next row with buttons, or to the popover's heading; when
-  Clear finished empties the queue, the trigger goes, and focus goes to
-  the folder's **Upload** (or, on another page, to its h1). **Replace
-  all**'s dialog opens over the popover, which stays open under it: a
-  press in the dialog is the popover's own, and Escape closes the dialog
-  alone. Each run ends in a toast:
+  spinner and "Preparing 2,000 files…". When a row's **Cancel upload**
+  goes, focus moves to the next row with one, or to the popover's
+  heading; when Clear finished empties the queue, the trigger goes, and
+  focus goes to the folder's **Upload** (or, on another page, to its h1).
+  Each run ends in a toast:
   "Uploaded 12 files" ("The next scheduled scan will index them." when the
   server could not schedule the scan), and "2 files were not uploaded".
 - **The scan line**, under the path, shows only while a pass is scheduled or
@@ -401,7 +415,8 @@ is dropped. `GET /api/overview/live` is read only while a pass is
 scheduled or running, with `library:read`, at the Overview's pace (every
 30 s, every 10 s while a pass runs). Nothing else is polled, a return to
 the tab reads nothing, a hidden tab reads nothing, and once signed out the
-page reads nothing more. An upload costs its
+page reads nothing more. An upload costs its share of one check request
+(up to 1,000 files; one Class A listing a folder on the server), its
 share of one sign request (1–3 files), one `PUT` straight to R2 (no Worker
 request), and its share of one complete request (up to 10 landed
 files). Each `PUT` also has its own CORS preflight, to R2
