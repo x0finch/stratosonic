@@ -70,13 +70,13 @@ describe("getStarred2 with stars", () => {
     });
     await seedAnnotation({
       userId: admin,
-      itemId: albumId(ARTIST, ALBUM, 2014),
+      itemId: albumId(1, ARTIST, ALBUM, 2014),
       itemType: "album",
       starredAt: starredAt(2),
     });
     await seedAnnotation({
       userId: admin,
-      itemId: trackId(TRACK_KEY),
+      itemId: trackId(1, TRACK_KEY),
       itemType: "track",
       starredAt: starredAt(3),
     });
@@ -91,7 +91,7 @@ describe("getStarred2 with stars", () => {
     });
     await seedAnnotation({
       userId: other,
-      itemId: trackId(OTHER_TRACK_KEY),
+      itemId: trackId(1, OTHER_TRACK_KEY),
       itemType: "track",
       starredAt: starredAt(5),
     });
@@ -109,8 +109,8 @@ describe("getStarred2 with stars", () => {
     const starred = (await list("getStarred2")).starred2;
 
     expect(starred?.artist?.[0]?.id).toBe(prefixedId("artist", artistId(ARTIST)));
-    expect(starred?.album?.[0]?.id).toBe(prefixedId("album", albumId(ARTIST, ALBUM, 2014)));
-    expect(starred?.song?.[0]?.id).toBe(prefixedId("track", trackId(TRACK_KEY)));
+    expect(starred?.album?.[0]?.id).toBe(prefixedId("album", albumId(1, ARTIST, ALBUM, 2014)));
+    expect(starred?.song?.[0]?.id).toBe(prefixedId("track", trackId(1, TRACK_KEY)));
   });
 
   it("does not carry another account's stars", async () => {
@@ -131,7 +131,7 @@ describe("getStarred2 with stars", () => {
   it("orders each kind most recently starred first", async () => {
     await seedAnnotation({
       userId: admin,
-      itemId: trackId(OTHER_TRACK_KEY),
+      itemId: trackId(1, OTHER_TRACK_KEY),
       itemType: "track",
       starredAt: starredAt(9),
     });

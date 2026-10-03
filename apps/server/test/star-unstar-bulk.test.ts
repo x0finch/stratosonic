@@ -44,7 +44,7 @@ beforeAll(async () => {
 
 describe("starring more ids than one statement may bind", () => {
   it("stars all of them and reads them all back", async () => {
-    const ids = keys.map((key) => prefixedId("track", trackId(key)));
+    const ids = keys.map((key) => prefixedId("track", trackId(1, key)));
 
     const ok = await write("star", { id: ids });
     expect(ok.status).toBe("ok");

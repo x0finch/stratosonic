@@ -151,11 +151,11 @@ function artistUrlId(name: string): string {
 }
 
 function albumUrlId(album: FixtureAlbum): string {
-  return prefixedId("album", albumId(album.albumArtist, album.name, album.year));
+  return prefixedId("album", albumId(1, album.albumArtist, album.name, album.year));
 }
 
 function trackUrlId(file: string): string {
-  return prefixedId("track", trackId(fixtureTrack(file).r2Key));
+  return prefixedId("track", trackId(1, fixtureTrack(file).r2Key));
 }
 
 /**
@@ -249,7 +249,7 @@ async function librarySnapshot(): Promise<LibrarySnapshot> {
 
   const songs: BrowsingResponse[] = [];
   for (const fixture of fixtures.tracks) {
-    songs.push(await browse("getSong", { id: prefixedId("track", trackId(fixture.r2Key)) }));
+    songs.push(await browse("getSong", { id: prefixedId("track", trackId(1, fixture.r2Key)) }));
   }
 
   const directories: BrowsingResponse[] = [];
@@ -268,7 +268,7 @@ async function librarySnapshot(): Promise<LibrarySnapshot> {
     starred: await list("getStarred2"),
     playlists: await playlists("getPlaylists"),
     playlist: await playlists("getPlaylist", {
-      id: prefixedId("playlist", playlistId(fixtures.playlist.r2Key)),
+      id: prefixedId("playlist", playlistId(1, fixtures.playlist.r2Key)),
     }),
   };
 }
@@ -587,7 +587,7 @@ describe("the lists a client fills its home screens from", () => {
 /* ====================================================== playlists == */
 
 describe("the playlist the cron imported", () => {
-  const playlistUrlId = prefixedId("playlist", playlistId(fixtures.playlist.r2Key));
+  const playlistUrlId = prefixedId("playlist", playlistId(1, fixtures.playlist.r2Key));
 
   it("lists it, named after its file, counting only the lines that matched", async () => {
     const listed = (await playlists("getPlaylists")).playlists?.playlist ?? [];
@@ -603,7 +603,7 @@ describe("the playlist the cron imported", () => {
     const body = await playlists("getPlaylist", { id: playlistUrlId });
 
     expect((body.playlist?.entry ?? []).map((entry) => entry.id)).toEqual(
-      fixtures.playlist.trackKeys.map((key) => prefixedId("track", trackId(key))),
+      fixtures.playlist.trackKeys.map((key) => prefixedId("track", trackId(1, key))),
     );
   });
 
@@ -614,7 +614,7 @@ describe("the playlist the cron imported", () => {
     const ids = [...xml.matchAll(/<entry id="([^"]+)"/g)].map((match) => match[1]);
 
     expect(ids).toEqual(
-      fixtures.playlist.trackKeys.map((key) => prefixedId("track", trackId(key))),
+      fixtures.playlist.trackKeys.map((key) => prefixedId("track", trackId(1, key))),
     );
   });
 });
@@ -737,7 +737,7 @@ describe("deleting one track and the .m3u, then rescanning", () => {
   });
 
   it("removes the playlist whose file is gone", async () => {
-    const playlistUrlId = prefixedId("playlist", playlistId(fixtures.playlist.r2Key));
+    const playlistUrlId = prefixedId("playlist", playlistId(1, fixtures.playlist.r2Key));
 
     expect((await playlists("getPlaylists")).playlists?.playlist).toBeUndefined();
     expect((await playlists("getPlaylist", { id: playlistUrlId })).error?.code).toBe(70);

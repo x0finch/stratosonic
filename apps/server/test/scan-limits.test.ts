@@ -117,7 +117,7 @@ describe("a file that cannot be read", () => {
 
     // The re-uploaded bytes are the tagged silent-track fixture, so the row
     // now carries that fixture's title rather than anything from the path.
-    const body = await browse("getSong", { id: prefixedId("track", trackId(BROKEN_KEY)) });
+    const body = await browse("getSong", { id: prefixedId("track", trackId(1, BROKEN_KEY)) });
     expect(body.song?.title).toBe("Silent Track");
 
     expect((await readBrokenObjects(database(testEnv))).has(BROKEN_KEY)).toBe(false);

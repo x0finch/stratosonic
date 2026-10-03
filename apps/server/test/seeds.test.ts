@@ -38,7 +38,7 @@ describe("seeding library rows", () => {
     const [stored] = await database(env).select().from(album).where(eq(album.id, seeded.id));
 
     expect(seeded.artistId).toBe(artistRow.id);
-    expect(seeded.id).toBe(albumId("Portishead", "Dummy", 1994));
+    expect(seeded.id).toBe(albumId(1, "Portishead", "Dummy", 1994));
     expect(stored).toEqual(seeded);
   });
 
@@ -48,13 +48,13 @@ describe("seeding library rows", () => {
     const [stored] = await database(env).select().from(track).where(eq(track.id, seeded.id));
 
     expect(seeded).toMatchObject({
-      id: trackId(key),
+      id: trackId(1, key),
       title: "03 Strangers",
       albumArtist: "Portishead",
       artist: "Portishead",
       suffix: "flac",
     });
-    expect(seeded.albumId).toBe(albumId("Portishead", "Dummy", null));
+    expect(seeded.albumId).toBe(albumId(1, "Portishead", "Dummy", null));
     expect(seeded.artistId).toBe(artistId("Portishead"));
     expect(stored).toEqual(seeded);
   });
@@ -85,7 +85,7 @@ describe("seeding library rows", () => {
       bitRate: 900,
       size: 34_000,
     });
-    expect(seeded.albumId).toBe(albumId("Portishead", "Dummy", 1994));
+    expect(seeded.albumId).toBe(albumId(1, "Portishead", "Dummy", 1994));
   });
 
   it("stores a playlist's tracks in the order they were given", async () => {
@@ -160,7 +160,7 @@ describe("seeding the fixtures", () => {
       genre: null,
       trackNumber: null,
     });
-    expect(untagged?.albumId).toBe(albumId("Fallback Artist", "Fallback Album", null));
+    expect(untagged?.albumId).toBe(albumId(1, "Fallback Artist", "Fallback Album", null));
   });
 
   it("gives every album a cover key except the one whose tracks have none", () => {

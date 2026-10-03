@@ -28,7 +28,7 @@ const SONGS = {
   other: { key: `${ARTIST}/${ALBUM}/03 Other.mp3`, title: "Other" },
 } satisfies Record<string, Song>;
 
-const id = (song: Song) => prefixedId("track", trackId(song.key));
+const id = (song: Song) => prefixedId("track", trackId(1, song.key));
 
 const PASSWORD = "sesame";
 const OTHER_USER = "guest";
@@ -244,7 +244,7 @@ describe("bad requests", () => {
 
   it("is error 70 for an id that names no track", async () => {
     const body = await call("createBookmark", {
-      id: prefixedId("track", trackId("Ghost/None/x.mp3")),
+      id: prefixedId("track", trackId(1, "Ghost/None/x.mp3")),
       position: "1",
     });
 

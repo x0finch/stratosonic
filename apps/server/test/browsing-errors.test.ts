@@ -16,15 +16,15 @@ const R2_KEY = `${ARTIST}/${ALBUM.name}/01 Present Track.mp3`;
 
 const REAL = {
   artist: prefixedId("artist", artistId(ARTIST)),
-  album: prefixedId("album", albumId(ARTIST, ALBUM.name, ALBUM.year)),
-  track: prefixedId("track", trackId(R2_KEY)),
+  album: prefixedId("album", albumId(1, ARTIST, ALBUM.name, ALBUM.year)),
+  track: prefixedId("track", trackId(1, R2_KEY)),
 };
 
 /** Well-formed ids of things that are not in the library. */
 const UNKNOWN = {
   artist: prefixedId("artist", artistId("Absent Artist")),
-  album: prefixedId("album", albumId("Absent Artist", "Absent Album", 1990)),
-  track: prefixedId("track", trackId("Absent Artist/Absent Album/01 Gone.mp3")),
+  album: prefixedId("album", albumId(1, "Absent Artist", "Absent Album", 1990)),
+  track: prefixedId("track", trackId(1, "Absent Artist/Absent Album/01 Gone.mp3")),
 };
 
 beforeAll(async () => {

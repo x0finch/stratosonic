@@ -27,13 +27,13 @@ const YEAR = 2018;
 const ONE_KEY = `${ARTIST}/${ALBUM}/01 One.mp3`;
 const TWO_KEY = `${ARTIST}/${ALBUM}/02 Two.mp3`;
 
-const songId = prefixedId("track", trackId(ONE_KEY));
-const otherSongId = prefixedId("track", trackId(TWO_KEY));
-const theAlbumId = prefixedId("album", albumId(ARTIST, ALBUM, YEAR));
+const songId = prefixedId("track", trackId(1, ONE_KEY));
+const otherSongId = prefixedId("track", trackId(1, TWO_KEY));
+const theAlbumId = prefixedId("album", albumId(1, ARTIST, ALBUM, YEAR));
 const theArtistId = prefixedId("artist", artistId(ARTIST));
 
 const PLAYLIST_KEY = "playlists/favourites.m3u";
-const thePlaylistId = prefixedId("playlist", playlistId(PLAYLIST_KEY));
+const thePlaylistId = prefixedId("playlist", playlistId(1, PLAYLIST_KEY));
 
 const OTHER_USER = { user: "listener", password: "open-sesame" };
 
@@ -152,7 +152,7 @@ describe("starring a playlist", () => {
   });
 
   it("is error 70 for a playlist id that names nothing", async () => {
-    const unknown = prefixedId("playlist", playlistId("playlists/nowhere.m3u"));
+    const unknown = prefixedId("playlist", playlistId(1, "playlists/nowhere.m3u"));
     const body = await write("star", { id: unknown });
 
     expect(body.error).toEqual({ code: 70, message: "The requested data was not found" });
@@ -161,7 +161,7 @@ describe("starring a playlist", () => {
 
 describe("isolation between accounts", () => {
   it("writes only the caller's rows", async () => {
-    await seedAnnotation({ userId: other, itemId: trackId(TWO_KEY), itemType: "track" });
+    await seedAnnotation({ userId: other, itemId: trackId(1, TWO_KEY), itemType: "track" });
 
     await write("star", { id: songId });
 
@@ -184,12 +184,12 @@ describe("a row that carries a rating and plays", () => {
   // last play are the same afterwards, and unstarring leaves them too.
   it("keeps them through a star and an unstar", async () => {
     const key = `${ARTIST}/${ALBUM}/04 Four.mp3`;
-    const id = prefixedId("track", trackId(key));
+    const id = prefixedId("track", trackId(1, key));
     const playedAt = new Date("2024-03-04T05:06:07.000Z");
     await seedTrack({ r2Key: key, title: "Four", album: ALBUM, albumArtist: ARTIST, year: YEAR });
     await seedAnnotation({
       userId: admin,
-      itemId: trackId(key),
+      itemId: trackId(1, key),
       itemType: "track",
       starred: false,
       rating: 4,
@@ -221,11 +221,11 @@ describe("a row starred without an instant", () => {
   // shows the item.
   it("gets its starred_at stamped by a star", async () => {
     const key = `${ARTIST}/${ALBUM}/03 Three.mp3`;
-    const migratedId = prefixedId("track", trackId(key));
+    const migratedId = prefixedId("track", trackId(1, key));
     await seedTrack({ r2Key: key, title: "Three", album: ALBUM, albumArtist: ARTIST, year: YEAR });
     await seedAnnotation({
       userId: admin,
-      itemId: trackId(key),
+      itemId: trackId(1, key),
       itemType: "track",
       starred: true,
       starredAt: null,
@@ -248,7 +248,7 @@ describe("bad requests", () => {
   });
 
   it("is error 70 for an id that names nothing", async () => {
-    const body = await write("star", { id: prefixedId("track", trackId("Ghost/Absent/x.mp3")) });
+    const body = await write("star", { id: prefixedId("track", trackId(1, "Ghost/Absent/x.mp3")) });
     expect(body.error).toEqual({ code: 70, message: "The requested data was not found" });
   });
 

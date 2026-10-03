@@ -169,7 +169,7 @@ export interface AlbumSeed {
  */
 export async function seedAlbum(seed: AlbumSeed): Promise<Album> {
   const row: Album = {
-    id: albumId(seed.albumArtist, seed.name, seed.year),
+    id: albumId(1, seed.albumArtist, seed.name, seed.year),
     name: seed.name,
     artistId: artistId(seed.albumArtist),
     albumArtist: seed.albumArtist,
@@ -181,6 +181,7 @@ export async function seedAlbum(seed: AlbumSeed): Promise<Album> {
     coverKey: seed.coverKey ?? null,
     createdAt: seed.createdAt ?? SEED_TIME,
     updatedAt: seed.updatedAt ?? seed.createdAt ?? SEED_TIME,
+    libraryId: 1,
   };
 
   await database(testEnv).insert(album).values(row);
@@ -220,10 +221,10 @@ export async function seedTrack(seed: TrackSeed): Promise<Track> {
   const year = seed.year ?? null;
 
   const row: Track = {
-    id: trackId(seed.r2Key),
+    id: trackId(1, seed.r2Key),
     r2Key: seed.r2Key,
     title: seed.title ?? fileName.replace(/\.[^.]+$/, ""),
-    albumId: albumId(albumArtist, albumName, year),
+    albumId: albumId(1, albumArtist, albumName, year),
     artistId: artistId(albumArtist),
     artist: seed.artist ?? albumArtist,
     albumArtist,
@@ -235,10 +236,11 @@ export async function seedTrack(seed: TrackSeed): Promise<Track> {
     size: seed.size ?? 1024,
     suffix: suffixOf(seed.r2Key),
     genre: seed.genre ?? null,
-    etag: seed.etag ?? `etag-${trackId(seed.r2Key).slice(0, 8)}`,
+    etag: seed.etag ?? `etag-${trackId(1, seed.r2Key).slice(0, 8)}`,
     scanVersion: seed.scanVersion ?? SCAN_VERSION,
     createdAt: seed.createdAt ?? SEED_TIME,
     updatedAt: seed.updatedAt ?? seed.createdAt ?? SEED_TIME,
+    libraryId: 1,
   };
 
   await database(testEnv).insert(track).values(row);
@@ -272,7 +274,7 @@ export async function seedPlaylist(seed: PlaylistSeed): Promise<Playlist> {
   const tracks = seed.tracks ?? [];
   const fileName = seed.r2Key.split("/").at(-1) ?? seed.r2Key;
   const row: Playlist = {
-    id: playlistId(seed.r2Key),
+    id: playlistId(1, seed.r2Key),
     name: seed.name ?? fileName.replace(/\.[^.]+$/, ""),
     comment: seed.comment ?? "",
     ownerId: seed.ownerId ?? "seeded-owner",
@@ -282,6 +284,7 @@ export async function seedPlaylist(seed: PlaylistSeed): Promise<Playlist> {
     r2Key: seed.r2Key,
     createdAt: seed.createdAt ?? SEED_TIME,
     changedAt: seed.changedAt ?? seed.createdAt ?? SEED_TIME,
+    libraryId: 1,
   };
 
   const db = database(testEnv);
@@ -378,7 +381,7 @@ export function fixtureCoverKey(album: FixtureAlbum): string | null {
     return null;
   }
 
-  return `_covers/${albumId(album.albumArtist, album.name, album.year)}.png`;
+  return `_covers/${albumId(1, album.albumArtist, album.name, album.year)}.png`;
 }
 
 /** Puts one fixture file in the bucket, named either by file or by R2 key. */

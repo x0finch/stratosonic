@@ -37,7 +37,7 @@ const SONGS = {
   golf: { key: `${ARTIST}/${ALBUM}/07 Golf.mp3`, title: "Golf", duration: 1 },
 } satisfies Record<string, Song>;
 
-const id = (song: Song) => prefixedId("track", trackId(song.key));
+const id = (song: Song) => prefixedId("track", trackId(1, song.key));
 
 /** The titles the feed currently carries. */
 async function nowPlayingTitles(): Promise<string[]> {
@@ -140,7 +140,7 @@ describe("a now-playing submission", () => {
 
   it("is error 70 when any of several ids names nothing", async () => {
     const body = await write("scrobble", {
-      id: [id(SONGS.bravo), prefixedId("track", trackId("Ghost/None/x.mp3"))],
+      id: [id(SONGS.bravo), prefixedId("track", trackId(1, "Ghost/None/x.mp3"))],
       submission: "false",
     });
 
@@ -198,7 +198,7 @@ describe("the now-playing TTL", () => {
 
   it("keeps an entry until it expires", async () => {
     await seedSession({
-      trackId: trackId(SONGS.bravo.key),
+      trackId: trackId(1, SONGS.bravo.key),
       expiresAt: new Date(Date.now() + 1_000),
     });
 
@@ -207,7 +207,7 @@ describe("the now-playing TTL", () => {
 
   it("drops an entry once it has expired", async () => {
     await seedSession({
-      trackId: trackId(SONGS.bravo.key),
+      trackId: trackId(1, SONGS.bravo.key),
       expiresAt: new Date(Date.now() - 1_000),
     });
 
@@ -221,7 +221,9 @@ describe("bad requests", () => {
   });
 
   it("is error 70 for an id that names nothing", async () => {
-    const body = await write("scrobble", { id: prefixedId("track", trackId("Ghost/None/x.mp3")) });
+    const body = await write("scrobble", {
+      id: prefixedId("track", trackId(1, "Ghost/None/x.mp3")),
+    });
     expect(body.error?.code).toBe(70);
   });
 

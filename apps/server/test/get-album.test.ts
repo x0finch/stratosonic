@@ -28,7 +28,7 @@ const COVERED = fixtureAlbum("Quiet Album");
 const COVERLESS = fixtureAlbum("Fallback Album");
 
 function albumUrlId(albumArtist: string, name: string, year: number | null): string {
-  return prefixedId("album", albumId(albumArtist, name, year));
+  return prefixedId("album", albumId(1, albumArtist, name, year));
 }
 
 beforeAll(async () => {
@@ -95,7 +95,7 @@ describe("getAlbum", () => {
     const first = album?.song?.[0];
 
     expect(album?.coverArt).toBe(id);
-    expect(first?.id).toBe(prefixedId("track", trackId(fixtureTrack("silent-track.mp3").r2Key)));
+    expect(first?.id).toBe(prefixedId("track", trackId(1, fixtureTrack("silent-track.mp3").r2Key)));
     expect(first?.parent).toBe(id);
     expect(first?.albumId).toBe(id);
     expect(first?.artistId).toBe(prefixedId("artist", artistId(COVERED.albumArtist)));

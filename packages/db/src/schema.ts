@@ -212,6 +212,97 @@ export const rateLimit = sqliteTable("rate_limit", {
   lastRequest: integer("last_request").notNull(),
 });
 
+/** How a library's bucket is reached: the Worker's binding, or the S3 API. */
+export const LIBRARY_KINDS = ["r2-binding", "s3"] as const;
+
+export type LibraryKind = (typeof LIBRARY_KINDS)[number];
+
+/** A library is served while `active`; `removing` hides it until it is gone. */
+export const LIBRARY_STATES = ["active", "removing"] as const;
+
+export type LibraryState = (typeof LIBRARY_STATES)[number];
+
+/**
+ * A bucket this server serves as a library, Navidrome's `library` table
+ * (`model/library.go`) with a storage URI as its `path` (ADR-0009).
+ *
+ * Library 1 is the bucket the Worker is bound to (`MUSIC`): migration 0009
+ * seeds it as `Music Library`, `r2-binding://MUSIC`, and it can never be
+ * removed. Any other is an R2 bucket reached through the S3 API, with
+ * `endpoint`, `region`, `bucket` and its sealed token in `credentials`, all
+ * null for library 1.
+ *
+ * - `id` is autoincrement, so an id is never reused: a folder id a client
+ *   stored can never come to name another library.
+ * - `name` is what `getMusicFolders` answers, unique ignoring case.
+ * - `path` is unique, so one bucket cannot be connected twice.
+ * - `writable` is what the last connection test's write probe found.
+ * - `defaultNewUsers` gives the library to every new non-admin user, as
+ *   Navidrome's `default_new_users` does.
+ * - `state` is `removing` from the moment a removal is asked for until the
+ *   scan has deleted the library's rows.
+ * - `lastScanStartedAt` and `lastScanAt` are stamped as the scan enters and
+ *   leaves the library, and `lastScanError` says why the last pass skipped it.
+ *
+ * No column carries a CHECK, as `user.role` carries none: SQLite can only
+ * change one by rebuilding the table, and the code reads the closed sets.
+ */
+export const library = sqliteTable(
+  "library",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    name: text("name").notNull(),
+    path: text("path").notNull().unique(),
+    kind: text("kind", { enum: LIBRARY_KINDS }).notNull(),
+    endpoint: text("endpoint"),
+    region: text("region"),
+    bucket: text("bucket"),
+    credentials: text("credentials"),
+    writable: integer("writable", { mode: "boolean" }).notNull().default(true),
+    defaultNewUsers: integer("default_new_users", { mode: "boolean" }).notNull().default(false),
+    state: text("state", { enum: LIBRARY_STATES }).notNull().default("active"),
+    lastScanStartedAt: integer("last_scan_started_at", { mode: "timestamp_ms" }),
+    lastScanAt: integer("last_scan_at", { mode: "timestamp_ms" }),
+    lastScanError: text("last_scan_error"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (table) => [
+    // Clients show the name in their folder picker, so two that differ only
+    // in case would be indistinguishable there.
+    uniqueIndex("library_name_unique").on(sql`lower(${table.name})`),
+  ],
+);
+
+export type Library = typeof library.$inferSelect;
+export type NewLibrary = typeof library.$inferInsert;
+
+/**
+ * Which libraries a Subsonic user may see, Navidrome's `user_library`
+ * verbatim. An admin sees every library whatever the rows say, but is given a
+ * row for each anyway, as Navidrome gives them, so a demoted admin keeps what
+ * they had. The rows belong to both sides and go with either.
+ */
+export const userLibrary = sqliteTable(
+  "user_library",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => subsonicUser.id, { onDelete: "cascade" }),
+    libraryId: integer("library_id")
+      .notNull()
+      .references(() => library.id, { onDelete: "cascade" }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.libraryId] }),
+    // Granting every admin a new library, and its removal, read by library.
+    index("user_library_library_id_idx").on(table.libraryId),
+  ],
+);
+
+export type UserLibrary = typeof userLibrary.$inferSelect;
+export type NewUserLibrary = typeof userLibrary.$inferInsert;
+
 /**
  * The library tables, shaped like Navidrome's (`model/*.go`) so the cutover
  * stays a re-scan rather than a data mapping.
@@ -223,6 +314,9 @@ export const rateLimit = sqliteTable("rate_limit", {
  * - Timestamps are epoch milliseconds, like the `user` table.
  * - Durations are seconds, kept as reals: a track's duration is fractional and
  *   an album's is the sum of its tracks', which integer seconds would drift.
+ * - Albums, tracks and playlists belong to a library by `library_id`, which
+ *   migration 0009 added with a default of 1, the bound bucket. Artists have
+ *   none: they are shared across libraries (ADR-0009).
  * - Artists, albums and tracks carry no foreign keys. D1 enforces them, and
  *   the scanner writes a track before the album row it belongs to is complete
  *   and deletes in the opposite order; Navidrome likewise keeps that integrity
@@ -273,6 +367,12 @@ export const album = sqliteTable(
     coverKey: text("cover_key"),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+    /**
+     * The library the album's tracks are in, which its id hashes (ADR-0009).
+     * Last because `ALTER TABLE` added it, and with no foreign key, like
+     * every column of this table.
+     */
+    libraryId: integer("library_id").notNull().default(1),
   },
   (table) => [
     // `getArtist` lists an artist's albums, and `getArtists` counts them.
@@ -284,10 +384,11 @@ export type Album = typeof album.$inferSelect;
 export type NewAlbum = typeof album.$inferInsert;
 
 /**
- * A single playable audio file, identified by its R2 key.
+ * A single playable audio file, identified by its library and its R2 key in
+ * that library's bucket.
  *
- * The key is unique because it is what the track's id is derived from: two rows
- * with the same key would be the same track twice. `etag` together with `size`
+ * The pair is unique because it is what the track's id is derived from: two
+ * rows with the same key in one library would be the same track twice. `etag` together with `size`
  * is the scanner's change signal — R2 ETags of multipart uploads are not MD5s,
  * so neither alone is enough. `contentType` is not stored: it is derived from
  * `suffix` through the one suffix map that also decides what the scanner
@@ -297,7 +398,7 @@ export const track = sqliteTable(
   "track",
   {
     id: text("id").primaryKey(),
-    r2Key: text("r2_key").notNull().unique(),
+    r2Key: text("r2_key").notNull(),
     title: text("title").notNull(),
     albumId: text("album_id").notNull(),
     artistId: text("artist_id").notNull(),
@@ -324,8 +425,18 @@ export const track = sqliteTable(
     scanVersion: integer("scan_version").notNull().default(0),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+    /**
+     * The library whose bucket holds the object. Last because `ALTER TABLE`
+     * added it (migration 0009), and with no foreign key: SQLite refuses to
+     * add a referencing column with a non-null default while foreign keys are
+     * on, and this table keeps none anyway.
+     */
+    libraryId: integer("library_id").notNull().default(1),
   },
   (table) => [
+    // One track per key in each library. It also serves the scan's walk of
+    // one library in key order, `library_id = ? and r2_key > ?`.
+    uniqueIndex("track_library_id_r2_key_unique").on(table.libraryId, table.r2Key),
     // `getAlbum` lists an album's tracks; the artist index serves the deletion
     // sweep and folder browsing.
     index("track_album_id_idx").on(table.albumId),
@@ -368,8 +479,9 @@ export type NewTrackLyrics = typeof trackLyrics.$inferInsert;
 /**
  * A user-ordered list of tracks, imported from an `.m3u` object in R2.
  *
- * `r2Key` is the key of that `.m3u` and is what the playlist's id is derived
- * from, so re-importing an edited file updates the same row. `changedAt` is
+ * `r2Key` is the key of that `.m3u` in its library's bucket, and with the
+ * library is what the playlist's id is derived from, so re-importing an
+ * edited file updates the same row. `changedAt` is
  * Subsonic's `changed` attribute, which is why it is not called `updatedAt`.
  */
 export const playlist = sqliteTable(
@@ -382,14 +494,19 @@ export const playlist = sqliteTable(
     public: integer("public", { mode: "boolean" }).notNull().default(true),
     songCount: integer("song_count").notNull().default(0),
     duration: real("duration").notNull().default(0),
-    // Unique for the same reason a track's key is: the playlist's id is
-    // derived from it, so two rows with the same key would be one playlist
-    // twice.
-    r2Key: text("r2_key").notNull().unique(),
+    r2Key: text("r2_key").notNull(),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     changedAt: integer("changed_at", { mode: "timestamp_ms" }).notNull(),
+    /** The library the `.m3u` is in, added last as on `track`. */
+    libraryId: integer("library_id").notNull().default(1),
   },
-  (table) => [index("playlist_owner_id_idx").on(table.ownerId)],
+  (table) => [
+    index("playlist_owner_id_idx").on(table.ownerId),
+    // Unique for the same reason a track's key is: the playlist's id is
+    // derived from it, so two rows with the same key in one library would be
+    // one playlist twice.
+    uniqueIndex("playlist_library_id_r2_key_unique").on(table.libraryId, table.r2Key),
+  ],
 );
 
 export type Playlist = typeof playlist.$inferSelect;

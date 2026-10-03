@@ -1,9 +1,11 @@
 import {
+  library,
   type NewSubsonicUser,
   newRandomId,
   playlist,
   type SubsonicUser,
   subsonicUser,
+  userLibrary,
 } from "@stratosonic/db";
 import { and, asc, eq, getTableColumns, type SQL, sql } from "drizzle-orm";
 import type { Database } from "../db";
@@ -164,6 +166,37 @@ export interface UserCreate {
   readonly isAdmin: boolean;
 }
 
+/** Which libraries a user is given: every one, or the defaults for new users. */
+export type LibraryGrant = "all" | "defaults";
+
+/**
+ * The statement that gives a user libraries, as Navidrome's user repository
+ * does on `Put` (persistence/user_repository.go): an admin gets every library
+ * (`INSERT OR IGNORE ... SELECT ?, id FROM library`), and a new non-admin the
+ * libraries marked `default_new_users`. Rows the user has already are kept.
+ *
+ * It goes in the batch after the write that creates or promotes the user, and
+ * inserts only when the user exists by then, so a create that wrote nothing
+ * grants nothing (and breaks no foreign key). The user is looked for under an
+ * alias of its own, as `mayLoseAdmin` looks for another admin.
+ */
+export function grantLibrariesStatement(db: Database, userId: string, grant: LibraryGrant) {
+  return db
+    .insert(userLibrary)
+    .select(
+      db
+        .select({ userId: sql<string>`${userId}`.as("user_id"), libraryId: library.id })
+        .from(library)
+        .where(
+          and(
+            grant === "defaults" ? eq(library.defaultNewUsers, true) : undefined,
+            sql`exists (select 1 from ${subsonicUser} as granted where granted.id = ${userId})`,
+          ),
+        ),
+    )
+    .onConflictDoNothing();
+}
+
 /**
  * Creates a user as the `INITIAL_*` bootstrap does (setup/initial-setup.ts):
  * a random id (Navidrome's `id.NewRandom`), `name` equal to `user_name`, and
@@ -176,6 +209,10 @@ export interface UserCreate {
  * costs no round trip of its own and no other create can slip past it. A
  * name taken in any case throws, from the unique index
  * (`isUserNameConflict`).
+ *
+ * The user's libraries are written in the same batch (#84, "Per-user
+ * access"): every library for an admin, the `default_new_users` ones for
+ * anybody else.
  */
 export async function createUser(
   db: Database,
@@ -199,10 +236,10 @@ export async function createUser(
     ? sql`1`
     : sql`exists (select 1 from ${subsonicUser} where ${subsonicUser.isAdmin} = 1)`;
 
-  const [created] = await db
-    .insert(subsonicUser)
-    .select(selectUserRow(row, condition))
-    .returning(userViewColumns);
+  const [[created]] = await db.batch([
+    db.insert(subsonicUser).select(selectUserRow(row, condition)).returning(userViewColumns),
+    grantLibrariesStatement(db, row.id, values.isAdmin ? "all" : "defaults"),
+  ]);
 
   // A new id owns no playlist yet: there is nothing to count.
   return created ? { ...created, playlistCount: 0 } : "admin_required";
@@ -269,6 +306,10 @@ export interface UserChanges {
  * owners of existing playlists never change. A rename onto a name another
  * user has in some case throws (`isUserNameConflict`); one that only changes
  * the case of the user's own name is the same index key, and passes.
+ *
+ * Making a user an admin also gives them every library, in the same batch, as
+ * Navidrome's `Put` does for an admin. Unmaking one keeps the rows they have,
+ * as Navidrome keeps them.
  */
 export async function updateUser(
   db: Database,
@@ -276,7 +317,7 @@ export async function updateUser(
   changes: UserChanges,
   now: Date = new Date(),
 ): Promise<UserViewRow | null> {
-  const [updated] = await db
+  const update = db
     .update(subsonicUser)
     .set({
       ...(changes.userName === undefined
@@ -287,6 +328,11 @@ export async function updateUser(
     })
     .where(and(eq(subsonicUser.id, id), changes.isAdmin === false ? mayLoseAdmin(id) : undefined))
     .returning(userViewWithCount);
+
+  const [updated] =
+    changes.isAdmin === true
+      ? (await db.batch([update, grantLibrariesStatement(db, id, "all")]))[0]
+      : await update;
 
   return updated ?? null;
 }
@@ -367,7 +413,8 @@ export async function checkUserDeletion(db: Database, id: string): Promise<UserD
  * - by foreign key (`on delete cascade` to `subsonic_user.id`, which D1
  *   enforces; migration 0008 pointed them at the renamed table): their
  *   `annotation` rows (stars, ratings, play counts), `now_playing`,
- *   `play_queue` and `bookmark`;
+ *   `play_queue` and `bookmark`, and their `user_library` grants
+ *   (migration 0009);
  * - their playlists, as Navidrome's `playlist_user_user_id_fk` cascades them,
  *   each with its `playlist_track` rows through that table's own cascade.
  *   `playlist.owner_id` has no foreign key, so the rows are deleted here, and

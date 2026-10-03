@@ -33,7 +33,7 @@ function albumRow(overrides: Partial<Album> = {}): Album {
   const year = overrides.year === undefined ? 2019 : overrides.year;
 
   return {
-    id: albumId(ALBUM_ARTIST, ALBUM_NAME, year),
+    id: albumId(1, ALBUM_ARTIST, ALBUM_NAME, year),
     name: ALBUM_NAME,
     artistId: artistId(ALBUM_ARTIST),
     albumArtist: ALBUM_ARTIST,
@@ -42,9 +42,10 @@ function albumRow(overrides: Partial<Album> = {}): Album {
     songCount: 2,
     duration: 431.6,
     size: 6356,
-    coverKey: `_covers/${albumId(ALBUM_ARTIST, ALBUM_NAME, year)}.png`,
+    coverKey: `_covers/${albumId(1, ALBUM_ARTIST, ALBUM_NAME, year)}.png`,
     createdAt: CREATED_AT,
     updatedAt: CREATED_AT,
+    libraryId: 1,
     ...overrides,
   };
 }
@@ -54,7 +55,7 @@ function songRow(overrides: Partial<SongView> = {}): SongView {
   const album = albumRow();
 
   return {
-    id: trackId(r2Key),
+    id: trackId(1, r2Key),
     r2Key,
     title: "Front Loaded",
     albumId: album.id,
@@ -73,6 +74,7 @@ function songRow(overrides: Partial<SongView> = {}): SongView {
     scanVersion: 1,
     createdAt: CREATED_AT,
     updatedAt: CREATED_AT,
+    libraryId: 1,
     albumName: album.name,
     albumCoverKey: album.coverKey,
     ...overrides,
@@ -94,7 +96,7 @@ describe("artistElement", () => {
     id: artistId(ALBUM_ARTIST),
     name: ALBUM_ARTIST,
     albumCount: 3,
-    coverAlbumId: albumId(ALBUM_ARTIST, ALBUM_NAME, 2019),
+    coverAlbumId: albumId(1, ALBUM_ARTIST, ALBUM_NAME, 2019),
   };
 
   it("carries a prefixed id, the name, the cover and the count, in that order", async () => {
@@ -121,7 +123,7 @@ describe("indexArtistElement", () => {
     id: artistId(ALBUM_ARTIST),
     name: ALBUM_ARTIST,
     albumCount: 3,
-    coverAlbumId: albumId(ALBUM_ARTIST, ALBUM_NAME, 2019),
+    coverAlbumId: albumId(1, ALBUM_ARTIST, ALBUM_NAME, 2019),
   };
 
   it("carries id, name and cover, and no count: Artist is not ArtistID3", async () => {

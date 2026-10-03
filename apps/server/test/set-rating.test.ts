@@ -18,9 +18,9 @@ const TRACK_KEY = `${ARTIST}/${ALBUM}/01 Rift.mp3`;
 // pre-seeded annotation never collides with a rating another case wrote.
 const HALO_KEY = `${ARTIST}/${ALBUM}/02 Halo.mp3`;
 
-const songId = prefixedId("track", trackId(TRACK_KEY));
-const haloId = prefixedId("track", trackId(HALO_KEY));
-const theAlbumId = prefixedId("album", albumId(ARTIST, ALBUM, YEAR));
+const songId = prefixedId("track", trackId(1, TRACK_KEY));
+const haloId = prefixedId("track", trackId(1, HALO_KEY));
+const theAlbumId = prefixedId("album", albumId(1, ARTIST, ALBUM, YEAR));
 const theArtistId = prefixedId("artist", artistId(ARTIST));
 
 const OTHER_USER = { user: "rater", password: "open-sesame" };
@@ -50,7 +50,7 @@ beforeAll(async () => {
   });
   await seedAnnotation({
     userId: admin,
-    itemId: trackId(HALO_KEY),
+    itemId: trackId(1, HALO_KEY),
     itemType: "track",
     starredAt: new Date(1_700_000_000_000),
     playCount: 6,
@@ -135,7 +135,7 @@ describe("bad requests", () => {
 
   it("is error 70 for an id that names nothing", async () => {
     const body = await write("setRating", {
-      id: prefixedId("track", trackId("Ghost/None/x.mp3")),
+      id: prefixedId("track", trackId(1, "Ghost/None/x.mp3")),
       rating: "4",
     });
     expect(body.error?.code).toBe(70);

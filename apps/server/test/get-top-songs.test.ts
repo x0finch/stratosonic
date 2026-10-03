@@ -76,7 +76,7 @@ beforeAll(async () => {
 
     await seedAnnotation({
       userId: admin,
-      itemId: trackId(key(seed.title)),
+      itemId: trackId(1, key(seed.title)),
       itemType: "track",
       starred: false,
       playCount: seed.playCount,

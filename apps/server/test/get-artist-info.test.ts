@@ -28,12 +28,12 @@ import { BASE, seedFixtureLibrary, seedFixtureObjects, seedPlaylist } from "./su
 const SILENT = prefixedId("artist", artistId("Silent Artist"));
 const MUTE = prefixedId("artist", artistId("Mute Ensemble"));
 const FALLBACK = prefixedId("artist", artistId("Fallback Artist"));
-const QUIET = prefixedId("album", albumId("Silent Artist", "Quiet Album", 2001));
-const FASTSTART = prefixedId("album", albumId("Mute Ensemble", "Faststart Sessions", 2019));
-const TRAILING = prefixedId("album", albumId("Mute Ensemble", "Trailing Sessions", 2019));
+const QUIET = prefixedId("album", albumId(1, "Silent Artist", "Quiet Album", 2001));
+const FASTSTART = prefixedId("album", albumId(1, "Mute Ensemble", "Faststart Sessions", 2019));
+const TRAILING = prefixedId("album", albumId(1, "Mute Ensemble", "Trailing Sessions", 2019));
 const TAIL_LOADED = prefixedId(
   "track",
-  trackId("Mute Ensemble/Trailing Sessions/01 Tail Loaded.m4a"),
+  trackId(1, "Mute Ensemble/Trailing Sessions/01 Tail Loaded.m4a"),
 );
 
 let playlistId = "";
@@ -158,7 +158,7 @@ describe.each([
 
   it.each([
     ["an artist that does not exist", () => prefixedId("artist", artistId("Nobody"))],
-    ["an album that does not exist", () => prefixedId("album", albumId("Nobody", "None", null))],
+    ["an album that does not exist", () => prefixedId("album", albumId(1, "Nobody", "None", null))],
     ["a playlist", () => playlistId],
     ["a malformed id", () => "not-an-id"],
   ])("answers error 70 for %s", async (_label, id) => {

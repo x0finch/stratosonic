@@ -26,8 +26,8 @@ interface AlbumFixture {
 const ASTER: AlbumFixture = { name: "Aster", track: `${ARTIST}/Aster/01 A.mp3` };
 const BASALT: AlbumFixture = { name: "Basalt", track: `${ARTIST}/Basalt/01 B.mp3` };
 
-const idOf = (album: AlbumFixture) => albumId(ARTIST, album.name, YEAR);
-const trackIdOf = (album: AlbumFixture) => prefixedId("track", trackId(album.track));
+const idOf = (album: AlbumFixture) => albumId(1, ARTIST, album.name, YEAR);
+const trackIdOf = (album: AlbumFixture) => prefixedId("track", trackId(1, album.track));
 
 /** The two albums as the tie-break orders them: by album id, descending. */
 const BY_ID_DESCENDING = [ASTER, BASALT]

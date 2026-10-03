@@ -107,7 +107,7 @@ beforeAll(async () => {
 
   await seedAnnotation({
     userId: admin,
-    itemId: trackId(TRACK_KEY),
+    itemId: trackId(1, TRACK_KEY),
     itemType: "track",
     starredAt: TRACK_STARRED,
     rating: 4,
@@ -134,7 +134,7 @@ beforeAll(async () => {
 
 describe("a song the caller has annotated", () => {
   it("carries starred, userRating, playCount and played on getSong", async () => {
-    const song = (await browse("getSong", { id: prefixedId("track", trackId(TRACK_KEY)) })).song;
+    const song = (await browse("getSong", { id: prefixedId("track", trackId(1, TRACK_KEY)) })).song;
 
     expect(song?.starred).toBe(TRACK_STARRED.toISOString());
     expect(song?.userRating).toBe(4);
@@ -143,7 +143,7 @@ describe("a song the caller has annotated", () => {
   });
 
   it("carries none of them on a song the caller has not annotated", async () => {
-    const song = (await browse("getSong", { id: prefixedId("track", trackId(OTHER_TRACK_KEY)) }))
+    const song = (await browse("getSong", { id: prefixedId("track", trackId(1, OTHER_TRACK_KEY)) }))
       .song;
 
     expect(song?.starred).toBeUndefined();
@@ -156,7 +156,7 @@ describe("a song the caller has annotated", () => {
 describe("an album the caller has annotated", () => {
   it("carries the album's annotation and its tracks' on getAlbum", async () => {
     const album = (
-      await browse("getAlbum", { id: prefixedId("album", albumId(ARTIST, ALBUM, YEAR)) })
+      await browse("getAlbum", { id: prefixedId("album", albumId(1, ARTIST, ALBUM, YEAR)) })
     ).album;
 
     expect(album?.starred).toBe(ALBUM_STARRED.toISOString());
@@ -213,7 +213,7 @@ describe("the lists", () => {
 describe("playlist entries and folder children", () => {
   it("decorates a playlist's entries", async () => {
     const entries = (
-      await playlists("getPlaylist", { id: prefixedId("playlist", playlistId(PLAYLIST_KEY)) })
+      await playlists("getPlaylist", { id: prefixedId("playlist", playlistId(1, PLAYLIST_KEY)) })
     ).playlist?.entry;
     const polar = entries?.find((song) => song.title === "Polar");
 
@@ -223,7 +223,9 @@ describe("playlist entries and folder children", () => {
 
   it("decorates an album directory's track children", async () => {
     const directory = (
-      await browse("getMusicDirectory", { id: prefixedId("album", albumId(ARTIST, ALBUM, YEAR)) })
+      await browse("getMusicDirectory", {
+        id: prefixedId("album", albumId(1, ARTIST, ALBUM, YEAR)),
+      })
     ).directory;
     const polar = directory?.child?.find((child) => child.title === "Polar");
 
@@ -241,7 +243,9 @@ describe("playlist entries and folder children", () => {
 
   it("decorates the directory element itself, not only its children", async () => {
     const directory = (
-      await browse("getMusicDirectory", { id: prefixedId("album", albumId(ARTIST, ALBUM, YEAR)) })
+      await browse("getMusicDirectory", {
+        id: prefixedId("album", albumId(1, ARTIST, ALBUM, YEAR)),
+      })
     ).directory;
 
     expect(directory?.starred).toBe(ALBUM_STARRED.toISOString());
@@ -253,7 +257,7 @@ describe("playlist entries and folder children", () => {
   it("leaves the four off a directory the caller has not annotated", async () => {
     const directory = (
       await browse("getMusicDirectory", {
-        id: prefixedId("album", albumId(ARTIST, PLAIN_ALBUM, PLAIN_YEAR)),
+        id: prefixedId("album", albumId(1, ARTIST, PLAIN_ALBUM, PLAIN_YEAR)),
       })
     ).directory;
 
@@ -300,7 +304,7 @@ describe("isolation between accounts", () => {
   it("shows a second account none of the first's annotation", async () => {
     const song = (
       await browseAs(OTHER_USER, "getSong", {
-        id: prefixedId("track", trackId(TRACK_KEY)),
+        id: prefixedId("track", trackId(1, TRACK_KEY)),
       })
     ).song;
 

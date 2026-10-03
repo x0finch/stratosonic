@@ -28,7 +28,7 @@
  * file's `#PLAYLIST:` line, where the parser already reads it from.
  */
 
-import { newRandomId, playlistId } from "@stratosonic/db";
+import { DEFAULT_LIBRARY_ID, newRandomId, playlistId } from "@stratosonic/db";
 import type { Database } from "../db";
 import type { Env } from "../env";
 import { playlistNameForFile, renderM3u } from "./m3u";
@@ -90,7 +90,9 @@ export async function writePlaylist(env: Env, db: Database, write: PlaylistWrite
   }
 
   const imported: ImportedPlaylist = {
-    id: playlistId(write.r2Key),
+    // Every playlist file is in the bound bucket until writes go to the
+    // playlist's own library (#84, ticket F).
+    id: playlistId(DEFAULT_LIBRARY_ID, write.r2Key),
     name,
     comment: write.comment,
     ownerId: write.ownerId,
@@ -98,6 +100,7 @@ export async function writePlaylist(env: Env, db: Database, write: PlaylistWrite
     songCount: write.tracks.length,
     duration: write.tracks.reduce((total, entry) => total + entry.duration, 0),
     r2Key: write.r2Key,
+    libraryId: DEFAULT_LIBRARY_ID,
     // The object's own clock, as the import reads it, so the next pass over
     // this untouched file changes nothing a client can see.
     createdAt: write.createdAt ?? object.uploaded,

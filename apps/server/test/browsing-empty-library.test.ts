@@ -60,8 +60,8 @@ describe("browsing an empty library", () => {
   it("says an artist, an album and a song are not found rather than failing oddly", async () => {
     const asked = [
       ["getArtist", prefixedId("artist", artistId("Nobody"))],
-      ["getAlbum", prefixedId("album", albumId("Nobody", "Nothing", 2000))],
-      ["getSong", prefixedId("track", trackId("Nobody/Nothing/1.mp3"))],
+      ["getAlbum", prefixedId("album", albumId(1, "Nobody", "Nothing", 2000))],
+      ["getSong", prefixedId("track", trackId(1, "Nobody/Nothing/1.mp3"))],
       ["getMusicDirectory", prefixedId("artist", artistId("Nobody"))],
     ] as const;
 

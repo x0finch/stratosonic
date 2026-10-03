@@ -22,8 +22,8 @@ const ALBUM = "Quasar";
 const FIRST = `${ARTIST}/${ALBUM}/01 First.mp3`;
 const SECOND = `${ARTIST}/${ALBUM}/02 Second.mp3`;
 
-const ALBUM_ID = prefixedId("album", albumId(ARTIST, ALBUM, YEAR));
-const trackIdOf = (key: string) => prefixedId("track", trackId(key));
+const ALBUM_ID = prefixedId("album", albumId(1, ARTIST, ALBUM, YEAR));
+const trackIdOf = (key: string) => prefixedId("track", trackId(1, key));
 
 /** The album's aggregate play data, as `getAlbum` renders it for the caller. */
 async function albumPlayData(): Promise<{ playCount?: number; played?: string }> {

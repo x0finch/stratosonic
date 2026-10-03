@@ -24,7 +24,7 @@ const USLT = fixtureLyricsTrack("lyrics-uslt.mp3");
 const SYLT = fixtureLyricsTrack("lyrics-sylt.mp3");
 
 function songId(r2Key: string): string {
-  return prefixedId("track", trackId(r2Key));
+  return prefixedId("track", trackId(1, r2Key));
 }
 
 function sidecar(trackKey: string, suffix: string): string {

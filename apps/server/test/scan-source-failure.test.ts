@@ -67,7 +67,7 @@ describe("a scan that meets a bucket error", () => {
 
   it("leaves the track out of the library for now", async () => {
     const body = await browse("getSong", {
-      id: prefixedId("track", trackId(UNAVAILABLE.r2Key)),
+      id: prefixedId("track", trackId(1, UNAVAILABLE.r2Key)),
     });
 
     expect(body.error?.code).toBe(70);

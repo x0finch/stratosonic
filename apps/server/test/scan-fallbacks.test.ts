@@ -57,14 +57,14 @@ describe("a scan of a bucket that is not all music", () => {
   });
 
   it("does not index the object whose bytes are not what its suffix promised", async () => {
-    const body = await browse("getSong", { id: prefixedId("track", trackId(CORRUPT_KEY)) });
+    const body = await browse("getSong", { id: prefixedId("track", trackId(1, CORRUPT_KEY)) });
 
     expect(body.error?.code).toBe(70);
   });
 
   it("reads a tagless file's names off its path", async () => {
     const body = await browse("getSong", {
-      id: prefixedId("track", trackId(UNTAGGED.r2Key)),
+      id: prefixedId("track", trackId(1, UNTAGGED.r2Key)),
     });
 
     expect(body.song?.title).toBe(UNTAGGED.pathFallback.title);
@@ -76,7 +76,7 @@ describe("a scan of a bucket that is not all music", () => {
   });
 
   it("falls back to Navidrome's unknown names only when the path says nothing", async () => {
-    const body = await browse("getSong", { id: prefixedId("track", trackId(ROOTLESS_KEY)) });
+    const body = await browse("getSong", { id: prefixedId("track", trackId(1, ROOTLESS_KEY)) });
 
     expect(body.song?.title).toBe("stray");
     expect(body.song?.artist).toBe(UNKNOWN_ARTIST);

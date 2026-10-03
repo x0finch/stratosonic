@@ -27,7 +27,7 @@ const keys = Array.from(
   (_, index) => `${ARTIST}/${ALBUM}/${String(index + 1).padStart(3, "0")} Track.mp3`,
 );
 
-const theAlbumId = prefixedId("album", albumId(ARTIST, ALBUM, YEAR));
+const theAlbumId = prefixedId("album", albumId(1, ARTIST, ALBUM, YEAR));
 const theArtistId = prefixedId("artist", artistId(ARTIST));
 
 beforeAll(async () => {
@@ -50,7 +50,7 @@ beforeAll(async () => {
 
 describe("submitting more ids than one statement may bind", () => {
   it("counts every play, once per track and once per album play", async () => {
-    const ids = keys.map((key) => prefixedId("track", trackId(key)));
+    const ids = keys.map((key) => prefixedId("track", trackId(1, key)));
 
     const ok = await write("scrobble", { id: ids });
     expect(ok.status).toBe("ok");
@@ -73,7 +73,7 @@ describe("submitting more ids than one statement may bind", () => {
 
   it("refuses a submission naming more ids than the cap allows", async () => {
     const tooMany = Array.from({ length: 1001 }, (_, index) =>
-      prefixedId("track", trackId(`${ARTIST}/${ALBUM}/never-${index}.mp3`)),
+      prefixedId("track", trackId(1, `${ARTIST}/${ALBUM}/never-${index}.mp3`)),
     );
 
     const body = await write("scrobble", { id: tooMany });

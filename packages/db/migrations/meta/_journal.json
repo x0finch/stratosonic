@@ -64,6 +64,13 @@
       "when": 1790765129879,
       "tag": "0008_add_better_auth_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1791054118284,
+      "tag": "0009_add_multi_library_support",
+      "breakpoints": true
     }
   ]
 }

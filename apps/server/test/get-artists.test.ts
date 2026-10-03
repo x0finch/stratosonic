@@ -100,7 +100,7 @@ describe("getArtists", () => {
     const articled = artists?.find((artist) => artist.name === ARTICLED);
 
     expect(articled?.coverArt).toBe(
-      prefixedId("album", albumId(ARTICLED, COVERED_ALBUM.name, COVERED_ALBUM.year)),
+      prefixedId("album", albumId(1, ARTICLED, COVERED_ALBUM.name, COVERED_ALBUM.year)),
     );
   });
 
