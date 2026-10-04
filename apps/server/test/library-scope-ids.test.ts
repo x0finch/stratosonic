@@ -1,4 +1,4 @@
-import { album, playQueue, track, trackLyrics } from "@stratosonic/db";
+import { album, playQueue, track, trackId, trackLyrics } from "@stratosonic/db";
 import { eq, inArray } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app";
@@ -345,20 +345,6 @@ describe("a write naming an id out of the caller's libraries", () => {
         ["position", "1000"],
       ],
     ],
-    [
-      "savePlayQueue",
-      [
-        ["id", tr(ids.calmTrack)],
-        ["id", tr(ids.jazzTrack)],
-      ],
-    ],
-    [
-      "savePlayQueue",
-      [
-        ["id", tr(ids.calmTrack)],
-        ["current", tr(ids.jazzTrack)],
-      ],
-    ],
   ];
 
   it.each(REFUSED)("is error 70 from %s %j, and writes nothing", async (endpoint, params) => {
@@ -393,7 +379,6 @@ describe("a write naming an id out of the caller's libraries", () => {
           ["position", "1"],
         ],
       ],
-      ["savePlayQueue", [["id", tr(ids.calmTrack)]]],
     ] as const) {
       const before = await writableState();
       expect((await call(LISTENER_ONE, endpoint, params)).error?.code, endpoint).toBe(70);
@@ -430,6 +415,83 @@ describe("a write naming an id out of the caller's libraries", () => {
 
 /* -------------------------------------------- queue, bookmarks, lists -- */
 
+describe("savePlayQueue for a caller who does not see every library", () => {
+  const UNKNOWN = tr(trackId(1, "Nobody/Nothing/01 Never.flac"));
+
+  /** The caller's stored queue, as the row holds it, or null. */
+  async function storedQueue(userId: string) {
+    const [row] = await database(testEnv)
+      .select()
+      .from(playQueue)
+      .where(eq(playQueue.userId, userId));
+    return row === undefined ? null : { trackIds: JSON.parse(row.trackIds), current: row.current };
+  }
+
+  it("drops every id it cannot see, unknown or hidden alike, and saves the rest", async () => {
+    const saved = await call(LISTENER_TWO, "savePlayQueue", [
+      ["id", tr(ids.calmTrack)],
+      ["id", tr(ids.jazzTrack)],
+      ["id", UNKNOWN],
+      ["id", tr(ids.calmTrack)],
+      ["id", tr(ids.sharedTrack2)],
+      ["current", tr(ids.sharedTrack2)],
+      ["position", "1500"],
+    ]);
+
+    expect(saved.status).toBe("ok");
+    expect(await storedQueue(users.twoId)).toEqual({
+      trackIds: [ids.calmTrack, ids.calmTrack, ids.sharedTrack2],
+      current: ids.sharedTrack2,
+    });
+  });
+
+  it("drops a current that is not one of the ids kept", async () => {
+    for (const current of [tr(ids.jazzTrack), UNKNOWN]) {
+      expect(
+        (
+          await call(LISTENER_TWO, "savePlayQueue", [
+            ["id", tr(ids.calmTrack)],
+            ["id", tr(ids.jazzTrack)],
+            ["current", current],
+          ])
+        ).status,
+      ).toBe("ok");
+      expect(await storedQueue(users.twoId)).toEqual({
+        trackIds: [ids.calmTrack],
+        current: null,
+      });
+    }
+  });
+
+  it("clears the queue when nothing it names is visible", async () => {
+    expect(
+      (
+        await call(LISTENER_ONE, "savePlayQueue", [
+          ["id", tr(ids.calmTrack)],
+          ["current", tr(ids.calmTrack)],
+        ])
+      ).status,
+    ).toBe("ok");
+    expect(await storedQueue(users.oneId)).toBeNull();
+  });
+
+  it("keeps what a caller who sees every library sends, as v0.5.0 did", async () => {
+    expect(
+      (
+        await call(LISTENER_BOTH, "savePlayQueue", [
+          ["id", tr(ids.jazzTrack)],
+          ["id", UNKNOWN],
+          ["current", UNKNOWN],
+        ])
+      ).status,
+    ).toBe("ok");
+    expect(await storedQueue(users.bothId)).toEqual({
+      trackIds: [ids.jazzTrack, UNKNOWN.slice(3)],
+      current: UNKNOWN.slice(3),
+    });
+  });
+});
+
 describe("the reads of what a user saved", () => {
   const EVERY_TRACK = [ids.jazzTrack, ids.calmTrack, ids.sharedTrack1, ids.sharedTrack2];
 
@@ -438,10 +500,15 @@ describe("the reads of what a user saved", () => {
     for (const userId of [users.twoId, users.bothId]) {
       await db
         .insert(playQueue)
-        .values({ userId, trackIds: JSON.stringify(EVERY_TRACK), changedAt: SEED_TIME })
+        .values({
+          userId,
+          trackIds: JSON.stringify(EVERY_TRACK),
+          current: ids.jazzTrack,
+          changedAt: SEED_TIME,
+        })
         .onConflictDoUpdate({
           target: playQueue.userId,
-          set: { trackIds: JSON.stringify(EVERY_TRACK) },
+          set: { trackIds: JSON.stringify(EVERY_TRACK), current: ids.jazzTrack },
         });
       await testEnv.DB.prepare("delete from bookmark where user_id = ?").bind(userId).run();
       for (const trackId of EVERY_TRACK) {
@@ -466,6 +533,11 @@ describe("the reads of what a user saved", () => {
     expect(trackIdsOf((await call(LISTENER_BOTH, "getPlayQueue")).playQueue.entry)).toEqual(
       EVERY_TRACK.map(tr),
     );
+  });
+
+  it("getPlayQueue leaves out a current that names no entry answered", async () => {
+    expect((await call(LISTENER_TWO, "getPlayQueue")).playQueue.current).toBeUndefined();
+    expect((await call(LISTENER_BOTH, "getPlayQueue")).playQueue.current).toBe(tr(ids.jazzTrack));
   });
 
   it("getBookmarks leaves them out, and keeps them stored", async () => {
@@ -709,7 +781,7 @@ describe("the fast path on the id endpoints, with two libraries", () => {
     }
   });
 
-  it("adds no statement for a scoped user but savePlayQueue's check", async () => {
+  it("adds no statement for a scoped user but savePlayQueue's lookup", async () => {
     for (const [endpoint, params, expected] of V050) {
       d1.reset();
       await call(LISTENER_TWO, endpoint, params);

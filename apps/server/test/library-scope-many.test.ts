@@ -1,6 +1,6 @@
 import { SELF } from "cloudflare:test";
 import { library, playQueue, trackId, userLibrary } from "@stratosonic/db";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app";
 import { D1_MAX_BOUND_PARAMETERS } from "../src/d1-limits";
 import { database } from "../src/db";
@@ -305,15 +305,14 @@ describe("the id endpoints with a long scope", () => {
 });
 
 describe("the id endpoints within D1's hundred parameters", () => {
-  beforeAll(async () => {
+  // A full queue before each, since a save of unknown ids clears it.
+  beforeEach(async () => {
+    const trackIds = JSON.stringify(unknownTracks(1000).map((id) => id.slice(3)));
     for (const userId of [listedId, listenerId]) {
       await database(testEnv)
         .insert(playQueue)
-        .values({
-          userId,
-          trackIds: JSON.stringify(unknownTracks(1000).map((id) => id.slice(3))),
-          changedAt: SEED_TIME,
-        });
+        .values({ userId, trackIds, changedAt: SEED_TIME })
+        .onConflictDoUpdate({ target: playQueue.userId, set: { trackIds } });
     }
   });
 
