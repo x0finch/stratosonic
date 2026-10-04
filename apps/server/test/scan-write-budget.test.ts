@@ -17,7 +17,7 @@ import {
 } from "../src/scanner/budget";
 import type { ScanDriver } from "../src/scanner/driver";
 import { readLastScanSummary } from "../src/scanner/state";
-import { bootstrapAdmin } from "./browsing-support";
+import { bootstrapAdmin, browse } from "./browsing-support";
 import {
   driver,
   driverIsIdle,
@@ -200,6 +200,23 @@ describe("a pass that reaches the budget", () => {
 
     // The change waits for the next cron poke; this test forgets it.
     await runInDurableObject(driver(), (_instance: ScanDriver, state) => state.storage.deleteAll());
+  });
+
+  it("reads as no scan in getScanStatus while it is paused, its cursor waiting", async () => {
+    await pausedPass();
+    expect(await progressNow()).not.toBeNull();
+    const scanning = async () =>
+      ((await browse("getScanStatus")) as unknown as { scanStatus?: { scanning: boolean } })
+        .scanStatus?.scanning;
+
+    // Under the deployment's own budget (50,000), the pass reads as running,
+    // as a given-up one does until the next cron poke resumes it.
+    expect(await scanning()).toBe(true);
+
+    // Over it, the day's passes are paused.
+    const db = database(testEnv);
+    await db.batch([tallyStatement(db, utcDay(DAY), 50_000)]);
+    expect(await scanning()).toBe(false);
   });
 
   it("stops a cron poke the same UTC day at its first step, reading nothing", async () => {
