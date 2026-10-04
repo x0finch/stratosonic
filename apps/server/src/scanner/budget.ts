@@ -74,7 +74,12 @@ export interface RowLedger {
   rows: number;
 }
 
-/** The rows D1 reports a batch's statements wrote. */
+/**
+ * The rows D1 reports a batch's statements wrote. It counts only results
+ * that carry D1's `meta`: Drizzle answers a `.returning()` statement with its
+ * rows alone, so one put in a batch counts 0, and such a write goes through
+ * the binding itself (`runReturning`, scanner/repository.ts).
+ */
 export function rowsWrittenBy(results: readonly unknown[]): number {
   let rows = 0;
   for (const result of results) {
@@ -109,15 +114,17 @@ export async function countedBatch(
 /**
  * Puts the ledger's rows on the day's tally, where nothing written later
  * would carry them: one statement, whose own row is counted as the one row
- * an update of the tally writes. Nothing is sent for an empty ledger.
+ * an update of the tally writes. The day's first tally row is an insert,
+ * which D1 reports as two (the row and its key's index): that one row a day
+ * goes uncounted. Nothing is sent for an empty ledger, and the ledger keeps
+ * its rows if D1 refuses the statement.
  */
 export async function flushLedger(db: Database, day: string, ledger: RowLedger): Promise<void> {
   if (ledger.rows <= 0) {
     return;
   }
-  const rows = ledger.rows + 1;
+  await db.batch([tallyStatement(db, day, ledger.rows + 1)]);
   ledger.rows = 0;
-  await db.batch([tallyStatement(db, day, rows)]);
 }
 
 /** The tally, as the row holds it. */

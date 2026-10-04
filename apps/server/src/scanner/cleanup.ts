@@ -70,9 +70,9 @@ export async function cleanUpLibrary(
 ): Promise<CleanupStage> {
   /** Runs a stage's batch with the carried rows on the tally. */
   const commit = async (statements: ScanStatement[]): Promise<void> => {
+    // The carry stays in the ledger until the batch has run.
     const carried = ledger.rows;
-    ledger.rows = 0;
-    ledger.rows += await countedBatch(db, [
+    ledger.rows = await countedBatch(db, [
       ...statements,
       ...(carried > 0 ? [tallyStatement(db, day, carried)] : []),
     ]);

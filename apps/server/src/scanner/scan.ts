@@ -317,6 +317,8 @@ export async function runScan(
   const ledger = options.ledger ?? { rows: 0 };
   // Every row of today the scan knows of: on the tally, carried in the
   // progress row, and in the ledger.
+  // A ledger from a step before midnight counts against the new day: one
+  // batch over-counted, the safe direction for a budget.
   let spent = rowsWrittenOn(state.rowsWritten, day) + untallied + ledger.rows;
 
   const startedAt = previous?.startedAt ?? now.getTime();
@@ -376,7 +378,7 @@ export async function runScan(
   let extractions = 0;
   let paused = false;
 
-  const progress = (): ScanProgress => ({
+  const progress = (carrying: number = untallied): ScanProgress => ({
     startedAt,
     libraryId: current?.id ?? past,
     cursor,
@@ -385,7 +387,7 @@ export async function runScan(
     restarted,
     counts: addedCounts(before, counts),
     libraries: libraryTotals,
-    untallied: untallied === 0 ? null : { day, rows: untallied },
+    untallied: carrying === 0 ? null : { day, rows: carrying },
   });
 
   /**
@@ -416,7 +418,8 @@ export async function runScan(
    * on the tally, and one that writes only bookkeeping carries them in the
    * progress row (`ScanProgress.untallied`), so an unchanged pass writes the
    * tally once, at its end. The batch's own rows, as D1 reports them, go to
-   * the ledger, for the next write to carry.
+   * the ledger, for the next write to carry. Nothing is moved until the
+   * batch has run: one D1 refuses changes nothing, the carry included.
    */
   const commit = async (
     writes: ScanStatement[],
@@ -426,18 +429,15 @@ export async function runScan(
     for (const [libraryId, fields] of stamps) {
       writes.push(stampLibraryStatement(db, libraryId, fields));
     }
-    if (writesTracks) {
-      if (untallied + ledger.rows > 0) {
-        writes.push(tallyStatement(db, day, untallied + ledger.rows));
-      }
-      untallied = 0;
-    } else {
-      untallied += ledger.rows;
+    const carried = untallied + ledger.rows;
+    if (writesTracks && carried > 0) {
+      writes.push(tallyStatement(db, day, carried));
     }
-    ledger.rows = 0;
-    writes.push(writeScanProgressStatement(db, progress()));
+    const carrying = writesTracks ? 0 : carried;
+    writes.push(writeScanProgressStatement(db, progress(carrying)));
     const rows = await countedBatch(db, writes);
-    ledger.rows += rows;
+    untallied = carrying;
+    ledger.rows = rows;
     spent += rows;
   };
 
@@ -632,7 +632,9 @@ export async function runScan(
       if (pageRows.foreignTrackIds.has(item.rows.track.id)) {
         // The upsert would be refused, and the lyrics, cover and album
         // written under another library's id: the object is left out, and
-        // remembered at its etag, so it is not read again every pass.
+        // remembered at its etag, so it is not read again every pass. It
+        // stays memoed until its etag changes, even if the other library's
+        // row goes; only a crafted key reaches this.
         pageCounts.broken++;
         memo.set(item.rows.track.r2Key, item.etag);
         memoChanged = true;
@@ -747,9 +749,7 @@ export async function runScan(
     // included, goes on the tally with the summary. This batch's own rows
     // stay in the ledger, for the driver to carry into the import.
     const carried = untallied + ledger.rows;
-    ledger.rows = 0;
-    untallied = 0;
-    ledger.rows += await countedBatch(db, [
+    const rows = await countedBatch(db, [
       writeLastScanSummaryStatement(db, {
         startedAt,
         finishedAt: now.getTime(),
@@ -759,6 +759,8 @@ export async function runScan(
       clearScanProgressStatement(db),
       ...(carried > 0 ? [tallyStatement(db, day, carried)] : []),
     ]);
+    untallied = 0;
+    ledger.rows = rows;
 
     return ran(true, false);
   }
@@ -805,8 +807,7 @@ export async function skipLibrary(
   // What the progress row carried and the ledger holds goes on the tally;
   // this batch's own rows go to the ledger, for the next step.
   const carried = rowsWrittenOn(previous?.untallied ?? null, day) + ledger.rows;
-  ledger.rows = 0;
-  ledger.rows += await countedBatch(db, [
+  const rows = await countedBatch(db, [
     ...writes,
     writeScanProgressStatement(db, {
       startedAt: previous?.startedAt ?? now.getTime(),
@@ -821,6 +822,7 @@ export async function skipLibrary(
     }),
     ...(carried > 0 ? [tallyStatement(db, day, carried)] : []),
   ]);
+  ledger.rows = rows;
 }
 
 /** The first active library whose id is at least `id`, or null when none is. */

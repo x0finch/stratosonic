@@ -232,14 +232,14 @@ export async function importPlaylists(
   let imports = 0;
   let completed = false;
 
-  const progress = (): PlaylistImportProgress => ({
+  const progress = (carrying: number = untallied): PlaylistImportProgress => ({
     startedAt,
     cursor,
     skip,
     sweptTo,
     restarted,
     counts: totalsOf(before, counts),
-    untallied: untallied === 0 ? null : { day, rows: untallied },
+    untallied: carrying === 0 ? null : { day, rows: carrying },
   });
 
   /**
@@ -249,23 +249,25 @@ export async function importPlaylists(
    * (`flushLedger`), as nothing comes after it (`scanner/budget.ts`).
    */
   const commit = async (done: boolean): Promise<void> => {
+    // Nothing is moved until the batch has run: one D1 refuses changes
+    // nothing, the carry included.
+    const carried = untallied + ledger.rows;
     if (done) {
-      const carried = untallied + ledger.rows;
-      untallied = 0;
-      ledger.rows = 0;
       const rows = await countedBatch(db, [
         clearPlaylistImportProgressStatement(db),
         ...(carried > 0 ? [tallyStatement(db, day, carried)] : []),
       ]);
-      ledger.rows += rows;
+      untallied = 0;
+      ledger.rows = rows;
       spent += rows;
       await flushLedger(db, day, ledger);
       return;
     }
-    untallied += ledger.rows;
-    ledger.rows = 0;
-    const rows = await countedBatch(db, [writePlaylistImportProgressStatement(db, progress())]);
-    ledger.rows += rows;
+    const rows = await countedBatch(db, [
+      writePlaylistImportProgressStatement(db, progress(carried)),
+    ]);
+    untallied = carried;
+    ledger.rows = rows;
     spent += rows;
   };
 
@@ -290,13 +292,12 @@ export async function importPlaylists(
       if (skipsAtOnce(reason)) {
         console.warn(`playlists: skipping library ${libraryId} for this pass (${reason})`, error);
         const carried = untallied + ledger.rows;
-        untallied = 0;
-        ledger.rows = 0;
-        ledger.rows += await countedBatch(db, [
+        ledger.rows = await countedBatch(db, [
           stampLibraryStatement(db, libraryId, { lastScanError: reason }),
           clearPlaylistImportProgressStatement(db),
           ...(carried > 0 ? [tallyStatement(db, day, carried)] : []),
         ]);
+        untallied = 0;
         await flushLedger(db, day, ledger);
 
         return ran(true);
@@ -425,8 +426,7 @@ export async function skipPlaylistLibrary(
   // The pass ends here: what the progress row carried and the ledger holds
   // go on the tally, and then this batch's own rows.
   const carried = rowsWrittenOn(progress?.untallied ?? null, day) + ledger.rows;
-  ledger.rows = 0;
-  ledger.rows += await countedBatch(db, [
+  ledger.rows = await countedBatch(db, [
     stampLibraryStatement(db, libraryId, { lastScanError: reason }),
     clearPlaylistImportProgressStatement(db),
     ...(carried > 0 ? [tallyStatement(db, day, carried)] : []),

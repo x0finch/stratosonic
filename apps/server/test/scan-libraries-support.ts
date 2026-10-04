@@ -149,14 +149,18 @@ export async function talliedRows(): Promise<number> {
  * every statement and `patch` applied to its env, and answers whether there
  * was one to run.
  */
-export function countedAlarm(d1: CountingD1, patch: Partial<Env> = {}): Promise<boolean> {
+export function countedAlarm(
+  d1: CountingD1,
+  patch: Partial<Env> = {},
+  wrap: (db: D1Database) => D1Database = (db) => db,
+): Promise<boolean> {
   return runInDurableObject(driver(), async (instance: ScanDriver, state) => {
     if ((await state.storage.getAlarm()) === null) {
       return false;
     }
     const self = instance as unknown as { env: Env };
     const original = self.env;
-    self.env = { ...original, ...patch, DB: d1.binding };
+    self.env = { ...original, ...patch, DB: wrap(d1.binding) };
     try {
       await state.storage.deleteAlarm();
       await instance.alarm();
@@ -169,12 +173,17 @@ export function countedAlarm(d1: CountingD1, patch: Partial<Env> = {}): Promise<
 
 /**
  * Runs alarm after alarm, counted, until the driver stops, and answers every
- * row D1 says they wrote.
+ * row D1 says they wrote. `wrap` stands between the driver and the counting
+ * D1, to refuse a statement as D1 would.
  */
-export async function driveCounted(patch: Partial<Env> = {}, limit = 80): Promise<number> {
+export async function driveCounted(
+  patch: Partial<Env> = {},
+  limit = 80,
+  wrap?: (db: D1Database) => D1Database,
+): Promise<number> {
   const d1 = countingD1(testEnv.DB);
   for (let alarm = 0; alarm <= limit; alarm++) {
-    if (!(await countedAlarm(d1, patch))) {
+    if (!(await countedAlarm(d1, patch, wrap))) {
       return d1.statements.reduce((sum, statement) => sum + statement.rowsWritten, 0);
     }
   }
