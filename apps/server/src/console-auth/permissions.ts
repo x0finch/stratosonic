@@ -46,6 +46,12 @@ export const PERMISSIONS = [
   // (Phase 2, #83). It does not need `library:scan`: the pass a change
   // schedules is a consequence of the change, not a request for a scan.
   "files:write",
+  // See the libraries: the buckets this server serves, their scan stamps and
+  // counts (`GET /api/libraries`; Phase 3, #84).
+  "libraries:read",
+  // Connect, edit, test and remove a library (Phase 3, #84). Which libraries
+  // a Subsonic user may see stays under `subsonic-users:write`.
+  "libraries:write",
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
