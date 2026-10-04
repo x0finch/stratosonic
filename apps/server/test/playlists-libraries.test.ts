@@ -18,7 +18,7 @@ import { s3Path } from "../src/storage/s3";
 import { deleteSubsonicUser } from "../src/users/delete";
 import { bootstrapAdmin } from "./browsing-support";
 import { cost, countingD1 } from "./console-auth-support";
-import { type FakeS3, libraryTestBucket } from "./fake-s3";
+import { FakeS3, installFakeS3, libraryTestBucket } from "./fake-s3";
 import { ADMIN, afterAuthentication, countingApp, namesALibrary } from "./library-scope-support";
 import {
   callPlaylists,
@@ -193,6 +193,12 @@ describe("resolving an entry (entryCandidates)", () => {
     });
   });
 
+  it("does not take a line whose path only begins with a library's path", () => {
+    expect(entryCandidates(1, "m.m3u", `s3://${HOST}/musicbox/01.mp3`, LIBRARIES).libraryId).toBe(
+      1,
+    );
+  });
+
   it("resolves a path of a library that is not active, or that climbs out of it, to nothing", () => {
     expect(entryCandidates(1, "m.m3u", `s3://${HOST}/gone/Artist/01.mp3`, LIBRARIES)).toEqual({
       libraryId: 4,
@@ -328,6 +334,25 @@ describe("importing from every library", () => {
       ]);
     }
     expect(await entriesOf(ARCHIVE.id, TWO)).toHaveLength(4);
+  });
+
+  it("goes on to the next library after skipping one at once", async () => {
+    const third = new FakeS3({ accountId: "abcdefabcdefabcdefabcdefabcdef00", bucket: "third" });
+    installed.spy.mockRestore();
+    installed = { fake, spy: installFakeS3(fake, third) };
+    await connectLibrary(third, 3);
+    fake.fail("access_denied");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await importUntilComplete({}, later());
+    } finally {
+      warn.mockRestore();
+    }
+
+    // Library 3 is served from the same test bucket, so it holds `TWO` too.
+    expect((await libraryRow(ARCHIVE.id))?.lastScanError).toBe("auth");
+    expect(await rowOf(ARCHIVE.id, TWO)).toBeUndefined();
+    expect(await rowOf(3, TWO)).toMatchObject({ libraryId: 3 });
   });
 
   it("skips an unreachable library at once, and keeps its playlists", async () => {
