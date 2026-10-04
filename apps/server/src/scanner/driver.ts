@@ -78,6 +78,20 @@
  * `maxFailures` consecutive failures the driver stops and clears its state,
  * leaving the next cron poke to start a fresh pass; a scan that cannot make
  * progress should be quiet until something changes, not spin.
+ *
+ * One failure is not given up on: a library whose bucket listing keeps
+ * failing (`LibraryListingError`, #84 "Skipping a library"). After
+ * `maxFailures` of those the library is skipped for the pass, with
+ * `last_scan_error`, and the pass carries on to the next library and the
+ * playlists, which would otherwise never run while one bucket is down. Its
+ * tracks are kept: nothing is swept from a library that was not listed.
+ *
+ * ## The daily write budget
+ *
+ * A step that finds the day's D1 write budget spent (`scanner/budget.ts`)
+ * answers that it paused, and the driver ends the pass as it gives one up:
+ * its state and alarm go, a pending change stays, and the D1 cursor waits
+ * for the first cron poke after 00:00 UTC.
  */
 
 import { DurableObject } from "cloudflare:workers";

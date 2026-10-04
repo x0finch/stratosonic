@@ -62,6 +62,28 @@ the path"), which fails the whole request: the Worker's log line gives the
 error's path (for example `viewer/accounts/0/r2Storage`), which tells the two
 apart.
 
+## Daily D1 write budget (`SCAN_DAILY_WRITE_BUDGET`)
+
+A D1 database that reaches the free plan's 100,000 rows written in a day
+refuses **every** query, reads included, until 00:00 UTC. The scan is the one
+writer that can get there on its own: a first index of a large library, or
+the cleanup of a removed one, writes about eight rows per track. So the scan
+counts the rows it writes in each UTC day, its progress rows included, and
+stops at the var `SCAN_DAILY_WRITE_BUDGET` in `wrangler.jsonc`:
+
+- the default is **50,000**. The cron's passes over unchanged libraries
+  write about 11,000 a day, which leaves room for roughly 4,800 new tracks a
+  day; a bigger first index is spread over several days;
+- `0` means no cap, for Workers Paid, which has no daily limit;
+- anything that is not a whole number is the default.
+
+At the budget the pass stops as a give-up does: its cursor stays in D1, and
+every cron poke that UTC day stops at its first step. The first poke after
+midnight resumes the pass where it stopped. The Overview says "Paused until
+tomorrow: daily write budget" (`scan.paused` in `GET /api/overview/live`).
+The limit is per account, so the preview database shares it, and preview's
+var is the same.
+
 ## Files: browsing and deleting
 
 The console's Files page manages the bound bucket (`MUSIC`) as folders,
