@@ -163,6 +163,21 @@ minutes.", "A scan is starting." once that time has come, and "A scan is
 running. Another follows it for recent file changes." The words are
 `describeSchedule` in `src/lib/overview.ts`.
 
+**Across libraries** (#84), and only where more than one library exists, a
+library switch (the shadcn `Select`, `src/components/library-select.tsx`)
+above the key figures narrows the totals, the genres and the albums added
+last to one library: `?library=2`, absent for every library, read as
+`GET /api/overview/library?library=2`, each library its own cache entry.
+The scan, who is listening, the usage and the playlists stay the whole
+server's. A link to a library that is gone shows every library. The scan
+says which library a pass is in ("Scanning Archive (2 of 3)."), a pass
+the daily D1 write budget stopped ("Paused until tomorrow at 2:00 AM: daily
+write budget.", in this browser's zone), and, for a role with
+`libraries:read`, each library the last pass skipped beneath its counts
+("Archive was skipped: the key was refused.", from the Libraries page's
+list, which is not polled here and is read again when a pass ends). With
+one library there is no switch, and the page reads what it always read.
+
 How often it reads the Worker is `src/lib/overview.ts`, as #82's table
 sets it: the live route (scan and now playing) every 10 s while a pass
 runs and every 30 s otherwise; the library on page load, after **Scan now**
@@ -261,8 +276,22 @@ screen are in `src/lib/subsonic-users.ts`.
   was the first Subsonic admin when it was imported, so the confirmation
   also says that these are included: "That count includes any playlists the
   scan imported from the bucket while they were the first Subsonic admin."
+- **Libraries** (#84, "Per-user access"), only where more than one library
+  exists: the table's Libraries column says which libraries each user sees
+  ("All" for a Subsonic admin, the names, or "3 libraries" past two; hidden
+  on a phone), and the add and edit dialogs have one checkbox per library.
+  A new user's boxes start from the libraries marked "Give new Subsonic
+  users access", which the Libraries page's list says (with
+  `libraries:read`; without it, none starts checked). A Subsonic admin sees
+  every library, so for one the boxes give way to "Admins see every
+  library.", and nothing is sent; a user who is not one needs at least one
+  ("Choose at least one library.", beside the boxes). An edit sends the list
+  only when it changed, so a demoted admin who keeps every box keeps every
+  library. With one library there is no column and no field, and a new user
+  gets the server's default, as before.
 - The list is read on page load and again after every write, and is never
-  polled: only the console changes it.
+  polled: only the console changes it (and a library write, which changes
+  the libraries it names).
 
 ## Files
 
@@ -418,6 +447,23 @@ credentials, **Upload**.
   server could not schedule the scan), and "2 files were not uploaded"
   ("Open “2 need attention” in the header to see why.", naming the trigger
   by the words it shows).
+- **Across libraries** (#84), and only where more than one library exists,
+  a library switch labelled "Library" precedes the path, whose root becomes
+  the library's name: `?library=2`, absent for library 1, so every link of
+  a single-library console is as it was. Switching opens the library's root
+  and drops the selection. The write controls follow the library:
+  a library whose last connection test found it read-only says "Read-only:
+  its key cannot write to the bucket" in their place, and a connected
+  library's uploads are always configured (its stored token signs them).
+  `_covers/` is reserved in library 1 only. Every request names its
+  library (`?library=` on browse, `"library"` in every write), and so does
+  every queued upload, through its check, sign and complete: one request is
+  one library's, two keys are one key only in one library, and a request
+  refused for a whole library (read-only, gone) fails only that library's
+  waiting files. The header's upload list names the library before each
+  row's folder, for a row outside library 1, or for every row while the
+  queue holds files of several libraries; a failed `PUT` in a connected
+  library adds "Check the bucket's CORS rule on the Libraries page."
 - **The scan line**, under the path, shows only while a pass is scheduled or
   running: "Library scan in about 2 minutes.", "Library scan starting.", "A
   scan is running. Another follows it for your recent changes." or "A scan is
@@ -427,7 +473,7 @@ credentials, **Upload**.
   The rescan itself is the server's (ADR-0008); the page only shows it.
 
 What it reads, for the free-tier budget: `GET /api/files/config` once a
-session; `GET /api/files` on opening a folder (fresh for 30 s), on **Load
+session, and again after a library write; `GET /api/files` on opening a folder (fresh for 30 s), on **Load
 more**, and once after a delete (only the first page, whatever was
 loaded). As uploads land, at most once every 5 s while the queue runs and
 once after the last, only the folders the landed keys change are read
