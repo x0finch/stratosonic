@@ -14,6 +14,7 @@ import type { BatchItem } from "drizzle-orm/batch";
 import type { Database } from "../db";
 import { annotationColumns, annotationJoin } from "../library/annotations";
 import { toSongView } from "../library/repository";
+import { type LibraryScope, libraryFilter } from "../library/scope";
 import type { SongView } from "../library/serializers";
 import type { SessionState, StoredSession } from "./session";
 
@@ -33,7 +34,9 @@ export interface PlaybackContext {
 
 /**
  * The track a report names and the caller's stored session, in one statement,
- * or `null` when the track is not in the library.
+ * or `null` when the track is not in the caller's libraries (#84): a report
+ * on a track out of them is refused as one on an unknown track, and stores
+ * nothing. Who is listening is not scoped (`nowPlayingQuery`).
  *
  * The session is left-joined whatever track it is on: a report for another
  * track has to know what the caller is playing now as much as one for the
@@ -44,6 +47,7 @@ export async function findPlaybackContext(
   db: Database,
   userId: string,
   trackId: string,
+  scope: LibraryScope,
 ): Promise<PlaybackContext | null> {
   const [row] = await db
     .select({
@@ -63,7 +67,7 @@ export async function findPlaybackContext(
     })
     .from(track)
     .leftJoin(nowPlaying, eq(nowPlaying.userId, userId))
-    .where(eq(track.id, trackId))
+    .where(and(eq(track.id, trackId), libraryFilter(scope, track.libraryId)))
     .limit(1);
 
   if (row === undefined) {
@@ -160,6 +164,9 @@ export async function listNowPlaying(
  * `listNowPlaying`'s statement, unrun, for a caller that sends it in a
  * `db.batch` with others (the console's overview, api/overview.ts);
  * `toNowPlayingEntries` reads what it returns.
+ *
+ * It is not kept to the caller's libraries: Navidrome's `GetNowPlaying`
+ * reads its play tracker unfiltered, so everyone sees every session (#84).
  *
  * Its columns are safe to batch: Drizzle reads a batched result by column
  * position from D1's row objects, which keep one value per column *name*, and

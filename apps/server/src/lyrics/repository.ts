@@ -11,14 +11,27 @@
  * caller's annotation. The candidate query filters on `track.title`, which
  * is not indexed, by design: a personal library is small enough to scan, the
  * same posture search and `getTopSongs` take.
+ *
+ * Both lookups keep to the caller's libraries (#84), and both say which
+ * library a track is in, since its sidecar is read from that library's
+ * storage: the library's row is joined in the same statement, unless the
+ * caller sees library 1 alone (storage/track-storage.ts). Either way a
+ * lookup is one statement, as in v0.5.0; it selects `library_id` beside
+ * v0.5.0's columns, and only a scoped caller's adds a predicate.
  */
 
-import { track, trackLyrics } from "@stratosonic/db";
-import { and, asc, desc, eq, or, sql } from "drizzle-orm";
+import { library, track, trackLyrics } from "@stratosonic/db";
+import { and, asc, desc, eq, or, type SQL, sql } from "drizzle-orm";
 import type { Database } from "../db";
+import { type LibraryScope, libraryFilter } from "../library/scope";
+import { type StorageRow, storageRowColumns } from "../storage/track-storage";
 
 /** What a lyrics lookup needs to know about a track. */
 export interface LyricsTrack {
+  /** The library the track is in, whose storage holds its sidecars. */
+  readonly libraryId: number;
+  /** That library's row, when the lookup joined it (`joinsLibraryRow`). */
+  readonly library: StorageRow | null;
   readonly r2Key: string;
   readonly artist: string;
   readonly title: string;
@@ -36,6 +49,7 @@ export interface LyricsTrack {
 export const MAX_LYRICS_CANDIDATES = 10;
 
 const lyricsTrackColumns = {
+  libraryId: track.libraryId,
   r2Key: track.r2Key,
   artist: track.artist,
   title: track.title,
@@ -44,6 +58,8 @@ const lyricsTrackColumns = {
 };
 
 interface LyricsTrackRow {
+  readonly libraryId: number;
+  readonly library?: StorageRow;
   readonly r2Key: string;
   readonly artist: string;
   readonly title: string;
@@ -51,14 +67,31 @@ interface LyricsTrackRow {
   readonly embeddedLang: string | null;
 }
 
-/** The track with this bare id, or null when there is none. */
-export async function findLyricsTrack(db: Database, id: string): Promise<LyricsTrack | null> {
-  const rows = await db
-    .select(lyricsTrackColumns)
-    .from(track)
-    .leftJoin(trackLyrics, eq(trackLyrics.trackId, track.id))
-    .where(eq(track.id, id))
-    .limit(1);
+/**
+ * The track with this bare id, or null when there is none in scope. With
+ * `joinLibrary`, its library's row comes with it.
+ */
+export async function findLyricsTrack(
+  db: Database,
+  id: string,
+  scope: LibraryScope,
+  joinLibrary: boolean,
+): Promise<LyricsTrack | null> {
+  const where = and(eq(track.id, id), libraryFilter(scope, track.libraryId));
+  const rows = joinLibrary
+    ? await db
+        .select({ ...lyricsTrackColumns, library: storageRowColumns })
+        .from(track)
+        .leftJoin(trackLyrics, eq(trackLyrics.trackId, track.id))
+        .innerJoin(library, eq(library.id, track.libraryId))
+        .where(where)
+        .limit(1)
+    : await db
+        .select(lyricsTrackColumns)
+        .from(track)
+        .leftJoin(trackLyrics, eq(trackLyrics.trackId, track.id))
+        .where(where)
+        .limit(1);
 
   const row = rows[0];
 
@@ -77,25 +110,51 @@ export async function findLyricsTrack(db: Database, id: string): Promise<LyricsT
  * column and then `updated_at`, both descending, which puts the tracks whose
  * tags carry lyrics ahead of the rest; here that is whether a `track_lyrics`
  * row joined. The id breaks a tie so the order is stable.
+ *
+ * Only the tracks in scope are candidates, and with `joinLibrary` each
+ * comes with its library's row, as `findLyricsTrack`'s does.
  */
 export async function findLyricsCandidates(
   db: Database,
   artist: string,
   title: string,
+  scope: LibraryScope,
+  joinLibrary: boolean,
 ): Promise<LyricsTrack[]> {
-  const rows = await db
-    .select(lyricsTrackColumns)
-    .from(track)
-    .leftJoin(trackLyrics, eq(trackLyrics.trackId, track.id))
-    .where(and(eq(track.title, title), or(eq(track.artist, artist), eq(track.albumArtist, artist))))
-    .orderBy(desc(sql`${trackLyrics.trackId} is not null`), desc(track.updatedAt), asc(track.id))
-    .limit(MAX_LYRICS_CANDIDATES);
+  const where = and(
+    eq(track.title, title),
+    or(eq(track.artist, artist), eq(track.albumArtist, artist)),
+    libraryFilter(scope, track.libraryId),
+  );
+  const order: SQL[] = [
+    desc(sql`${trackLyrics.trackId} is not null`),
+    desc(track.updatedAt),
+    asc(track.id),
+  ];
+  const rows = joinLibrary
+    ? await db
+        .select({ ...lyricsTrackColumns, library: storageRowColumns })
+        .from(track)
+        .leftJoin(trackLyrics, eq(trackLyrics.trackId, track.id))
+        .innerJoin(library, eq(library.id, track.libraryId))
+        .where(where)
+        .orderBy(...order)
+        .limit(MAX_LYRICS_CANDIDATES)
+    : await db
+        .select(lyricsTrackColumns)
+        .from(track)
+        .leftJoin(trackLyrics, eq(trackLyrics.trackId, track.id))
+        .where(where)
+        .orderBy(...order)
+        .limit(MAX_LYRICS_CANDIDATES);
 
   return rows.map(lyricsTrack);
 }
 
 function lyricsTrack(row: LyricsTrackRow): LyricsTrack {
   return {
+    libraryId: row.libraryId,
+    library: row.library ?? null,
     r2Key: row.r2Key,
     artist: row.artist,
     title: row.title,

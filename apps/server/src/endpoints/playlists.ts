@@ -29,6 +29,12 @@
  *   hidden behind error 70 - the caller is being refused, not told the
  *   playlist is gone.
  *
+ * **A listener sees the entries in their libraries** (#84, "Playlists for a
+ * scoped caller"), Navidrome's `tracksQuery`: `getPlaylist` lists only those,
+ * while `songCount` and `duration` stay the stored totals. An edit keeps the
+ * entries they cannot see, and a song id out of their libraries is "Song not
+ * found", as an unknown one is. The list of playlists is not filtered.
+ *
  * All three writes take the same route: the whole `.m3u` is rendered and put,
  * and the row follows from it. `updatePlaylist` is therefore not an edit of a
  * stored list but a read of the current one, an edit in memory, and a write of
@@ -37,6 +43,7 @@
 
 import { parseIdOfType } from "@stratosonic/db";
 import { type Database, database } from "../db";
+import { inScope, type LibraryScope, scopeOf } from "../library/scope";
 import { omitWhenEmpty, playlistElement, songElement } from "../library/serializers";
 import { DEFAULT_PUBLIC } from "../playlists/import";
 import { playlistNameForFile } from "../playlists/m3u";
@@ -49,6 +56,7 @@ import {
   listPlaylistEntryTracks,
   listPlaylists,
   type PlaylistViewer,
+  type StoredEntryTrack,
   type WritablePlaylist,
 } from "../playlists/repository";
 import { erasePlaylist, newPlaylistKey, writePlaylist } from "../playlists/writes";
@@ -76,7 +84,11 @@ const MAX_SONGS_PER_REQUEST = 1000;
  * sees every playlist, and anyone else sees the public ones and their own.
  */
 export const getPlaylists: SubsonicHandler = async (request) => {
-  const playlists = await listPlaylists(database(request.env), viewer(request));
+  const playlists = await listPlaylists(
+    database(request.env),
+    viewer(request),
+    scopeOf(request.user),
+  );
 
   return { playlists: { playlist: omitWhenEmpty(playlists.map(playlistElement)) } };
 };
@@ -122,7 +134,11 @@ export const createPlaylist: SubsonicHandler = async (request) => {
     );
   }
 
-  const tracks = await requestedTracks(db, request.params.getAll("songId"));
+  const tracks = await requestedTracks(db, scopeOf(request.user), request.params.getAll("songId"));
+  // Replacing an existing playlist's songs writes exactly these tracks, so a
+  // scoped owner doing it drops the entries in libraries they cannot see, as
+  // Navidrome's `Put` replaces every entry. Only `updatePlaylist` keeps them
+  // (#84, "Playlists for a scoped caller").
   const held = requestedId === "" ? null : await writable(db, request, requestedId);
 
   const id = await writePlaylist(request.env, db, {
@@ -159,6 +175,11 @@ export const createPlaylist: SubsonicHandler = async (request) => {
  * not a rename either, because a nameless playlist is one the `.m3u` cannot
  * spell. The answer is an empty ok, as Navidrome answers.
  *
+ * **The edit is of the whole playlist, as stored**, whatever the caller can
+ * see (#84): the entries in libraries they do not see are kept where they
+ * are, and an index counts the entries they do see - the list `getPlaylist`
+ * showed them - mapped back to its stored position.
+ *
  * The file is re-rendered and put before the row is written, exactly as a
  * create does it, so `changed` moves to the new object's upload time and
  * `created` stays. The key does not change, and the id is the hash of the
@@ -169,13 +190,14 @@ export const updatePlaylist: SubsonicHandler = async (request) => {
   const { params } = request;
   const db = database(request.env);
   const held = await writable(db, request, requiredParameter(params, "playlistId"));
+  const scope = scopeOf(request.user);
 
   const [current, added] = await Promise.all([
     listPlaylistEntryTracks(db, held.id),
-    requestedTracks(db, params.getAll("songIdToAdd")),
+    requestedTracks(db, scope, params.getAll("songIdToAdd")),
   ]);
 
-  const removed = requestedRemovals(params);
+  const removed = storedPositions(current, scope, requestedRemovals(params));
   const kept = current.filter((_, index) => !removed.has(index));
   // As in `createPlaylist`: a name the `.m3u` cannot carry is no rename. Left
   // through, the row would say "   " while the next import, reading a
@@ -214,6 +236,31 @@ function requestedRemovals(params: URLSearchParams): ReadonlySet<number> {
 }
 
 /**
+ * The stored positions of the entries a caller removes by their positions in
+ * the list they see: every entry when they see every library, so the same
+ * positions, and otherwise the entries in their libraries, in order. A
+ * position past that list names nothing, and is ignored as any other is.
+ */
+function storedPositions(
+  entries: readonly StoredEntryTrack[],
+  scope: LibraryScope,
+  visible: ReadonlySet<number>,
+): ReadonlySet<number> {
+  if (scope.all) {
+    return visible;
+  }
+
+  const seen = entries.flatMap((entry, index) => (inScope(scope, entry.libraryId) ? [index] : []));
+
+  return new Set(
+    [...visible].flatMap((position) => {
+      const stored = seen[position];
+      return stored === undefined ? [] : [stored];
+    }),
+  );
+}
+
+/**
  * A flag the client either sent or did not: `null` means "leave it alone",
  * which is how `updatePlaylist` tells an unchanged `public` from one set to
  * false.
@@ -247,12 +294,13 @@ async function playlistWithEntries(
   request: AuthenticatedSubsonicRequest,
   id: string,
 ): Promise<SubsonicNode> {
-  const playlist = await findPlaylist(db, viewer(request), id);
+  const scope = scopeOf(request.user);
+  const playlist = await findPlaylist(db, viewer(request), id, scope);
   if (playlist === null) {
     throw new SubsonicError(SubsonicErrorCode.NotFound, NOT_FOUND);
   }
 
-  const entries = await listPlaylistEntries(db, playlist.id, request.user.id);
+  const entries = await listPlaylistEntries(db, playlist.id, request.user.id, scope);
 
   return {
     playlist: { ...playlistElement(playlist), entry: omitWhenEmpty(entries.map(songElement)) },
@@ -286,9 +334,11 @@ async function writable(
  * The tracks these `songId`s name, in the order the client sent them and with
  * its duplicates kept - a playlist may play a track twice.
  *
- * An id that names no track fails the whole call with error 70: a playlist
- * silently missing songs the listener picked is worse than a refusal the
- * client can report. The lookup is one statement per ninety distinct ids, so
+ * An id that names no track in the caller's libraries fails the whole call
+ * with error 70: a playlist silently missing songs the listener picked is
+ * worse than a refusal the client can report. Navidrome drops an id out of
+ * the caller's libraries instead (`keepAccessible`); here it is answered as
+ * an unknown id is (#84). The lookup is one statement per ninety distinct ids, so
  * a playlist of hundreds of songs costs a handful of them rather than
  * throwing on D1's parameter limit.
  *
@@ -301,6 +351,7 @@ async function writable(
  */
 async function requestedTracks(
   db: Database,
+  scope: LibraryScope,
   songIds: readonly string[],
 ): Promise<readonly EntryTrack[]> {
   if (songIds.length > MAX_SONGS_PER_REQUEST) {
@@ -311,7 +362,7 @@ async function requestedTracks(
   }
 
   const ids = songIds.map((value) => parseIdOfType("track", value));
-  const found = await findTracksByIds(db, [...new Set(ids.filter((id) => id !== null))]);
+  const found = await findTracksByIds(db, [...new Set(ids.filter((id) => id !== null))], scope);
 
   return ids.map((id) => {
     const entry = id === null ? undefined : found.get(id);

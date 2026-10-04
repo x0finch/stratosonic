@@ -1,5 +1,5 @@
 import { SELF } from "cloudflare:test";
-import { albumId, artistId } from "@stratosonic/db";
+import { albumId, artistId, trackId } from "@stratosonic/db";
 import { beforeAll, describe, expect, it } from "vitest";
 import { cost } from "./console-auth-support";
 import {
@@ -19,7 +19,7 @@ import { BASE, seedAlbum, seedArtist, seedTrack, seedUser, testEnv } from "./sup
  * is the one cost the upgrade adds: rows, not round trips.
  */
 
-const { d1, call } = countingApp();
+const { d1, call, fetch } = countingApp();
 const LISTENER = "listener";
 
 beforeAll(async () => {
@@ -30,13 +30,25 @@ beforeAll(async () => {
   await call(LISTENER, "ping");
 
   await seedArtist({ name: "Solo" });
-  await seedAlbum({ name: "Debut", albumArtist: "Solo", year: 2000, genre: "Pop", songCount: 2 });
+  await seedAlbum({
+    name: "Debut",
+    albumArtist: "Solo",
+    year: 2000,
+    genre: "Pop",
+    songCount: 2,
+    coverKey: COVER,
+  });
   await seedTrack({ r2Key: "Solo/Debut/01 One.flac", year: 2000, genre: "Pop" });
   await seedTrack({ r2Key: "Solo/Debut/02 Two.flac", year: 2000, genre: "Pop" });
+  await testEnv.MUSIC.put("Solo/Debut/01 One.flac", new TextEncoder().encode("one"));
+  await testEnv.MUSIC.put(COVER, new Uint8Array([0xff, 0xd8, 0xff, 0xe0]));
 });
 
 const ARTIST = `ar-${artistId("Solo")}`;
 const ALBUM = `al-${albumId(1, "Solo", "Debut", 2000)}`;
+const ONE = `tr-${trackId(1, "Solo/Debut/01 One.flac")}`;
+const TWO = `tr-${trackId(1, "Solo/Debut/02 Two.flac")}`;
+const COVER = "_covers/debut.jpg";
 
 /** Each endpoint, what it is asked, and the statements v0.5.0 ran besides authenticating. */
 const V050: readonly (readonly [string, readonly (readonly [string, string])[], number])[] = [
@@ -58,7 +70,86 @@ const V050: readonly (readonly [string, readonly (readonly [string, string])[], 
   ["getArtistInfo", [["id", ARTIST]], 1],
   ["getAlbumInfo2", [["id", ALBUM]], 1],
   ["getSimilarSongs", [["id", ALBUM]], 2],
+  // The id endpoints and the saved state (#148).
+  ["getSong", [["id", ONE]], 1],
+  ["getLyricsBySongId", [["id", ONE]], 1],
+  [
+    "getLyrics",
+    [
+      ["artist", "Solo"],
+      ["title", "01 One"],
+    ],
+    1,
+  ],
+  ["star", [["id", ONE]], 2],
+  ["unstar", [["albumId", ALBUM]], 2],
+  [
+    "setRating",
+    [
+      ["id", ARTIST],
+      ["rating", "4"],
+    ],
+    2,
+  ],
+  ["scrobble", [["id", ONE]], 4],
+  [
+    "scrobble",
+    [
+      ["id", ONE],
+      ["submission", "false"],
+    ],
+    2,
+  ],
+  [
+    "reportPlayback",
+    [
+      ["mediaId", TWO],
+      ["mediaType", "song"],
+      ["positionMs", "0"],
+      ["state", "playing"],
+    ],
+    2,
+  ],
+  ["getNowPlaying", [], 1],
+  [
+    "createBookmark",
+    [
+      ["id", ONE],
+      ["position", "5"],
+    ],
+    2,
+  ],
+  ["getBookmarks", [], 1],
+  [
+    "savePlayQueue",
+    [
+      ["id", ONE],
+      ["id", TWO],
+      ["current", TWO],
+    ],
+    1,
+  ],
+  ["getPlayQueue", [], 2],
+  ["getPlaylists", [], 1],
 ];
+
+/** The endpoints that answer with bytes, each with what v0.5.0 ran besides authenticating. */
+const V050_BYTES: readonly (readonly [string, string, number])[] = [
+  ["stream", ONE, 1],
+  ["download", ONE, 1],
+  ["getCoverArt", ALBUM, 1],
+  ["getCoverArt", ONE, 1],
+  ["getCoverArt", ARTIST, 2],
+];
+
+/**
+ * Whether any of these statements joins the library table: a read of the
+ * bytes that needs the track's library row (storage/track-storage.ts), which
+ * a one-library server never needs.
+ */
+function joinsALibrary(statements: readonly { sql: string }[]): boolean {
+  return statements.some((statement) => /\bjoin "library"/.test(statement.sql));
+}
 
 describe("the fast path on a one-library server", () => {
   it.each([ADMIN, LISTENER])(
@@ -73,6 +164,57 @@ describe("the fast path on a one-library server", () => {
         const statements = afterAuthentication(d1.statements);
         expect(statements, endpoint).toHaveLength(expected);
         expect(namesALibrary(statements), endpoint).toBe(false);
+        expect(joinsALibrary(statements), endpoint).toBe(false);
+      }
+    },
+  );
+
+  it.each([ADMIN, LISTENER])(
+    "%s streams and fetches covers with v0.5.0's statements, and no library row",
+    async (user) => {
+      for (const [endpoint, id, expected] of V050_BYTES) {
+        d1.reset();
+        const response = await fetch(user, endpoint, [["id", id]]);
+        expect(response.status, `${endpoint} ${id}`).toBe(200);
+        await response.arrayBuffer();
+
+        const statements = afterAuthentication(d1.statements);
+        expect(statements, `${endpoint} ${id}`).toHaveLength(expected);
+        expect(namesALibrary(statements), endpoint).toBe(false);
+        expect(joinsALibrary(statements), endpoint).toBe(false);
+      }
+    },
+  );
+
+  it.each([ADMIN, LISTENER])(
+    "%s writes and reads a playlist with v0.5.0's statements",
+    async (user) => {
+      d1.reset();
+      const created = await call(user, "createPlaylist", [
+        ["name", `Mix of ${user}`],
+        ["songId", ONE],
+      ]);
+      expect(created.status).toBe("ok");
+      const createdBy = afterAuthentication(d1.statements);
+      const id = created.playlist.id as string;
+
+      d1.reset();
+      expect((await call(user, "getPlaylist", [["id", id]])).playlist.songCount).toBe(1);
+      const readBy = afterAuthentication(d1.statements);
+
+      d1.reset();
+      const updated = await call(user, "updatePlaylist", [
+        ["playlistId", id],
+        ["songIdToAdd", TWO],
+        ["songIndexToRemove", "0"],
+      ]);
+      expect(updated.status).toBe("ok");
+      const updatedBy = afterAuthentication(d1.statements);
+
+      expect([createdBy.length, readBy.length, updatedBy.length]).toEqual([6, 2, 6]);
+      for (const statements of [createdBy, readBy, updatedBy]) {
+        expect(namesALibrary(statements)).toBe(false);
+        expect(joinsALibrary(statements)).toBe(false);
       }
     },
   );

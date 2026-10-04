@@ -4,14 +4,16 @@ import { database } from "../db";
 import type { Env } from "../env";
 import { NO_USER } from "../library/annotations";
 import { audioContentType } from "../library/audio-formats";
-import { findTrack } from "../library/repository";
-import { ALL_LIBRARIES } from "../library/scope";
+import { findTrackToServe } from "../library/repository";
+import { ALL_LIBRARIES, type LibraryScope, scopeOf } from "../library/scope";
 import type { SongView } from "../library/serializers";
 import { attachmentDisposition, baseName } from "../media/content-disposition";
 import { coverContentType, declaredCoverContentType } from "../media/images";
 import { headStoredObject, serveStoredObject } from "../media/objects";
 import { findCoverKey } from "../media/repository";
-import { bindingStorage, boundStorage } from "../storage/binding";
+import { boundStorage } from "../storage/binding";
+import type { LibraryStorage } from "../storage/storage";
+import { joinsLibraryRow, storageOfTrack } from "../storage/track-storage";
 import { requiredParameter } from "../subsonic/params";
 import { SubsonicError, SubsonicErrorCode } from "../subsonic/response";
 import type { AuthenticatedSubsonicRequest, SubsonicHandler } from "../subsonic/router";
@@ -42,8 +44,7 @@ const ARTWORK_NOT_FOUND = "Artwork not found";
  * Serves a track's original bytes, honouring a `Range` so a client can seek.
  */
 export const stream: SubsonicHandler = async (request) => {
-  const track = await requireTrack(request);
-  const storage = bindingStorage(request.env);
+  const { track, storage } = await requireTrack(request);
   const head = await headStoredObject(storage, track.r2Key);
 
   return serveStoredObject(storage, track.r2Key, head, request.raw, {
@@ -60,8 +61,7 @@ export const stream: SubsonicHandler = async (request) => {
  * "not found".
  */
 export const download: SubsonicHandler = async (request) => {
-  const track = await requireTrack(request);
-  const storage = bindingStorage(request.env);
+  const { track, storage } = await requireTrack(request);
   const head = await headStoredObject(storage, track.r2Key);
 
   return serveStoredObject(storage, track.r2Key, head, request.raw, {
@@ -83,7 +83,10 @@ export const getCoverArt: SubsonicHandler = async (request) => {
   const id = requiredParameter(request.params, "id");
   const entity = parsePrefixedId(id);
 
-  const served = entity === null ? null : await serveCover(request.env, entity, request.raw);
+  const served =
+    entity === null
+      ? null
+      : await serveCover(request.env, entity, request.raw, scopeOf(request.user));
   if (served === null) {
     throw new SubsonicError(SubsonicErrorCode.NotFound, ARTWORK_NOT_FOUND);
   }
@@ -116,7 +119,7 @@ export async function servePublicImage(env: Env, token: string, raw: Request): P
   }
 
   return (
-    (await serveCover(env, entity, raw)) ??
+    (await serveCover(env, entity, raw, ALL_LIBRARIES)) ??
     new Response(`${ARTWORK_NOT_FOUND}\n`, {
       status: 404,
       headers: { "Content-Type": "text/plain; charset=utf-8" },
@@ -127,10 +130,16 @@ export async function servePublicImage(env: Env, token: string, raw: Request): P
 /**
  * The cover an entity resolves to, as a response, or null when it has none —
  * shared by `getCoverArt` and the public image URL so both serve the same
- * bytes the same way.
+ * bytes the same way. `getCoverArt` looks in the caller's libraries, and the
+ * public image URL, which has no caller, in every one.
  */
-async function serveCover(env: Env, entity: EntityId, raw: Request): Promise<Response | null> {
-  const key = await findCoverKey(database(env), entity);
+async function serveCover(
+  env: Env,
+  entity: EntityId,
+  raw: Request,
+  scope: LibraryScope,
+): Promise<Response | null> {
+  const key = await findCoverKey(database(env), entity, scope);
   if (key === null) {
     return null;
   }
@@ -164,17 +173,30 @@ async function serveCover(env: Env, entity: EntityId, raw: Request): Promise<Res
  *
  * The track is read as `NO_USER`: the answer is the bytes of a file, and no
  * element is rendered from it, so there is no annotation to decorate it with.
- * Every library is read until #148 keeps `stream` and `download` to the
- * caller's.
+ * It is read in the caller's libraries, so a track out of them is not found
+ * (#84), and its bytes come from its own library's storage, whose row the
+ * lookup joins unless the caller sees library 1 alone
+ * (storage/track-storage.ts). That is one statement either way, as before.
  */
-async function requireTrack(request: AuthenticatedSubsonicRequest): Promise<SongView> {
+async function requireTrack(
+  request: AuthenticatedSubsonicRequest,
+): Promise<{ readonly track: SongView; readonly storage: LibraryStorage }> {
+  const { user } = request;
   const id = parseIdOfType("track", requiredParameter(request.params, "id"));
 
   const found =
-    id === null ? null : await findTrack(database(request.env), id, NO_USER, ALL_LIBRARIES);
+    id === null
+      ? null
+      : await findTrackToServe(
+          database(request.env),
+          id,
+          NO_USER,
+          scopeOf(user),
+          joinsLibraryRow(user.libraryIds),
+        );
   if (found === null) {
     throw new SubsonicError(SubsonicErrorCode.NotFound);
   }
 
-  return found;
+  return { track: found.song, storage: storageOfTrack(request.env, found.song, found.library) };
 }

@@ -30,6 +30,13 @@
  *   hundreds of ids at once, and its submission path reads them in chunks
  *   too (`findTrackParents`), so a thousand ids are ceil(1000 / 90) = 12
  *   selects and one batch.
+ *
+ * **An item out of the caller's libraries names nothing** (#84): every write
+ * here checks its items in the caller's scope, so a star, a rating or a play
+ * on one is error 70, with nothing written, as on an unknown id. A scope of
+ * listed libraries binds one parameter each, so a scoped caller's checks take
+ * that many fewer ids a select; at most 20 are listed, so a thousand ids are
+ * still at most ceil(1000 / 70) + 3 = 18 selects and one batch.
  */
 
 import { parseIdOfType, parsePrefixedId } from "@stratosonic/db";
@@ -44,6 +51,7 @@ import {
   type TrackParents,
 } from "../annotations/repository";
 import { database } from "../db";
+import { scopeOf } from "../library/scope";
 import { reportPlayback as applyPlaybackReport } from "../nowplaying/report";
 import { isPlaybackState } from "../nowplaying/session";
 import {
@@ -77,6 +85,7 @@ export const scrobble: SubsonicHandler = async (request) => {
   const ids = requestedTrackIds(params);
   const times = requestedTimes(params, ids.length);
   const db = database(request.env);
+  const scope = scopeOf(request.user);
 
   if (isSubmission(params)) {
     // A play counts for the track, for its album and for its artist, so
@@ -85,7 +94,7 @@ export const scrobble: SubsonicHandler = async (request) => {
     // query answers every question this path asks of `track` — which ids are
     // real, and what album and artist each one belongs to — because an id the
     // map does not carry is precisely a track that is not in the library.
-    const parentsOf = await findTrackParents(db, ids);
+    const parentsOf = await findTrackParents(db, ids, scope);
     const now = new Date();
     const played = ids.map((id, index) => ({ id, playDate: times[index] ?? now }));
     if (played.some(({ id }) => !parentsOf.has(id))) {
@@ -111,6 +120,7 @@ export const scrobble: SubsonicHandler = async (request) => {
       const missing = await findMissingItems(
         db,
         others.map((id) => ({ type: "track", id })),
+        scope,
       );
       if (missing.length > 0) {
         throw new SubsonicError(SubsonicErrorCode.NotFound);
@@ -129,6 +139,7 @@ export const scrobble: SubsonicHandler = async (request) => {
       playbackRate: 1,
       ignoreScrobble: false,
       playerName: params.get("c") ?? "",
+      scope,
     });
     if (!found) {
       throw new SubsonicError(SubsonicErrorCode.NotFound);
@@ -196,6 +207,7 @@ export const reportPlayback: SubsonicHandler = async (request) => {
     playbackRate,
     ignoreScrobble: booleanParameterOr(params, "ignoreScrobble", false),
     playerName: params.get("c") ?? "",
+    scope: scopeOf(request.user),
   });
   if (!found) {
     throw new SubsonicError(SubsonicErrorCode.NotFound);
@@ -349,7 +361,7 @@ export const setRating: SubsonicHandler = async (request) => {
   const item = annotatedItem(id);
   const db = database(request.env);
 
-  const missing = await findMissingItems(db, [item]);
+  const missing = await findMissingItems(db, [item], scopeOf(request.user));
   if (missing.length > 0) {
     throw new SubsonicError(SubsonicErrorCode.NotFound);
   }
@@ -376,7 +388,7 @@ async function setStars(request: AuthenticatedSubsonicRequest, starred: boolean)
   const items = requestedItems(request.params);
   const db = database(request.env);
 
-  const missing = await findMissingItems(db, items);
+  const missing = await findMissingItems(db, items, scopeOf(request.user));
   if (missing.length > 0) {
     throw new SubsonicError(SubsonicErrorCode.NotFound);
   }

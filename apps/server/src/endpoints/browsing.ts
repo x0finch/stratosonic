@@ -21,8 +21,8 @@
  *   finished, and an error there can stop the sync altogether (#9).
  *
  * Every read keeps to the libraries the caller sees (library/scope.ts):
- * `getArtists` narrows them further by `musicFolderId`, and an artist or an
- * album out of scope is not found.
+ * `getArtists` narrows them further by `musicFolderId`, and an artist, an
+ * album or a track out of scope is not found.
  */
 
 import { type EntityType, parseIdOfType } from "@stratosonic/db";
@@ -38,7 +38,7 @@ import {
   listGenres,
   listTracksOfAlbum,
 } from "../library/repository";
-import { ALL_LIBRARIES, scopeOf } from "../library/scope";
+import { scopeOf } from "../library/scope";
 import {
   albumElement,
   artistElement,
@@ -129,13 +129,13 @@ export const getAlbum: SubsonicHandler = async (request) => {
 };
 
 /**
- * `getSong` — one track. Not yet kept to the caller's libraries: the id
- * endpoints are scoped by #148, with `stream` and `download`.
+ * `getSong` — one track, in the caller's libraries: a track out of them is
+ * not found.
  */
 export const getSong: SubsonicHandler = async (request) => {
   const id = requestedId(request, "track", "Song not found");
 
-  const song = await findTrack(database(request.env), id, request.user.id, ALL_LIBRARIES);
+  const song = await findTrack(database(request.env), id, request.user.id, scopeOf(request.user));
   if (song === null) {
     throw new SubsonicError(SubsonicErrorCode.NotFound, "Song not found");
   }

@@ -257,6 +257,19 @@ describe("clearing the queue", () => {
     expect(await savedQueue()).toEqual({});
   });
 
+  it.each([
+    ["an empty current", ""],
+    ["a current that is not a track id", "al-nonsense"],
+  ])("forgets it when the save names no track but %s", async (_label, current) => {
+    await call("savePlayQueue", { id: id(SONGS.alpha) });
+    expect(titles(await savedQueue())).toEqual([SONGS.alpha.title]);
+
+    const body = await call("savePlayQueue", { current });
+    expect(body.status).toBe("ok");
+
+    expect(await savedQueue()).toEqual({});
+  });
+
   it("leaves another user's queue alone", async () => {
     expect(titles(await savedQueue(AS_OTHER))).toEqual(["Charlie"]);
   });

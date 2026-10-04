@@ -1,6 +1,11 @@
 /**
  * The Playback-state module: what a client saves to resume a session — the
  * now-playing feed, the play queue and the bookmarks.
+ *
+ * The queue and the bookmarks keep to the caller's libraries (#84): what is
+ * out of them is left out of a read, dropped from a saved queue, and refused
+ * by `createBookmark` as an unknown track is. The now-playing feed does not,
+ * as Navidrome's does not.
  */
 
 import { parseIdOfType, prefixedId } from "@stratosonic/db";
@@ -11,8 +16,9 @@ import {
   listBookmarks,
   saveBookmark,
 } from "../bookmarks/repository";
-import { database } from "../db";
+import { type Database, database } from "../db";
 import { findSongsByIds } from "../library/repository";
+import { type LibraryScope, scopeOf } from "../library/scope";
 import {
   omitWhenEmpty,
   type SongView,
@@ -102,13 +108,30 @@ function nowPlayingEntryElement(entry: NowPlayingEntry, index: number, now: numb
  * that is not a track id at all is error 70, as it is everywhere a client
  * sends one.
  *
+ * **A caller who does not see every library has their queue kept to it**
+ * (#84): every id that names no track in their libraries is dropped, an
+ * unknown one and one in a library they cannot see alike, so the save never
+ * tells the two apart, and the rest is saved; `current` is dropped unless
+ * it is one of the ids kept. Nothing is refused: a client's local queue can
+ * hold a track a rescan removed, and refusing the whole save for it would
+ * stop a client that saves on a timer from syncing, silently. That departs
+ * from #84's error 70 on purpose, and is Navidrome's tolerance (it checks
+ * nothing) in the shape of its `keepAccessible`. A save left with no track
+ * clears the queue, as one naming none does. A caller who sees every
+ * library has nothing to drop, and their save is v0.5.0's one statement.
+ * The lookup (`findMissingItems`) takes 90 ids a select, less one for each
+ * library the scope lists (at most 20).
+ *
  * More than `MAX_QUEUE_TRACKS` of them is error 0. The save itself is one
  * statement however long the queue, but reading it back is one `in (...)` per
  * `KEYS_PER_STATEMENT` ids, and a Worker invocation on the free plan has
  * fifty subrequests - so an unbounded queue would save happily and then be
- * unreadable, which is the worse of the two failures. At the cap a
- * `getPlayQueue` is thirteen subrequests. Navidrome stores whatever arrives,
- * having no such budget; `star` and `scrobble` carry the same kind of cap.
+ * unreadable, which is the worse of the two failures. At the cap, counting
+ * the statement that authenticates the caller, a `getPlayQueue` is fourteen
+ * subrequests, and seventeen for a caller whose scope lists twenty
+ * libraries, as is that caller's `savePlayQueue` (15 lookups and the save).
+ * Navidrome stores whatever arrives, having no such budget; `star` and
+ * `scrobble` carry the same kind of cap.
  *
  * `position` follows Navidrome's `Int64Or`: absent or unreadable means 0
  * rather than a refusal.
@@ -125,7 +148,27 @@ export const savePlayQueue: SubsonicHandler = async (request) => {
     );
   }
 
-  const trackIds = raw.map(queueTrackId);
+  const requested = raw.map(queueTrackId);
+
+  // A save naming no track clears the queue whatever `current` says, before
+  // it is read, as v0.5.0 cleared it; Navidrome ignores a `current` it does
+  // not recognise.
+  if (requested.length === 0) {
+    await clearPlayQueue(db, request.user.id);
+
+    return {};
+  }
+
+  const requestedCurrent = params.get("current");
+  const asked = requestedCurrent === null ? null : queueTrackId(requestedCurrent);
+
+  // An all-access caller's `current` is stored as sent, even when it is not
+  // one of the ids, as v0.5.0 stored it; a scoped caller's is dropped unless
+  // it is one of the ids kept. Either way `getPlayQueue` answers no
+  // `current` that names no entry, and Navidrome then resumes at the first.
+  const scope = scopeOf(request.user);
+  const trackIds = scope.all ? requested : await visibleTracks(db, requested, scope);
+  const current = scope.all || asked === null || trackIds.includes(asked) ? asked : null;
 
   if (trackIds.length === 0) {
     await clearPlayQueue(db, request.user.id);
@@ -133,11 +176,9 @@ export const savePlayQueue: SubsonicHandler = async (request) => {
     return {};
   }
 
-  const current = params.get("current");
-
   await storePlayQueue(db, request.user.id, {
     trackIds,
-    current: current === null ? null : queueTrackId(current),
+    current,
     position: integerParameterOr(params, "position", 0),
     changedBy: params.get("c") ?? "",
     changedAt: new Date(),
@@ -151,7 +192,10 @@ export const savePlayQueue: SubsonicHandler = async (request) => {
  *
  * The saved ids are resolved to `<entry>` songs in the order they were saved;
  * a track that has since left the library is left out rather than failing the
- * response, so a queue survives a rescan that removed one of its files. A
+ * response, so a queue survives a rescan that removed one of its files, and
+ * so is a track in a library the caller no longer sees. `current` is left
+ * out too when it names no entry answered, so a client never resumes on a
+ * track it was not given. A
  * caller who has saved nothing gets an empty `<playQueue/>`, not an error, as
  * Navidrome answers.
  *
@@ -164,14 +208,17 @@ export const getPlayQueue: SubsonicHandler = async (request) => {
     return { playQueue: {} };
   }
 
-  const songs = await findSongsByIds(db, queue.trackIds, request.user.id);
+  const songs = await findSongsByIds(db, queue.trackIds, request.user.id, scopeOf(request.user));
   const entries = queue.trackIds
     .map((id) => songs.get(id))
     .filter((song): song is SongView => song !== undefined);
 
   return {
     playQueue: {
-      current: queue.current === null ? undefined : prefixedId("track", queue.current),
+      current:
+        queue.current === null || !songs.has(queue.current)
+          ? undefined
+          : prefixedId("track", queue.current),
       position: queue.position || undefined,
       username: request.user.userName,
       changed: subsonicTimestamp(queue.changedAt),
@@ -186,6 +233,25 @@ export const getPlayQueue: SubsonicHandler = async (request) => {
  * inside a free-plan invocation's subrequest budget.
  */
 const MAX_QUEUE_TRACKS = 1000;
+
+/**
+ * The ids, in order and with their repeats, that name a track in the scope:
+ * one `findMissingItems` lookup per chunk of distinct ids.
+ */
+async function visibleTracks(
+  db: Database,
+  ids: readonly string[],
+  scope: LibraryScope,
+): Promise<string[]> {
+  const missing = await findMissingItems(
+    db,
+    [...new Set(ids)].map((id) => ({ type: "track", id })),
+    scope,
+  );
+  const dropped = new Set(missing.map((item) => item.id));
+
+  return ids.filter((id) => !dropped.has(id));
+}
 
 /** A queued track id as the client sent it; anything else is error 70. */
 function queueTrackId(value: string): string {
@@ -209,7 +275,11 @@ function queueTrackId(value: string): string {
  * Only the caller's own bookmarks are read: the rows are keyed by user.
  */
 export const getBookmarks: SubsonicHandler = async (request) => {
-  const entries = await listBookmarks(database(request.env), request.user.id);
+  const entries = await listBookmarks(
+    database(request.env),
+    request.user.id,
+    scopeOf(request.user),
+  );
 
   return {
     bookmarks: {
@@ -228,7 +298,8 @@ export const getBookmarks: SubsonicHandler = async (request) => {
  * the comment, keeping the instant the bookmark was first made — so a client
  * re-sending one is an update, not a failure.
  *
- * An `id` that names no track is error 70. Navidrome does not check: its
+ * An `id` that names no track in the caller's libraries is error 70, with
+ * nothing written. Navidrome does not check an unknown id: its
  * bookmark rows point at whatever id arrives, and a bookmark on a track that
  * does not exist is one no `getBookmarks` can ever show. Refusing it costs one
  * query and tells the client what happened.
@@ -239,7 +310,11 @@ export const createBookmark: SubsonicHandler = async (request) => {
   const position = requiredIntegerParameter(params, "position");
   const db = database(request.env);
 
-  const missing = await findMissingItems(db, [{ type: "track", id: trackId }]);
+  const missing = await findMissingItems(
+    db,
+    [{ type: "track", id: trackId }],
+    scopeOf(request.user),
+  );
   if (missing.length > 0) {
     throw new SubsonicError(SubsonicErrorCode.NotFound);
   }

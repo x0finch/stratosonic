@@ -1,11 +1,21 @@
 import { SELF } from "cloudflare:test";
-import { library, userLibrary } from "@stratosonic/db";
-import { beforeAll, describe, expect, it } from "vitest";
+import { library, playQueue, trackId, userLibrary } from "@stratosonic/db";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { createApp } from "../src/app";
+import { D1_MAX_BOUND_PARAMETERS } from "../src/d1-limits";
 import { database } from "../src/db";
+import type { Env } from "../src/env";
 import { listAlbums } from "../src/library/lists";
 import { librariesScope, MAX_LISTED_LIBRARIES } from "../src/library/scope";
 import { searchLibrary } from "../src/library/search";
-import { ADMIN, afterAuthentication, countingApp, PASSWORD } from "./library-scope-support";
+import {
+  ADMIN,
+  afterAuthentication,
+  countingApp,
+  PASSWORD,
+  type SubsonicJson,
+} from "./library-scope-support";
+import { type RecordedWrite, recordingDatabase } from "./playlists-support";
 import { BASE, SEED_TIME, seedAlbum, seedArtist, seedTrack, seedUser, testEnv } from "./support";
 
 /**
@@ -28,6 +38,9 @@ const LIBRARIES = Array.from({ length: 22 }, (_, index) => index + 1);
 const VISIBLE = LIBRARIES.slice(0, 21);
 const REMOVING = 23;
 let listenerId = "";
+const LISTED = "listed";
+const LISTED_LIBRARIES = LIBRARIES.slice(0, MAX_LISTED_LIBRARIES);
+let listedId = "";
 
 /** Each library's album ids, as the seeds derived them. */
 const albumsOf = new Map<number, string[]>();
@@ -77,7 +90,15 @@ beforeAll(async () => {
     { userId: otherId, libraryId: 22 },
     { userId: otherId, libraryId: REMOVING },
   ]);
+  // A listener whose scope lists exactly as many libraries as a list may
+  // hold, so every id it checks shares its statement with 20 bound ids.
+  listedId = await seedUser(LISTED, PASSWORD);
+  await db
+    .insert(userLibrary)
+    .values(LISTED_LIBRARIES.slice(1).map((libraryId) => ({ userId: listedId, libraryId })));
+
   await call(LISTENER, "ping");
+  await call(LISTED, "ping");
   await call(ADMIN, "ping");
 });
 
@@ -217,4 +238,105 @@ describe(`a scope of more than ${MAX_LISTED_LIBRARIES} libraries`, () => {
 
     expect(listed.status).toBe("ok");
   });
+});
+
+describe("musicFolderId access before its cap", () => {
+  it("answers error 70 for 20 visible libraries and one the user cannot see", async () => {
+    const named = [...VISIBLE.slice(0, 20), 22].map((id): [string, string] => [
+      "musicFolderId",
+      String(id),
+    ]);
+
+    expect(named).toHaveLength(MAX_LISTED_LIBRARIES + 1);
+    expect((await call(LISTENER, "getAlbumList2", [["type", "newest"], ...named])).error).toEqual({
+      code: 70,
+      message: "Library 22 not found or not accessible",
+    });
+  });
+});
+
+/** A track id of each library, as the seeds derived it. */
+const songOf = (libraryId: number) =>
+  `tr-${trackId(libraryId, `Artist ${libraryId}/Album ${libraryId}/01 Song.flac`)}`;
+
+/** `count` track ids that name no track, as a client could send them. */
+const unknownTracks = (count: number) =>
+  Array.from({ length: count }, (_, index) => `tr-${trackId(1, `nowhere/${index}.flac`)}`);
+
+/**
+ * Calls an endpoint through the app over a D1 that records what each
+ * statement bound, which D1 allows a hundred of (Miniflare, being SQLite,
+ * allows 999, so only a count can say).
+ */
+async function boundBy(
+  user: string,
+  endpoint: string,
+  params: readonly (readonly [string, string])[],
+): Promise<{ readonly body: SubsonicJson; readonly bound: number[] }> {
+  const writes: RecordedWrite[] = [];
+  const env: Env = { ...testEnv, DB: recordingDatabase(writes) };
+  const search = new URLSearchParams([
+    ["u", user],
+    ["p", PASSWORD],
+    ["v", "1.16.1"],
+    ["c", "Substreamer"],
+    ["f", "json"],
+    ...params.map(([name, value]): [string, string] => [name, value]),
+  ]);
+  const response = await createApp().request(`${BASE}/rest/${endpoint}?${search}`, undefined, env);
+  const body = ((await response.json()) as { "subsonic-response": SubsonicJson })[
+    "subsonic-response"
+  ];
+
+  return { body, bound: writes.map((write) => write.bound) };
+}
+
+describe("the id endpoints with a long scope", () => {
+  it("keep to the libraries the scope rule grants", async () => {
+    for (const libraryId of [22, REMOVING]) {
+      expect((await call(LISTENER, "getSong", [["id", songOf(libraryId)]])).error?.code).toBe(70);
+      expect((await call(LISTENER, "star", [["id", songOf(libraryId)]])).error?.code).toBe(70);
+    }
+    expect((await call(LISTENER, "getSong", [["id", songOf(21)]])).status).toBe("ok");
+    expect((await call(LISTENER, "star", [["id", songOf(21)]])).status).toBe("ok");
+    expect((await call(ADMIN, "getSong", [["id", songOf(22)]])).status).toBe("ok");
+    expect((await call(ADMIN, "getSong", [["id", songOf(REMOVING)]])).error?.code).toBe(70);
+  });
+});
+
+describe("the id endpoints within D1's hundred parameters", () => {
+  // A full queue before each, since a save of unknown ids clears it.
+  beforeEach(async () => {
+    const trackIds = JSON.stringify(unknownTracks(1000).map((id) => id.slice(3)));
+    for (const userId of [listedId, listenerId]) {
+      await database(testEnv)
+        .insert(playQueue)
+        .values({ userId, trackIds, changedAt: SEED_TIME })
+        .onConflictDoUpdate({ target: playQueue.userId, set: { trackIds } });
+    }
+  });
+
+  const ids = (name: string) => unknownTracks(1000).map((id): [string, string] => [name, id]);
+
+  it.each([
+    ["star", ids("id")],
+    ["scrobble", ids("id")],
+    ["savePlayQueue", ids("id")],
+    ["createPlaylist", [["name", "Many"], ...ids("songId")]],
+    ["getPlayQueue", []],
+  ] as const)(
+    "%s binds at most a hundred a statement, for a listed scope of 20 and a long one",
+    async (endpoint, params) => {
+      for (const user of [LISTED, LISTENER]) {
+        const { body, bound } = await boundBy(user, endpoint, params);
+
+        // An unknown id is refused, after every chunk was looked up.
+        expect(body.status === "ok" || body.error?.code === 70, `${user} ${endpoint}`).toBe(true);
+        expect(bound.length, `${user} ${endpoint}`).toBeGreaterThan(10);
+        expect(Math.max(...bound), `${user} ${endpoint}`).toBeLessThanOrEqual(
+          D1_MAX_BOUND_PARAMETERS,
+        );
+      }
+    },
+  );
 });
