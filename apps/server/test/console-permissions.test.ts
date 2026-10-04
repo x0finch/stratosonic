@@ -22,7 +22,7 @@ describe("the permissions", () => {
     }
   });
 
-  it("include what the console asks for now, and what Phases 1 and 2 do", () => {
+  it("include what the console asks for now, and what Phases 1, 2 and 3 do", () => {
     expect(PERMISSIONS).toEqual(
       expect.arrayContaining([
         "account:change-password",
@@ -34,6 +34,8 @@ describe("the permissions", () => {
         "usage:read",
         "files:read",
         "files:write",
+        "libraries:read",
+        "libraries:write",
       ]),
     );
   });

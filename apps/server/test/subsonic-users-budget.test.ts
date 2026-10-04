@@ -126,17 +126,23 @@ function rows(statements: readonly RecordedStatement[]) {
 }
 
 describe("the Subsonic users' budget on the reference library", () => {
-  it("GET /api/subsonic-users: one statement, reading the users", async () => {
+  it("GET /api/subsonic-users: one batch, reading the users and the libraries", async () => {
     const { status, route } = await measured("GET", "/subsonic-users");
 
     expect(status).toBe(200);
     // One select of the users (`shape` names the playlist subquery's table,
     // its first `from`). Each of the five users and the sorter again for the
     // order, 10, and each user's 4 entries in `playlist_owner_id_idx` and the
-    // one past them, but for the user whose id sorts last, 24.
-    expect(route).toHaveLength(1);
+    // one past them, but for the user whose id sorts last, 24. Each user's
+    // libraries are their `user_library` rows, none here. Then the libraries
+    // a user may be given (#84, "Per-user access"): library 1.
+    expect(route).toHaveLength(2);
     expect(route[0]?.sql).toMatch(/ from "subsonic_user" order by /);
-    expect(cost(route)).toEqual({ statements: 1, roundTrips: 1, rowsRead: 34, rowsWritten: 0 });
+    expect(rows(route)).toEqual([
+      ["select playlist", 34, 0],
+      ["select library", 1, 0],
+    ]);
+    expect(cost(route).roundTrips).toBe(1);
   });
 
   it("POST /api/subsonic-users: one batch past the session, the user and their libraries", async () => {
@@ -151,10 +157,11 @@ describe("the Subsonic users' budget on the reference library", () => {
     // its `lower(user_name)` index entry are written. Then the default
     // library, library 1, is granted: the library row and the new user read,
     // and the grant's row, its primary key and its `library_id` index entry
-    // written (#84, "Per-user access").
+    // written (#84, "Per-user access"). Its `RETURNING`, the user's
+    // libraries for the answer, adds two rows read (D1's count).
     expect(rows(route)).toEqual([
       ["insert subsonic_user", 3, 3],
-      ["insert user_library", 3, 3],
+      ["insert user_library", 5, 3],
     ]);
     expect(cost(route).roundTrips).toBe(1);
   });
@@ -168,16 +175,20 @@ describe("the Subsonic users' budget on the reference library", () => {
       // entries in `playlist_owner_id_idx` and the one past them. A rename
       // rewrites the row's index entry too.
       [{ username: "benedict" }, [["update subsonic_user", 7, 2]]],
+      // A promotion's answer lists every active library, read in the update:
+      // one row more.
       [
         { isAdmin: true },
         [
-          ["update subsonic_user", 7, 1],
+          ["update subsonic_user", 8, 1],
           ["insert user_library", 3, 3],
         ],
       ],
-      // A demotion also looks for another admin, and finds one at once.
-      [{ isAdmin: false }, [["update subsonic_user", 8, 1]]],
-      [{ username: "ben", isAdmin: false }, [["update subsonic_user", 7, 2]]],
+      // A demotion also looks for another admin, and finds one at once. From
+      // here the user has a `user_library` row, which the answer's libraries
+      // read, with its library: two rows more (#84, "Per-user access").
+      [{ isAdmin: false }, [["update subsonic_user", 10, 1]]],
+      [{ username: "ben", isAdmin: false }, [["update subsonic_user", 9, 2]]],
     ] as const;
     for (const [body, expected] of cases) {
       const { status, route } = await measured("PATCH", `/subsonic-users/${id}`, body);

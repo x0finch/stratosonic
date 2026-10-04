@@ -160,6 +160,7 @@ describe("GET /api/subsonic-users", () => {
       updatedAt: SEED_TIME.toISOString(),
       lastAccessAt: lastAccess.toISOString(),
       playlistCount: 0,
+      libraryIds: [1],
     });
     expect(users[1]).toMatchObject({ isAdmin: false, lastAccessAt: null });
   });
@@ -183,8 +184,9 @@ describe("GET /api/subsonic-users", () => {
       ]);
     });
 
-    // The session comes from the cookie cache: the list is the one round trip.
-    expect(cost(statements)).toMatchObject({ statements: 1, roundTrips: 1 });
+    // The session comes from the cookie cache: the list, with the libraries a
+    // user may be given, is the one round trip.
+    expect(cost(statements)).toMatchObject({ statements: 2, roundTrips: 1 });
     await database(testEnv).delete(playlist);
   });
 

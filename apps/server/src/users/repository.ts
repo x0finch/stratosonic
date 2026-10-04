@@ -9,7 +9,7 @@ import {
   subsonicUser,
   userLibrary,
 } from "@stratosonic/db";
-import { and, asc, eq, getTableColumns, inArray, type SQL, sql } from "drizzle-orm";
+import { and, asc, eq, getTableColumns, inArray, notInArray, type SQL, sql } from "drizzle-orm";
 import type { Database } from "../db";
 
 /**
@@ -192,16 +192,74 @@ export interface UserViewRow {
   readonly playlistCount: number;
 }
 
+/** A user as the console's list and writes answer them: with their libraries. */
+export interface UserViewWithLibraries extends UserViewRow {
+  /** The active libraries the user's `user_library` rows grant, by id. */
+  readonly libraryIds: readonly number[];
+}
+
+/**
+ * The active libraries a user's `user_library` rows grant, as a JSON array:
+ * what the console's Libraries field shows (#84, "Per-user access"). An
+ * admin sees every library whatever the rows say, and is given a row for
+ * each anyway, so an admin's rows are every library too.
+ */
+function grantedLibraryIds(userId: SQL) {
+  return sql<string>`(select json_group_array(ul.library_id) from ${userLibrary} as ul
+    where ul.user_id = ${userId}
+      and exists (select 1 from ${library} as l where l.id = ul.library_id and l.state = 'active'))`;
+}
+
+/** `grantedLibraryIds` as a column, read and sorted. */
+function libraryIdsOf(json: string): number[] {
+  return (JSON.parse(json) as number[]).sort((a, b) => a - b);
+}
+
 /**
  * Every user, by name ignoring case and then id: the unique index's key, so
  * the list reads in the same terms a lookup matches in. One statement, the
- * playlist counts included.
+ * playlist counts and the libraries included.
  */
-export function listUsers(db: Database): Promise<UserViewRow[]> {
+function listUsersQuery(db: Database) {
   return db
-    .select(userViewWithCount)
+    .select({
+      ...userViewWithCount,
+      libraryIds: grantedLibraryIds(
+        sql`${subsonicUser}.${sql.identifier(subsonicUser.id.name)}`,
+      ).as("library_ids"),
+    })
     .from(subsonicUser)
     .orderBy(sql`lower(${subsonicUser.userName})`, asc(subsonicUser.id));
+}
+
+/** The active libraries, by id: what a user may be given. */
+function activeLibrariesQuery(db: Database) {
+  return db
+    .select({ id: library.id, name: library.name })
+    .from(library)
+    .where(eq(library.state, "active"))
+    .orderBy(asc(library.id));
+}
+
+/**
+ * Every user, with their libraries, and every library a user may be given,
+ * in one batch.
+ */
+export async function listUsers(db: Database): Promise<{
+  users: UserViewWithLibraries[];
+  libraries: { id: number; name: string }[];
+}> {
+  const [users, libraries] = await db.batch([listUsersQuery(db), activeLibrariesQuery(db)]);
+
+  return {
+    users: users.map((row) => ({ ...row, libraryIds: libraryIdsOf(row.libraryIds) })),
+    libraries,
+  };
+}
+
+/** Every active library's id, as a JSON array: what an admin is given. */
+function activeLibraryIds() {
+  return sql<string>`(select json_group_array(l.id) from ${library} as l where l.state = 'active')`;
 }
 
 export interface UserCreate {
@@ -210,23 +268,59 @@ export interface UserCreate {
   /** The ciphertext `encryptPassword` made of the password (ADR-0003). */
   readonly password: string;
   readonly isAdmin: boolean;
+  /**
+   * A non-admin's libraries, at least one, distinct: given instead of the
+   * defaults. An admin is given every library, and takes no list.
+   */
+  readonly libraryIds?: readonly number[];
 }
 
-/** Which libraries a user is given: every one, or the defaults for new users. */
-export type LibraryGrant = "all" | "defaults";
+/**
+ * Which libraries a user is given: every one, the defaults for new users, or
+ * these.
+ */
+export type LibraryGrant = "all" | "defaults" | readonly number[];
+
+/**
+ * The most libraries a user's list may name: each is a bound parameter of
+ * the statements that check and write it, and D1 binds at most a hundred.
+ */
+export const MAX_USER_LIBRARIES = 50;
+
+/**
+ * Whether every library in `ids` (distinct) exists and is active: what a
+ * list must hold to be written (#84, "Per-user access": an unknown or
+ * removing id is `invalid_library`).
+ */
+function librariesValid(ids: readonly number[]): SQL {
+  return sql`(select count(*) from ${library} as valid
+    where valid.state = 'active' and valid.id in (${sql.join(
+      ids.map((id) => sql`${id}`),
+      sql`, `,
+    )})) = ${ids.length}`;
+}
 
 /**
  * The statement that gives a user libraries, as Navidrome's user repository
  * does on `Put` (persistence/user_repository.go): an admin gets every library
  * (`INSERT OR IGNORE ... SELECT ?, id FROM library`), and a new non-admin the
- * libraries marked `default_new_users`. Rows the user has already are kept.
+ * libraries marked `default_new_users`, or the ones listed. Rows the user has
+ * already are kept. Only active libraries are given: a library being removed
+ * is never granted again.
  *
  * It goes in the batch after the write that creates or promotes the user, and
  * inserts only when the user exists by then, so a create that wrote nothing
- * grants nothing (and breaks no foreign key). The user is looked for under an
- * alias of its own, as `mayLoseAdmin` looks for another admin.
+ * grants nothing (and breaks no foreign key), and only when `when` holds,
+ * for a write the batch's first statement may have refused. The user is
+ * looked for under an alias of its own, as `mayLoseAdmin` looks for another
+ * admin.
  */
-export function grantLibrariesStatement(db: Database, userId: string, grant: LibraryGrant) {
+export function grantLibrariesStatement(
+  db: Database,
+  userId: string,
+  grant: LibraryGrant,
+  when?: SQL,
+) {
   return db
     .insert(userLibrary)
     .select(
@@ -235,10 +329,13 @@ export function grantLibrariesStatement(db: Database, userId: string, grant: Lib
         .from(library)
         .where(
           and(
+            eq(library.state, "active"),
             grant === "defaults" ? eq(library.defaultNewUsers, true) : undefined,
+            typeof grant === "object" ? inArray(library.id, [...grant]) : undefined,
             // Also the WHERE that `INSERT ... SELECT ... ON CONFLICT` needs:
             // without one SQLite parses `ON` as a join constraint. Keep it.
             sql`exists (select 1 from ${subsonicUser} as granted where granted.id = ${userId})`,
+            when,
           ),
         ),
     )
@@ -259,14 +356,17 @@ export function grantLibrariesStatement(db: Database, userId: string, grant: Lib
  * (`isUserNameConflict`).
  *
  * The user's libraries are written in the same batch (#84, "Per-user
- * access"): every library for an admin, the `default_new_users` ones for
- * anybody else.
+ * access"): every library for an admin, and for anybody else the ones the
+ * request lists, or else the `default_new_users` ones. A list naming a
+ * library that is unknown or being removed is part of the insert's
+ * condition too, and answered `"invalid_library"`, with nothing written; a
+ * second statement, run only then, tells it from `"admin_required"`.
  */
 export async function createUser(
   db: Database,
   values: UserCreate,
   now: Date = new Date(),
-): Promise<UserViewRow | "admin_required"> {
+): Promise<UserViewWithLibraries | "admin_required" | "invalid_library"> {
   const row: Required<NewSubsonicUser> = {
     id: newRandomId(),
     userName: values.userName,
@@ -280,17 +380,40 @@ export async function createUser(
     createdAt: now,
     updatedAt: now,
   };
-  const condition = values.isAdmin
-    ? sql`1`
-    : sql`exists (select 1 from ${subsonicUser} where ${subsonicUser.isAdmin} = 1)`;
+  const hasAdmin = sql`exists (select 1 from ${subsonicUser} where ${subsonicUser.isAdmin} = 1)`;
+  const listed = values.isAdmin ? undefined : values.libraryIds;
+  const condition = and(
+    values.isAdmin ? sql`1` : hasAdmin,
+    listed === undefined ? undefined : librariesValid(listed),
+  ) as SQL;
 
-  const [[created]] = await db.batch([
+  // A new user has no rows yet, so what the grant inserts is all they have.
+  const [[created], granted] = await db.batch([
     db.insert(subsonicUser).select(selectUserRow(row, condition)).returning(userViewColumns),
-    grantLibrariesStatement(db, row.id, values.isAdmin ? "all" : "defaults"),
+    grantLibrariesStatement(db, row.id, values.isAdmin ? "all" : (listed ?? "defaults")).returning({
+      libraryId: userLibrary.libraryId,
+    }),
   ]);
 
+  if (created === undefined) {
+    if (listed === undefined) {
+      return "admin_required";
+    }
+    // Refused with a list: by the list, unless there is no admin at all.
+    const admins = await db
+      .select({ id: subsonicUser.id })
+      .from(subsonicUser)
+      .where(eq(subsonicUser.isAdmin, true))
+      .limit(1);
+    return admins.length > 0 ? "invalid_library" : "admin_required";
+  }
+
   // A new id owns no playlist yet: there is nothing to count.
-  return created ? { ...created, playlistCount: 0 } : "admin_required";
+  return {
+    ...created,
+    playlistCount: 0,
+    libraryIds: granted.map((row) => row.libraryId).sort((a, b) => a - b),
+  };
 }
 
 /**
@@ -340,13 +463,19 @@ export interface UserChanges {
   /** Already accepted by `acceptableUserName`. */
   readonly userName?: string;
   readonly isAdmin?: boolean;
+  /**
+   * The user's libraries, replacing the ones they have: at least one,
+   * distinct. Only for a user who is not an admin, or is being made not one
+   * (an admin has every library), so never with `isAdmin: true`.
+   */
+  readonly libraryIds?: readonly number[];
 }
 
 /**
- * Renames a user, makes or unmakes them an admin, or both, in one guarded
- * statement, and answers the user as written, or `null` when nothing was: no
- * user has this id, or it would demote the last admin (`whyRefused` tells
- * which).
+ * Renames a user, makes or unmakes them an admin, sets their libraries, or
+ * any of these, in one guarded batch, and answers the user as written, or
+ * `null` when nothing was: no user has this id, it would demote the last
+ * admin, or the libraries cannot be set (`whyUpdateRefused` tells which).
  *
  * `name` follows `user_name`, as the bootstrap sets it: there is no separate
  * display name yet. `updated_at` moves, as Navidrome's `Put` moves it, which
@@ -358,13 +487,25 @@ export interface UserChanges {
  * Making a user an admin also gives them every library, in the same batch, as
  * Navidrome's `Put` does for an admin. Unmaking one keeps the rows they have,
  * as Navidrome keeps them.
+ *
+ * Setting a user's libraries replaces their rows in the same batch (#84,
+ * "Per-user access", after Navidrome's `SetUserLibraries`): the update is
+ * guarded by the user not being an admin once written, and by every library
+ * listed being active, and the rows are rewritten only when the update was
+ * (the user's `updated_at` is `now`). Auth reads the rows on every request,
+ * so the change applies on the next `/rest` call.
  */
 export async function updateUser(
   db: Database,
   id: string,
   changes: UserChanges,
   now: Date = new Date(),
-): Promise<UserViewRow | null> {
+): Promise<UserViewWithLibraries | null> {
+  const { libraryIds } = changes;
+  if (libraryIds !== undefined && changes.isAdmin === true) {
+    throw new Error("an admin has every library, and takes no list");
+  }
+
   const update = db
     .update(subsonicUser)
     .set({
@@ -374,15 +515,55 @@ export async function updateUser(
       ...(changes.isAdmin === undefined ? {} : { isAdmin: changes.isAdmin }),
       updatedAt: now,
     })
-    .where(and(eq(subsonicUser.id, id), changes.isAdmin === false ? mayLoseAdmin(id) : undefined))
-    .returning(userViewWithCount);
+    .where(
+      and(
+        eq(subsonicUser.id, id),
+        changes.isAdmin === false ? mayLoseAdmin(id) : undefined,
+        libraryIds !== undefined && changes.isAdmin === undefined
+          ? eq(subsonicUser.isAdmin, false)
+          : undefined,
+        libraryIds === undefined ? undefined : librariesValid(libraryIds),
+      ),
+    )
+    .returning({
+      ...userViewWithCount,
+      // What the user has once the batch has run, read in the update itself:
+      // a list is what it sets (every id was found active, or nothing is
+      // written), a promotion gives every active library, and anything else
+      // leaves the rows as they are.
+      libraryIds: (changes.isAdmin === true
+        ? activeLibraryIds()
+        : grantedLibraryIds(sql`${subsonicUser}.${sql.identifier(subsonicUser.id.name)}`)
+      ).as("library_ids"),
+    });
+
+  if (libraryIds !== undefined) {
+    const written = sql`exists (select 1 from ${subsonicUser} as written
+      where written.id = ${id} and written.updated_at = ${now.getTime()})`;
+    const [[updated]] = await db.batch([
+      update,
+      db
+        .delete(userLibrary)
+        .where(
+          and(
+            eq(userLibrary.userId, id),
+            notInArray(userLibrary.libraryId, [...libraryIds]),
+            written,
+          ),
+        ),
+      grantLibrariesStatement(db, id, libraryIds, written),
+    ]);
+    return updated === undefined ? null : { ...updated, libraryIds };
+  }
 
   const [updated] =
     changes.isAdmin === true
       ? (await db.batch([update, grantLibrariesStatement(db, id, "all")]))[0]
       : await update;
 
-  return updated ?? null;
+  return updated === undefined
+    ? null
+    : { ...updated, libraryIds: libraryIdsOf(updated.libraryIds) };
 }
 
 /**
@@ -410,6 +591,9 @@ export async function setUserPassword(
 /** Why a guarded write of a user wrote nothing. */
 export type UserRefusal = "not_found" | "last_admin";
 
+/** Why a guarded update of a user wrote nothing, its libraries included. */
+export type UserUpdateRefusal = UserRefusal | "admin_has_all_libraries" | "invalid_library";
+
 /**
  * Why a guarded write of this user wrote nothing, read after the fact: there
  * is no such user, or there is, and so it was the last-admin guard.
@@ -421,6 +605,42 @@ export async function whyRefused(db: Database, id: string): Promise<UserRefusal>
     .where(eq(subsonicUser.id, id));
 
   return rows.length === 0 ? "not_found" : "last_admin";
+}
+
+/**
+ * Why `updateUser` wrote nothing, read after the fact, as `whyRefused`
+ * reads it, with the changes the update was asked for: a list of libraries
+ * may also be why, when the user is an admin and stays one, or a library
+ * listed is unknown or being removed.
+ */
+export async function whyUpdateRefused(
+  db: Database,
+  id: string,
+  changes: UserChanges,
+): Promise<UserUpdateRefusal> {
+  const { libraryIds } = changes;
+  const rows = await db
+    .select({
+      isAdmin: subsonicUser.isAdmin,
+      librariesValid:
+        libraryIds === undefined
+          ? sql<number>`1`.mapWith(Number)
+          : sql<number>`${librariesValid(libraryIds)}`.mapWith(Number),
+    })
+    .from(subsonicUser)
+    .where(eq(subsonicUser.id, id));
+
+  const user = rows[0];
+  if (user === undefined) {
+    return "not_found";
+  }
+  if (libraryIds !== undefined && changes.isAdmin === undefined && user.isAdmin) {
+    return "admin_has_all_libraries";
+  }
+  if (!user.librariesValid) {
+    return "invalid_library";
+  }
+  return "last_admin";
 }
 
 /** A library row as a user's deletion reads it: how to reach its bucket, and whether to. */
