@@ -538,8 +538,13 @@ export async function updateUser(
     });
 
   if (libraryIds !== undefined) {
+    // The update wrote, as far as the rows can tell: the user is stamped
+    // `now`, is not an admin, and every library listed is active. The
+    // stamp alone could be another write's at the same millisecond, so the
+    // update's own guards are repeated, and a refused update writes no grant.
     const written = sql`exists (select 1 from ${subsonicUser} as written
-      where written.id = ${id} and written.updated_at = ${now.getTime()})`;
+      where written.id = ${id} and written.updated_at = ${now.getTime()}
+      and written.is_admin = 0 and ${librariesValid(libraryIds)})`;
     const [[updated]] = await db.batch([
       update,
       db
