@@ -446,3 +446,47 @@ files). Each `PUT` also has its own CORS preflight, to R2
 and not the Worker: a browser caches a preflight by its full URL, and no
 two presigned URLs are alike, so the CORS rule's `maxAgeSeconds` saves
 none.
+
+## Libraries
+
+The **Libraries** page (`/libraries`, `src/routes/_shell/libraries.tsx`,
+its dialogs in `src/components/libraries/`) lists the buckets the server
+serves as libraries (#84): library 1, the bucket the Worker is bound to,
+and any R2 bucket connected with an API token. The rules that need no
+screen are in `src/lib/libraries.ts`. A role with `libraries:read` sees the
+list, the sidebar's Libraries entry and each bucket's CORS rule; one with
+`libraries:write` also connects a bucket, edits, tests and removes one.
+
+- Each name wears its state: "Bound bucket", "Read only" (the last test's
+  write probe was refused), "Removing", and "Scan failed", whose tooltip
+  says why the last pass skipped the library ("The key was refused", "The
+  bucket was not found", "The bucket did not answer").
+- **Connect bucket** takes a name, the account ID (prefilled with
+  `CF_ACCOUNT_ID`), the bucket and an R2 API token's two keys. The server
+  tests the token before it stores anything. A refusal that belongs to a
+  field stays beside it: a taken name, an account ID or bucket name that is
+  not valid, a bucket already connected, a key refused or a bucket not
+  found by the test. Once connected, the toast says the first scan has
+  started, and the bucket's CORS rule opens, repeating the toast's words,
+  since its backdrop covers the toast.
+- **Edit** renames a library and sets whether new Subsonic users get it.
+  For a connected library it also changes the account, the bucket, or with
+  **Replace credentials** the token, each tested before it is saved.
+  Library 1 takes its name and that default only.
+- **Test connection** raises a toast: read and write, read only, or why it
+  failed.
+- **Bucket CORS** shows Phase 2's rule (`apps/server/r2-cors.example.json`)
+  with the console's origin, and the two Wrangler commands that apply and
+  show it, each with a copy button. The console cannot apply it: that needs
+  an Admin token, and a library's token reaches its bucket's objects only.
+- **Remove** confirms, saying what leaves with the library (its tracks,
+  albums and the playlists stored in its bucket, with every star, rating,
+  play count and bookmark on them) and that the files in the bucket are
+  not touched. The scan deletes its rows afterwards. Library 1 cannot be
+  removed.
+
+The list is read on page load, is fresh for 30 s, and is read again after
+every library write, as are the Files page's configuration and the
+Overview's library. It is polled every 30 s only while a pass is in a
+library, or has yet to reach a new one, or a library is being removed, and
+never in a hidden tab.
