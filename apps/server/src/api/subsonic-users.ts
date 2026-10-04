@@ -7,12 +7,13 @@ import {
   createUser,
   isUserNameConflict,
   listUsers,
+  MAX_USER_LIBRARIES,
   setUserPassword,
   type UserChanges,
-  type UserRefusal,
-  type UserViewRow,
+  type UserUpdateRefusal,
+  type UserViewWithLibraries,
   updateUser,
-  whyRefused,
+  whyUpdateRefused,
 } from "../users/repository";
 import { acceptableUserName, isAcceptablePassword } from "../users/validation";
 import type { ApiApp } from "./app";
@@ -39,20 +40,37 @@ import { requireSameOrigin } from "./same-origin";
  * `subsonic-users:write`, in that order, as in api/account.ts; each sends a
  * JSON object, `{}` for a delete. The answers:
  *
- * - `GET /api/subsonic-users`: `200 {"users": SubsonicUserView[]}`, by name
- *   ignoring case, then id.
- * - `POST /api/subsonic-users`, `{username, password, isAdmin?}`:
+ * - `GET /api/subsonic-users`: `200 {"users": SubsonicUserView[],
+ *   "libraries": [{id, name}]}`, the users by name ignoring case, then id,
+ *   and the active libraries a user may be given, by id, in one batch.
+ * - `POST /api/subsonic-users`, `{username, password, isAdmin?, libraryIds?}`:
  *   `201 {"user": SubsonicUserView}`; `400 invalid_username`,
  *   `400 invalid_password`, `409 admin_required` (no admin exists and this
- *   is not one), `409 username_taken`.
- * - `PATCH /api/subsonic-users/:id`, `{username?, isAdmin?}`, at least one:
- *   `200 {"user": SubsonicUserView}`; `400 invalid_username`,
- *   `404 not_found`, `409 last_admin`, `409 username_taken`.
+ *   is not one), `409 username_taken`, and the library refusals below.
+ * - `PATCH /api/subsonic-users/:id`, `{username?, isAdmin?, libraryIds?}`,
+ *   at least one: `200 {"user": SubsonicUserView}`; `400 invalid_username`,
+ *   `404 not_found`, `409 last_admin`, `409 username_taken`, and the library
+ *   refusals below.
  * - `PUT /api/subsonic-users/:id/password`, `{password}`: `200 {"ok": true}`;
  *   `400 invalid_password`, `404 not_found`.
  * - `DELETE /api/subsonic-users/:id`, `{}`: `200 {"ok": true}`, the user's
  *   playlists and their files deleted too (users/delete.ts);
  *   `404 not_found`, `409 last_admin`.
+ *
+ * **Libraries** (#84, "Per-user access", after Navidrome's
+ * `core/library.go: SetUserLibraries` and `persistence/user_repository.go:
+ * Put`). An admin has every library, and is given each, including the ones
+ * connected later; a demoted admin keeps their rows. A new non-admin gets
+ * the libraries marked `default_new_users`, unless `libraryIds` lists them.
+ * Setting the list replaces it, in one batch. The refusals:
+ *
+ * - `400 libraries_required`: an empty list;
+ * - `400 invalid_library`: an id that is unknown or being removed;
+ * - `400 admin_has_all_libraries`: a list for a user who is, or stays, an
+ *   admin (Navidrome: "cannot manually assign libraries to admin users").
+ *
+ * Auth reads a user's libraries on every request, so a change applies on
+ * the next `/rest` call.
  *
  * A body that is not a JSON object, or a field of the wrong type, is
  * `400 invalid_request`. A refusal writes nothing.
@@ -68,6 +86,8 @@ export interface SubsonicUserView {
   readonly lastAccessAt: string | null;
   /** How many playlists they own, which a delete would take with them. */
   readonly playlistCount: number;
+  /** The active libraries their rows grant, by id: every one for an admin. */
+  readonly libraryIds: readonly number[];
 }
 
 export function registerSubsonicUserRoutes(api: ApiApp): void {
@@ -83,18 +103,22 @@ export function registerSubsonicUserRoutes(api: ApiApp): void {
     requireSession,
     requirePermission("subsonic-users:read"),
     async (c) => {
-      const users = await listUsers(database(c.env));
-      return c.json({ users: users.map(viewOf) });
+      const { users, libraries } = await listUsers(database(c.env));
+      return c.json({ users: users.map(viewOf), libraries });
     },
   );
 
   api.post("/subsonic-users", ...write, async (c) => {
     const body = await readJsonObject(c);
-    const { username, password, isAdmin = false } = body ?? {};
+    const { username, password, isAdmin = false, libraryIds } = body ?? {};
     if (typeof username !== "string" || typeof password !== "string") {
       return invalidRequest(c);
     }
     if (typeof isAdmin !== "boolean") {
+      return invalidRequest(c);
+    }
+    const libraries = requestedLibraries(libraryIds);
+    if (libraries === "invalid_request") {
       return invalidRequest(c);
     }
 
@@ -105,6 +129,12 @@ export function registerSubsonicUserRoutes(api: ApiApp): void {
     if (!isAcceptablePassword(password)) {
       return invalidPassword(c);
     }
+    if (libraries === "libraries_required") {
+      return librariesRefused(c, libraries);
+    }
+    if (libraries !== undefined && isAdmin) {
+      return librariesRefused(c, "admin_has_all_libraries");
+    }
 
     const ciphertext = await encryptPassword(c.var.passphrase, password);
     let created: Awaited<ReturnType<typeof createUser>>;
@@ -113,6 +143,7 @@ export function registerSubsonicUserRoutes(api: ApiApp): void {
         userName,
         password: ciphertext,
         isAdmin,
+        ...(libraries === undefined ? {} : { libraryIds: libraries }),
       });
     } catch (error) {
       if (isUserNameConflict(error)) {
@@ -124,6 +155,9 @@ export function registerSubsonicUserRoutes(api: ApiApp): void {
     if (created === "admin_required") {
       return c.json({ error: "admin_required" }, 409);
     }
+    if (created === "invalid_library") {
+      return librariesRefused(c, created);
+    }
 
     return c.json({ user: viewOf(created) }, 201);
   });
@@ -133,11 +167,13 @@ export function registerSubsonicUserRoutes(api: ApiApp): void {
     if (body === null) {
       return invalidRequest(c);
     }
-    const { username, isAdmin } = body;
+    const { username, isAdmin, libraryIds } = body;
+    const libraries = requestedLibraries(libraryIds);
     if (
-      (username === undefined && isAdmin === undefined) ||
+      (username === undefined && isAdmin === undefined && libraryIds === undefined) ||
       (username !== undefined && typeof username !== "string") ||
-      (isAdmin !== undefined && typeof isAdmin !== "boolean")
+      (isAdmin !== undefined && typeof isAdmin !== "boolean") ||
+      libraries === "invalid_request"
     ) {
       return invalidRequest(c);
     }
@@ -153,10 +189,19 @@ export function registerSubsonicUserRoutes(api: ApiApp): void {
     if (isAdmin !== undefined) {
       changes.isAdmin = isAdmin;
     }
+    if (libraries === "libraries_required") {
+      return librariesRefused(c, libraries);
+    }
+    if (libraries !== undefined) {
+      if (isAdmin === true) {
+        return librariesRefused(c, "admin_has_all_libraries");
+      }
+      changes.libraryIds = libraries;
+    }
 
     const db = database(c.env);
     const id = c.req.param("id");
-    let updated: UserViewRow | null;
+    let updated: UserViewWithLibraries | null;
     try {
       updated = await updateUser(db, id, changes);
     } catch (error) {
@@ -167,7 +212,7 @@ export function registerSubsonicUserRoutes(api: ApiApp): void {
     }
 
     if (updated === null) {
-      return refused(c, await whyRefused(db, id));
+      return refused(c, await whyUpdateRefused(db, id, changes));
     }
 
     return c.json({ user: viewOf(updated) });
@@ -205,7 +250,7 @@ export function registerSubsonicUserRoutes(api: ApiApp): void {
   });
 }
 
-function viewOf(row: UserViewRow): SubsonicUserView {
+function viewOf(row: UserViewWithLibraries): SubsonicUserView {
   return {
     id: row.id,
     username: row.userName,
@@ -214,7 +259,40 @@ function viewOf(row: UserViewRow): SubsonicUserView {
     updatedAt: row.updatedAt.toISOString(),
     lastAccessAt: row.lastAccessAt?.toISOString() ?? null,
     playlistCount: row.playlistCount,
+    libraryIds: row.libraryIds,
   };
+}
+
+/**
+ * A request's `libraryIds`: absent (undefined), the distinct ids of a
+ * non-empty list of positive integers, `"libraries_required"` for an empty
+ * one, or `"invalid_request"` for anything else, a list longer than
+ * `MAX_USER_LIBRARIES` included.
+ */
+function requestedLibraries(
+  value: unknown,
+): readonly number[] | undefined | "libraries_required" | "invalid_request" {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (
+    !Array.isArray(value) ||
+    !value.every((id) => typeof id === "number" && Number.isSafeInteger(id) && id > 0)
+  ) {
+    return "invalid_request";
+  }
+  const ids = [...new Set(value as number[])].sort((a, b) => a - b);
+  if (ids.length === 0) {
+    return "libraries_required";
+  }
+  return ids.length > MAX_USER_LIBRARIES ? "invalid_request" : ids;
+}
+
+function librariesRefused(
+  c: Context,
+  error: "libraries_required" | "invalid_library" | "admin_has_all_libraries",
+) {
+  return c.json({ error }, 400);
 }
 
 function invalidUsername(c: Context) {
@@ -229,8 +307,13 @@ function usernameTaken(c: Context) {
   return c.json({ error: "username_taken" }, 409);
 }
 
-function refused(c: Context, refusal: UserRefusal) {
-  return refusal === "not_found"
-    ? c.json({ error: "not_found" }, 404)
-    : c.json({ error: "last_admin" }, 409);
+function refused(c: Context, refusal: UserUpdateRefusal) {
+  switch (refusal) {
+    case "not_found":
+      return c.json({ error: "not_found" }, 404);
+    case "last_admin":
+      return c.json({ error: "last_admin" }, 409);
+    default:
+      return librariesRefused(c, refusal);
+  }
 }

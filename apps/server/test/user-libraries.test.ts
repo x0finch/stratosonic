@@ -59,14 +59,14 @@ describe("the libraries a user is given", () => {
       password: "c",
       isAdmin: true,
     });
-    if (created === "admin_required") throw new Error("refused");
+    if (typeof created === "string") throw new Error("refused");
 
     expect(await librariesOf(created.id)).toEqual(ALL);
   });
 
   it("gives a new non-admin the default libraries only", async () => {
     const created = await createUser(db, { userName: "listener", password: "c", isAdmin: false });
-    if (created === "admin_required") throw new Error("refused");
+    if (typeof created === "string") throw new Error("refused");
 
     expect(await librariesOf(created.id)).toEqual(DEFAULTS);
   });
@@ -84,7 +84,7 @@ describe("the libraries a user is given", () => {
 
   it("gives every library to a user made an admin, and keeps them when unmade", async () => {
     const created = await createUser(db, { userName: "promoted", password: "c", isAdmin: false });
-    if (created === "admin_required") throw new Error("refused");
+    if (typeof created === "string") throw new Error("refused");
     expect(await librariesOf(created.id)).toEqual(DEFAULTS);
 
     expect((await updateUser(db, created.id, { isAdmin: true }))?.isAdmin).toBe(true);
@@ -96,7 +96,7 @@ describe("the libraries a user is given", () => {
 
   it("changes no libraries on a rename, and grants nothing to a user that does not exist", async () => {
     const created = await createUser(db, { userName: "renamed", password: "c", isAdmin: false });
-    if (created === "admin_required") throw new Error("refused");
+    if (typeof created === "string") throw new Error("refused");
 
     await updateUser(db, created.id, { userName: "renamed-again" });
     expect(await librariesOf(created.id)).toEqual(DEFAULTS);
