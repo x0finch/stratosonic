@@ -138,12 +138,18 @@ export interface ScanPause {
 
 /**
  * Whether the scan is paused at the daily write budget (`scanner/budget.ts`),
- * read from D1 alone: the day's tally has reached `budget`. Every cron poke
+ * read from D1 alone: the day's tally, with the rows the scan's and the
+ * import's progress rows carry for it, has reached `budget`. Every cron poke
  * stops at its first step until the next UTC day, which this says. Null with
  * no cap (`budget` 0) or while the day's rows are under it.
  */
 export function scanPause(report: ScanReport, budget: number, now: number): ScanPause | null {
-  if (!budgetReached(rowsWrittenOn(report.rowsWritten, utcDay(now)), budget)) {
+  const day = utcDay(now);
+  const spent =
+    rowsWrittenOn(report.rowsWritten, day) +
+    rowsWrittenOn(report.progress?.untallied ?? null, day) +
+    rowsWrittenOn(report.importUntallied, day);
+  if (!budgetReached(spent, budget)) {
     return null;
   }
 

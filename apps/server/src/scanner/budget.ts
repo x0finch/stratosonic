@@ -5,23 +5,34 @@
  * A D1 database that reaches the free tier's 100,000 rows written a day
  * refuses **every** query, reads included, until 00:00 UTC (D1 pricing). The
  * scan is the one writer that can get there on its own: a first index of a
- * large library, or the cleanup of a removed one, writes about eight rows per
- * track. So the scan driver counts the rows it writes in a UTC day and stops
- * at `SCAN_DAILY_WRITE_BUDGET` (default 50,000; `0` means no cap):
+ * large library writes 9 to 14 rows per track (measured: about 9.4 for
+ * ten-track albums, 13.4 for a track that is its own artist's own album), and
+ * the cleanup of a removed one about 2. So the scan driver counts the rows it
+ * writes in a UTC day and stops at `SCAN_DAILY_WRITE_BUDGET` (default 50,000;
+ * `0` means no cap):
  *
- * - **The tally** is one `property` row, `ScanRowsWritten = {day, rows}`,
- *   added to in the page batches of the scan, the playlist import and the
- *   cleanup of a removed library. A row from another day counts as nothing.
- *   A page that writes nothing but its progress row - most pages of an
- *   unchanged pass - does not write the tally: its row is carried in the
- *   progress row itself (`untallied`), which the page writes anyway, and
- *   joins the tally with the next batch that writes more, or at the end of
- *   the pass. So an unchanged page costs one row written, not two, and the
- *   cron's unchanged passes stay at about 115 rows each.
- * - **What is counted** is an estimate of each batch's rows written: its
- *   progress rows (the cursor, the memo, the library stamps and the tally
- *   itself), plus about 8 rows per indexed track (`ROWS_PER_INDEXED_TRACK`)
- *   and about 6 per removed one (`ROWS_PER_REMOVED_TRACK`).
+ * - **What is counted** is what D1 says it wrote: the `rows_written` of each
+ *   batch's results (`countedBatch`), every statement of the scan, the
+ *   cleanup and the playlist import included, never an estimate.
+ * - **The tally** is one `property` row, `ScanRowsWritten = {day, rows}`. A
+ *   batch's own rows are known only once it has run, so they are counted
+ *   from the next write on, in three places, each written anyway:
+ *   - a batch that writes tracks (or ends or skips something) adds every
+ *     row carried so far to the tally;
+ *   - a batch that writes only its progress, as most pages of an unchanged
+ *     pass do, carries them in its progress row (`untallied`), so such a
+ *     page costs one row written, not two;
+ *   - the rows of a step's last batch ride in the driver's own state to the
+ *     next step (`RowLedger`, `DriverState.unreported`).
+ *   Where nothing comes after - the end of a pass, a pause, a give-up - one
+ *   statement puts what is left on the tally (`flushLedger`); only that
+ *   statement's own row is counted rather than measured, as the one row an
+ *   update of the tally writes. A row from another day counts as nothing.
+ * - **The check** before a page also leaves room for the page itself: at the
+ *   measured worst case (`WORST_ROWS_PER_INDEXED_TRACK`) for each track the
+ *   step may still read, so one page cannot overshoot the budget by much. A
+ *   cleanup stage (at most 500 tracks, about 1,000 rows) or a playlist page
+ *   is checked before it starts and may overshoot by itself.
  * - **The pause.** A step that finds the day's tally at the budget does no
  *   work and reports itself paused. The driver then ends the pass as a
  *   give-up does: its state is cleared, a pending file change is kept, no
@@ -46,17 +57,68 @@ export const SCAN_ROWS_WRITTEN_KEY = "ScanRowsWritten";
 export const DEFAULT_SCAN_DAILY_WRITE_BUDGET = 50_000;
 
 /**
- * Rows a newly indexed or re-read track costs: its artist, album and track
- * upserts, their indexes, the album's recompute and, now and then, a lyrics
- * row and a cover pointer.
+ * The most rows one indexed track was measured to cost: a track that is its
+ * own artist's own album inserts an artist, an album and a track with their
+ * indexes, a cover pointer and the album's recompute (about 13.4). The check
+ * before a page reserves this much for each track the step may still read;
+ * the tally itself counts what D1 reports.
  */
-export const ROWS_PER_INDEXED_TRACK = 8;
+export const WORST_ROWS_PER_INDEXED_TRACK = 14;
 
 /**
- * Rows a removed track costs: the track and its indexes, its lyrics and
- * playlist entries by cascade, and the album recompute.
+ * Rows written that neither the tally nor a progress row holds yet: the
+ * rows of the batches a step ran since its last write of either. The driver
+ * carries it from one step to the next in its own state.
  */
-export const ROWS_PER_REMOVED_TRACK = 6;
+export interface RowLedger {
+  rows: number;
+}
+
+/** The rows D1 reports a batch's statements wrote. */
+export function rowsWrittenBy(results: readonly unknown[]): number {
+  let rows = 0;
+  for (const result of results) {
+    const written =
+      typeof result === "object" && result !== null && "meta" in result
+        ? (result as { meta?: { rows_written?: unknown } }).meta?.rows_written
+        : undefined;
+    if (typeof written === "number" && Number.isFinite(written) && written > 0) {
+      rows += written;
+    }
+  }
+
+  return rows;
+}
+
+/**
+ * Runs statements as one D1 batch and answers the rows D1 says they wrote.
+ * An empty list sends nothing and wrote nothing.
+ */
+export async function countedBatch(
+  db: Database,
+  statements: readonly ScanStatement[],
+): Promise<number> {
+  const [first, ...rest] = statements;
+  if (first === undefined) {
+    return 0;
+  }
+
+  return rowsWrittenBy(await db.batch([first, ...rest]));
+}
+
+/**
+ * Puts the ledger's rows on the day's tally, where nothing written later
+ * would carry them: one statement, whose own row is counted as the one row
+ * an update of the tally writes. Nothing is sent for an empty ledger.
+ */
+export async function flushLedger(db: Database, day: string, ledger: RowLedger): Promise<void> {
+  if (ledger.rows <= 0) {
+    return;
+  }
+  const rows = ledger.rows + 1;
+  ledger.rows = 0;
+  await db.batch([tallyStatement(db, day, rows)]);
+}
 
 /** The tally, as the row holds it. */
 export interface RowsWritten {

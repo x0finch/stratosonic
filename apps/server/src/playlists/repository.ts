@@ -36,6 +36,7 @@ import { annotationColumns, annotationJoin } from "../library/annotations";
 import { toSongView } from "../library/repository";
 import { type LibraryScope, libraryFilter, scopeParameters } from "../library/scope";
 import type { PlaylistView, SongView } from "../library/serializers";
+import { rowsWrittenBy } from "../scanner/budget";
 import { chunked, KEYS_PER_STATEMENT } from "../scanner/repository";
 
 /** A statement built now and run later, as part of a batch. */
@@ -494,6 +495,8 @@ export async function sweepMissingPlaylists(
   through: string | null,
   listed: readonly string[],
   createdBefore: Date,
+  /** Adds the rows D1 says the deletions wrote, for the daily write budget. */
+  written: { rows: number } = { rows: 0 },
 ): Promise<SweptPlaylist[]> {
   const inRange = await db
     .select({ id: playlist.id, r2Key: playlist.r2Key })
@@ -512,7 +515,7 @@ export async function sweepMissingPlaylists(
 
   for (const chunk of chunked(gone.map((row) => row.id))) {
     // The entries go with them: `playlist_track` cascades on the playlist.
-    await db.delete(playlist).where(inArray(playlist.id, chunk));
+    written.rows += rowsWrittenBy([await db.delete(playlist).where(inArray(playlist.id, chunk))]);
   }
 
   return gone;

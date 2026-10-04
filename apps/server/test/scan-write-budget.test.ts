@@ -14,10 +14,12 @@ import {
   SCAN_ROWS_WRITTEN_KEY,
   tallyStatement,
   utcDay,
+  WORST_ROWS_PER_INDEXED_TRACK,
 } from "../src/scanner/budget";
 import type { ScanDriver } from "../src/scanner/driver";
 import { readLastScanSummary } from "../src/scanner/state";
 import { bootstrapAdmin, browse } from "./browsing-support";
+import { countingD1 } from "./console-auth-support";
 import {
   driver,
   driverIsIdle,
@@ -33,11 +35,13 @@ import type { FakeS3 } from "./fake-s3";
 import {
   ARCHIVE,
   connectLibrary,
+  driveCounted,
   type FakeLibrary,
   installFakeLibrary,
   progressNow,
   putInArchive,
   resetLibraries,
+  talliedRows,
 } from "./scan-libraries-support";
 import { testEnv } from "./support";
 
@@ -49,12 +53,11 @@ import { testEnv } from "./support";
  * the next UTC day resumes it. `0` turns the cap off.
  */
 
-const DAY = Date.UTC(2026, 9, 3, 12, 0, 0);
-const NEXT_DAY = Date.UTC(2026, 9, 4, 0, 5, 0);
+// In the future, so no alarm a pass sets under the fake clock is already
+// due by the real one, which miniflare would fire by itself.
+const DAY = Date.UTC(2030, 0, 15, 12, 0, 0);
+const NEXT_DAY = Date.UTC(2030, 0, 16, 0, 5, 0);
 const T = new Date(DAY - 3_600_000);
-
-/** One object a step, so each step writes one progress row. */
-const ONE_A_STEP = { ...slowTuning, scanLimits: { pageSize: 1, pagesPerRun: 1 } };
 
 async function tally(): Promise<unknown> {
   const [row] = await database(testEnv)
@@ -125,6 +128,15 @@ describe("SCAN_DAILY_WRITE_BUDGET", () => {
 });
 
 describe("a pass that reaches the budget", () => {
+  /** The budget these passes run with, and the room a page of one object reserves. */
+  const BUDGET = 1000;
+  const HEADROOM = WORST_ROWS_PER_INDEXED_TRACK;
+  const tuning = (pagesPerRun: number, writeBudget = BUDGET) => ({
+    ...slowTuning,
+    scanLimits: { pageSize: 1, pagesPerRun },
+    writeBudget,
+  });
+
   let fake: FakeS3;
   let installed: FakeLibrary;
 
@@ -133,10 +145,10 @@ describe("a pass that reaches the budget", () => {
     installed = installFakeLibrary();
     fake = installed.fake;
     await connectLibrary(fake);
-    // Six objects that are not music: every page writes its progress and
-    // nothing else, so only the progress rows can reach the budget.
-    for (let index = 0; index < 6; index++) {
-      await putInArchive(`Notes/${index}.txt`, new Uint8Array([index]));
+    // Forty objects that are not music: every page writes its progress and
+    // nothing else.
+    for (let index = 0; index < 40; index++) {
+      await putInArchive(`Notes/${String(index).padStart(2, "0")}.txt`, new Uint8Array([index]));
     }
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(DAY);
@@ -148,35 +160,45 @@ describe("a pass that reaches the budget", () => {
     installed.spy.mockRestore();
   });
 
-  /** Pokes a pass with a budget of four rows and drives it until it stops. */
-  async function pausedPass(): Promise<void> {
-    await poke(T, { ...ONE_A_STEP, writeBudget: 4 });
-    await driveUntilIdle();
+  /** Puts `rows` on today's tally, as earlier passes would have. */
+  async function spent(rows: number): Promise<void> {
+    const db = database(testEnv);
+    await db.batch([tallyStatement(db, utcDay(DAY), rows)]);
   }
 
-  it("counts its progress rows, and pauses at the budget with nothing indexed", async () => {
-    await pausedPass();
+  /** A pass that starts 50 rows short of the budget, driven until it stops. */
+  async function pausedPass(): Promise<number> {
+    await spent(BUDGET - 50);
+    await poke(T, tuning(3));
+    return driveCounted();
+  }
 
-    // Library 1's empty page stamped it and library 2 (three rows), then
-    // one page of library 2: four rows, carried in the progress row.
+  it("tallies what D1 wrote, and pauses before a page that could overshoot", async () => {
+    const written = await pausedPass();
+
+    // On the tally, and carried for it in the paused pass's progress row.
     const progress = await progressNow();
+    const rows = (await talliedRows()) + (progress?.untallied?.rows ?? 0);
+    expect(rows).toBe(BUDGET - 50 + written);
+    expect(rows).toBeLessThan(BUDGET);
+    expect(rows + HEADROOM).toBeGreaterThanOrEqual(BUDGET);
     expect(progress?.libraryId).toBe(ARCHIVE.id);
-    expect(progress?.untallied).toEqual({ day: utcDay(DAY), rows: 4 });
-    expect(progress?.counts.examined).toBe(1);
+    expect(progress?.counts.examined).toBeGreaterThan(0);
+    expect(progress?.counts.examined).toBeLessThan(40);
     expect(await readLastScanSummary(database(testEnv))).toBeNull();
   });
 
   it("stops a step that reaches the budget before its next page", async () => {
-    // Ten pages a step would finish both libraries in one step; the budget
-    // stops it after library 1's page and library 2's first.
-    await poke(T, { ...slowTuning, scanLimits: { pageSize: 1, pagesPerRun: 10 }, writeBudget: 4 });
+    // Ten pages a step would carry on into library 2; the budget leaves room
+    // for library 1's (empty) page and no more.
+    await spent(BUDGET - HEADROOM - 1);
+    await poke(T, tuning(10));
     await runNextAlarm();
 
     expect(await driverIsIdle()).toBe(true);
     const progress = await progressNow();
     expect(progress?.libraryId).toBe(ARCHIVE.id);
-    expect(progress?.counts.examined).toBe(1);
-    expect(await readLastScanSummary(database(testEnv))).toBeNull();
+    expect(progress?.counts.examined).toBe(0);
   });
 
   it("ends like a give-up: no alarm, the driver's storage empty, the D1 cursor kept", async () => {
@@ -188,10 +210,11 @@ describe("a pass that reaches the budget", () => {
   });
 
   it("keeps a pending change", async () => {
-    await poke(T, { ...ONE_A_STEP, writeBudget: 4 });
+    await spent(BUDGET - 50);
+    await poke(T, tuning(3));
     await runNextAlarm();
     await touch(Date.now(), { quietMs: 600_000 });
-    for (let alarm = 0; alarm < 10 && (await storedKeys()).includes("driver"); alarm++) {
+    for (let alarm = 0; alarm < 40 && (await storedKeys()).includes("driver"); alarm++) {
       await runNextAlarm();
     }
 
@@ -214,8 +237,7 @@ describe("a pass that reaches the budget", () => {
     expect(await scanning()).toBe(true);
 
     // Over it, the day's passes are paused.
-    const db = database(testEnv);
-    await db.batch([tallyStatement(db, utcDay(DAY), 50_000)]);
+    await spent(50_000);
     expect(await scanning()).toBe(false);
   });
 
@@ -225,7 +247,7 @@ describe("a pass that reaches the budget", () => {
     const calls = fake.calls.length;
 
     vi.setSystemTime(DAY + 3_600_000);
-    await poke(new Date(DAY + 3_600_000), { ...ONE_A_STEP, writeBudget: 4 });
+    await poke(new Date(DAY + 3_600_000), tuning(3));
     await runNextAlarm();
 
     expect(await driverIsIdle()).toBe(true);
@@ -237,25 +259,24 @@ describe("a pass that reaches the budget", () => {
     await pausedPass();
 
     vi.setSystemTime(NEXT_DAY);
-    await poke(new Date(NEXT_DAY), { ...ONE_A_STEP, writeBudget: 100 });
-    await driveUntilIdle();
+    await poke(new Date(NEXT_DAY), tuning(3, 100_000));
+    const written = await driveCounted();
 
     const summary = await readLastScanSummary(database(testEnv));
     expect(summary?.startedAt).toBe(T.getTime());
-    // The first object was examined on the first day, and not again.
-    expect(summary?.libraries["2"]?.examined).toBe(6);
-    // Only the new day's rows are on the tally.
-    expect(await tally()).toMatchObject({ day: utcDay(NEXT_DAY) });
+    // Every object examined once, over the two days.
+    expect(summary?.libraries["2"]?.examined).toBe(40);
+    // Only the new day's rows are on the new day's tally.
+    expect(await tally()).toEqual({ day: utcDay(NEXT_DAY), rows: written });
   });
 
   it("never pauses with a budget of 0", async () => {
-    const db = database(testEnv);
-    await db.batch([tallyStatement(db, utcDay(DAY), 10_000_000)]);
+    await spent(10_000_000);
 
-    await poke(T, { ...ONE_A_STEP, writeBudget: 0 });
+    await poke(T, tuning(10, 0));
     await driveUntilIdle();
 
-    expect((await readLastScanSummary(db))?.startedAt).toBe(T.getTime());
+    expect((await readLastScanSummary(database(testEnv)))?.startedAt).toBe(T.getTime());
     expect(await progressNow()).toBeNull();
   });
 });
@@ -268,28 +289,40 @@ describe("the playlist import at the budget", () => {
     }
   });
 
-  it("counts its progress rows, and pauses at the budget", async () => {
+  it("tallies what D1 wrote, its playlists' rows included, and pauses at the budget", async () => {
+    const db = database(testEnv);
+    await db.batch([tallyStatement(db, utcDay(DAY), 999)]);
+    const d1 = countingD1(testEnv.DB);
+    const env = { ...testEnv, DB: d1.binding };
     const limits = { pageSize: 1, importsPerRun: 20, objectsPerRun: 5000 };
     const clock = () => DAY;
-    const run = await importPlaylists(testEnv, T, limits, { writeBudget: 2, clock });
+
+    const run = await importPlaylists(env, T, limits, { writeBudget: 1000, clock });
+    const written = d1.statements.reduce((sum, statement) => sum + statement.rowsWritten, 0);
 
     expect(run.paused).toBe(true);
-    expect(run.completed).toBe(false);
-    const progress = await readPlaylistImportProgress(database(testEnv));
-    expect(progress?.untallied).toEqual({ day: utcDay(DAY), rows: 2 });
+    expect(run.counts.imported).toBe(1);
+    // On the tally, and carried for it in the paused import's progress row.
+    const progress = await readPlaylistImportProgress(db);
+    expect(progress).not.toBeNull();
+    expect(((await tally()) as { rows: number }).rows + (progress?.untallied?.rows ?? 0)).toBe(
+      999 + written,
+    );
 
     // Spent for the day: the next run does nothing.
-    const again = await importPlaylists(testEnv, T, limits, { writeBudget: 2, clock });
+    const again = await importPlaylists(testEnv, T, limits, { writeBudget: 1000, clock });
     expect(again.paused).toBe(true);
     expect(again.counts.examined).toBe(0);
 
-    // The next day it finishes, and puts its rows on the tally.
-    const nextDay = await importPlaylists(testEnv, T, limits, {
-      writeBudget: 100,
+    // The next day it finishes, and puts every row it wrote on the tally.
+    d1.reset();
+    const nextDay = await importPlaylists(env, T, limits, {
+      writeBudget: 1000,
       clock: () => NEXT_DAY,
     });
+    const nextWritten = d1.statements.reduce((sum, statement) => sum + statement.rowsWritten, 0);
     expect(nextDay.completed).toBe(true);
-    expect(await readPlaylistImportProgress(database(testEnv))).toBeNull();
-    expect(await tally()).toMatchObject({ day: utcDay(NEXT_DAY) });
+    expect(await readPlaylistImportProgress(db)).toBeNull();
+    expect(await tally()).toEqual({ day: utcDay(NEXT_DAY), rows: nextWritten });
   });
 });

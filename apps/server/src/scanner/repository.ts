@@ -43,6 +43,7 @@ import { and, asc, eq, gt, inArray, lte, ne, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { D1_MAX_BOUND_PARAMETERS } from "../d1-limits";
 import type { Database } from "../db";
+import { rowsWrittenBy } from "./budget";
 import type { DerivedRows } from "./derive";
 
 /** A statement built now and run later, as part of a batch. */
@@ -345,23 +346,70 @@ export function recomputeAlbumStatement(db: Database, id: string, now: Date): Sc
     .where(eq(album.id, id));
 }
 
+/** What a prune removed, and the rows D1 says it wrote doing so. */
+export interface Pruned<T> {
+  readonly removed: T[];
+  readonly rowsWritten: number;
+}
+
 /**
- * Albums no track belongs to any more. They are returned whole so the cover
- * objects they owned can be removed from R2 as well.
+ * Albums no track belongs to any more, with the cover object each owned, so
+ * those can be removed from R2 as well, and the library each was in.
  */
-export async function pruneEmptyAlbums(db: Database): Promise<Album[]> {
-  return db
-    .delete(album)
-    .where(sql`not exists (select 1 from track where track.album_id = album.id)`)
-    .returning();
+export async function pruneEmptyAlbums(
+  db: Database,
+): Promise<Pruned<Pick<Album, "id" | "coverKey" | "libraryId">>> {
+  const { rows, rowsWritten } = await runReturning<{
+    id: string;
+    cover_key: string | null;
+    library_id: number;
+  }>(
+    db,
+    db
+      .delete(album)
+      .where(sql`not exists (select 1 from track where track.album_id = album.id)`)
+      .returning({ id: album.id, coverKey: album.coverKey, libraryId: album.libraryId }),
+  );
+
+  return {
+    removed: rows.map((row) => ({
+      id: row.id,
+      coverKey: row.cover_key,
+      libraryId: row.library_id,
+    })),
+    rowsWritten,
+  };
 }
 
 /** Artists no album belongs to any more. Run after the albums are pruned. */
-export async function pruneEmptyArtists(db: Database): Promise<{ id: string }[]> {
-  return db
-    .delete(artist)
-    .where(sql`not exists (select 1 from album where album.artist_id = artist.id)`)
-    .returning({ id: artist.id });
+export async function pruneEmptyArtists(db: Database): Promise<Pruned<{ id: string }>> {
+  const { rows, rowsWritten } = await runReturning<{ id: string }>(
+    db,
+    db
+      .delete(artist)
+      .where(sql`not exists (select 1 from album where album.artist_id = artist.id)`)
+      .returning({ id: artist.id }),
+  );
+
+  return { removed: rows, rowsWritten };
+}
+
+/**
+ * Runs a statement with a `returning` clause through the D1 binding itself,
+ * which answers its rows and its `rows_written` (Drizzle keeps only the
+ * rows). The rows carry the columns' SQL names.
+ */
+async function runReturning<Row>(
+  db: Database,
+  query: { toSQL(): { sql: string; params: unknown[] } },
+): Promise<{ rows: Row[]; rowsWritten: number }> {
+  const { sql: text, params } = query.toSQL();
+  const result = await db.$client
+    .prepare(text)
+    .bind(...params)
+    .all<Row>();
+
+  return { rows: result.results, rowsWritten: result.meta.rows_written ?? 0 };
 }
 
 /**
@@ -372,8 +420,8 @@ export async function pruneEmptyArtists(db: Database): Promise<{ id: string }[]>
  * The playlist's own song count is the importer's business and is put right
  * when it next reads the `.m3u`.
  */
-export async function pruneOrphanPlaylistEntries(db: Database): Promise<void> {
-  await pruneOrphanPlaylistEntriesStatement(db);
+export async function pruneOrphanPlaylistEntries(db: Database): Promise<number> {
+  return rowsWrittenBy([await pruneOrphanPlaylistEntriesStatement(db)]);
 }
 
 /** `pruneOrphanPlaylistEntries`, as a statement for a batch. */

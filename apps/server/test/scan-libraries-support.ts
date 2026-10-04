@@ -1,3 +1,4 @@
+import { runInDurableObject } from "cloudflare:test";
 import {
   annotation,
   bookmark,
@@ -12,9 +13,14 @@ import {
 import { and, asc, eq, ne } from "drizzle-orm";
 import type { MockInstance } from "vitest";
 import { database } from "../src/db";
+import type { Env } from "../src/env";
+import { SCAN_ROWS_WRITTEN_KEY } from "../src/scanner/budget";
+import type { ScanDriver } from "../src/scanner/driver";
 import { readScanProgress, type ScanProgress } from "../src/scanner/state";
 import { sealCredentials } from "../src/storage/credentials";
 import { s3Path } from "../src/storage/s3";
+import { type CountingD1, countingD1 } from "./console-auth-support";
+import { driver } from "./driver-support";
 import { FakeS3, installFakeS3, libraryTestBucket } from "./fake-s3";
 import { fixtureBytes } from "./fixtures/files";
 import { resetLibrary } from "./scan-support";
@@ -127,6 +133,52 @@ export async function trackAt(libraryId: number, r2Key: string): Promise<Track |
 /** The scan in flight, as its row says. */
 export function progressNow(): Promise<ScanProgress | null> {
   return readScanProgress(database(testEnv));
+}
+
+/** The day's write tally, as its row holds it, or 0 with none. */
+export async function talliedRows(): Promise<number> {
+  const [row] = await database(testEnv)
+    .select()
+    .from(property)
+    .where(eq(property.id, SCAN_ROWS_WRITTEN_KEY));
+  return row === undefined ? 0 : (JSON.parse(row.value) as { rows: number }).rows;
+}
+
+/**
+ * Runs the driver's next alarm as the platform does, with its D1 counting
+ * every statement and `patch` applied to its env, and answers whether there
+ * was one to run.
+ */
+export function countedAlarm(d1: CountingD1, patch: Partial<Env> = {}): Promise<boolean> {
+  return runInDurableObject(driver(), async (instance: ScanDriver, state) => {
+    if ((await state.storage.getAlarm()) === null) {
+      return false;
+    }
+    const self = instance as unknown as { env: Env };
+    const original = self.env;
+    self.env = { ...original, ...patch, DB: d1.binding };
+    try {
+      await state.storage.deleteAlarm();
+      await instance.alarm();
+    } finally {
+      self.env = original;
+    }
+    return true;
+  });
+}
+
+/**
+ * Runs alarm after alarm, counted, until the driver stops, and answers every
+ * row D1 says they wrote.
+ */
+export async function driveCounted(patch: Partial<Env> = {}, limit = 80): Promise<number> {
+  const d1 = countingD1(testEnv.DB);
+  for (let alarm = 0; alarm <= limit; alarm++) {
+    if (!(await countedAlarm(d1, patch))) {
+      return d1.statements.reduce((sum, statement) => sum + statement.rowsWritten, 0);
+    }
+  }
+  throw new Error(`the scan driver was still running after ${limit} alarms`);
 }
 
 /** The calls the fake recorded from `from` on, by operation. */

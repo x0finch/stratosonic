@@ -34,6 +34,7 @@ function report(overrides: Partial<ScanReport> = {}): ScanReport {
     lastCompleted: null,
     lastChangedAt: null,
     rowsWritten: null,
+    importUntallied: null,
     ...overrides,
   };
 }

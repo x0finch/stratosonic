@@ -24,7 +24,9 @@
  *    row.
  *
  * The library's own bucket is never touched: not listed, not read, not
- * written. Its writes count against the daily write budget.
+ * written. Its writes count against the daily write budget, as D1 reports
+ * them (about 2 rows a track): each stage's batch puts the rows the ledger
+ * carried on the tally, and leaves its own in the ledger.
  *
  * A step costs at most five subrequests: the scan's state read, the track
  * lookup, the album lookup, one bulk cover delete and the batch.
@@ -32,7 +34,7 @@
 
 import type { Database } from "../db";
 import type { LibraryStorage } from "../storage/storage";
-import { ROWS_PER_REMOVED_TRACK, tallyStatement } from "./budget";
+import { countedBatch, type RowLedger, tallyStatement } from "./budget";
 import {
   deleteAlbumsWithAnnotationsStatements,
   deleteOrphanPlaylistAnnotationsStatement,
@@ -42,15 +44,12 @@ import {
   findLibraryTrackIds,
   pruneEmptyArtistsWithAnnotationsStatements,
   pruneOrphanPlaylistEntriesStatement,
-  runBatch,
+  type ScanStatement,
 } from "./repository";
 import { deleteBrokenObjectsStatement } from "./state";
 
 /** How many tracks, or albums, one cleanup step deletes. */
 export const CLEANUP_TRACKS_PER_STEP = 500;
-
-/** Rows an album costs: the row, its index and an annotation or two. */
-const ROWS_PER_REMOVED_ALBUM = 3;
 
 /** Which stage a cleanup step ran. */
 export type CleanupStage = "tracks" | "albums" | "library";
@@ -59,20 +58,29 @@ export type CleanupStage = "tracks" | "albums" | "library";
  * Runs one bounded step of the cleanup of library `libraryId`, which the
  * caller read as `removing`, and says which stage it ran. `covers` is the
  * bound bucket, where every library's covers are. `day` is the UTC day the
- * rows are counted against (`scanner/budget.ts`).
+ * rows are counted against (`scanner/budget.ts`), and `ledger` the rows
+ * written that the tally does not hold yet.
  */
 export async function cleanUpLibrary(
   db: Database,
   covers: LibraryStorage,
   libraryId: number,
   day: string,
+  ledger: RowLedger,
 ): Promise<CleanupStage> {
+  /** Runs a stage's batch with the carried rows on the tally. */
+  const commit = async (statements: ScanStatement[]): Promise<void> => {
+    const carried = ledger.rows;
+    ledger.rows = 0;
+    ledger.rows += await countedBatch(db, [
+      ...statements,
+      ...(carried > 0 ? [tallyStatement(db, day, carried)] : []),
+    ]);
+  };
+
   const tracks = await findLibraryTrackIds(db, libraryId, CLEANUP_TRACKS_PER_STEP);
   if (tracks.length > 0) {
-    await runBatch(db, [
-      ...deleteTracksWithAnnotationsStatements(db, tracks),
-      tallyStatement(db, day, ROWS_PER_REMOVED_TRACK * tracks.length + 1),
-    ]);
+    await commit(deleteTracksWithAnnotationsStatements(db, tracks));
     console.log(`scan: removed library ${libraryId}: deleted ${tracks.length} tracks`);
 
     return "tracks";
@@ -86,13 +94,12 @@ export async function cleanUpLibrary(
     await covers.delete(
       albums.map((row) => row.coverKey).filter((key): key is string => key !== null),
     );
-    await runBatch(db, [
-      ...deleteAlbumsWithAnnotationsStatements(
+    await commit(
+      deleteAlbumsWithAnnotationsStatements(
         db,
         albums.map((row) => row.id),
       ),
-      tallyStatement(db, day, ROWS_PER_REMOVED_ALBUM * albums.length + 1),
-    ]);
+    );
     console.log(`scan: removed library ${libraryId}: deleted ${albums.length} albums`);
 
     return "albums";
@@ -105,7 +112,7 @@ export async function cleanUpLibrary(
     deleteBrokenObjectsStatement(db, libraryId),
     deleteRemovedLibraryStatement(db, libraryId),
   ];
-  await runBatch(db, [...last, tallyStatement(db, day, last.length + 1)]);
+  await commit(last);
   console.log(`scan: removed library ${libraryId}: the library is gone`);
 
   return "library";

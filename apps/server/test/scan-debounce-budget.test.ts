@@ -232,8 +232,10 @@ describe("the pass it starts", () => {
     // (one statement, one row); and the scan's end and the import's end each
     // put the pass's rows on the daily write tally (one statement, one row
     // each). The unchanged page itself writes no tally: its progress row
-    // carries its count.
-    expect(debounced.d1).toEqual({ statements: 19, roundTrips: 7, rowsRead: 58, rowsWritten: 7 });
+    // carries its count. The tally counts what D1 reports each batch wrote,
+    // so the import's last batch's own rows go on it after the batch, in a
+    // round trip of their own: the pass's one write nothing would carry.
+    expect(debounced.d1).toEqual({ statements: 20, roundTrips: 8, rowsRead: 59, rowsWritten: 8 });
   });
 });
 

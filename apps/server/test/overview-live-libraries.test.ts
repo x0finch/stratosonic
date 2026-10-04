@@ -194,6 +194,40 @@ describe("scan.paused", () => {
     expect(driverRequests).toBe(0);
   });
 
+  it("counts the rows the scan's and the import's progress rows carry for the tally", async () => {
+    const day = utcDay(Date.now());
+    const db = database(testEnv);
+    await db.insert(property).values([
+      { id: SCAN_ROWS_WRITTEN_KEY, value: JSON.stringify({ day, rows: 40_000 }) },
+      {
+        id: "ScanProgress",
+        value: JSON.stringify({
+          startedAt: SEED_TIME.getTime(),
+          libraryId: 2,
+          cursor: "c",
+          skip: 0,
+          sweptTo: "",
+          counts: noCounts(),
+          untallied: { day, rows: 6_000 },
+        }),
+      },
+    ]);
+    expect((await liveScan()).paused).toBeNull();
+
+    await db.insert(property).values({
+      id: "PlaylistImportProgress",
+      value: JSON.stringify({
+        startedAt: SEED_TIME.getTime(),
+        cursor: "",
+        skip: 0,
+        sweptTo: "",
+        counts: {},
+        untallied: { day, rows: 4_000 },
+      }),
+    });
+    expect((await liveScan()).paused?.reason).toBe("daily_write_budget");
+  });
+
   it("is never set with no cap", async () => {
     await database(testEnv)
       .insert(property)

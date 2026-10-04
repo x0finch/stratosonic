@@ -240,9 +240,13 @@ describe("a key that hashes to another library's track id (ADR-0009)", () => {
     expect(libraryOne?.libraries["2"]?.indexed).toBe(0);
     const ownLyrics = lyrics?.text ?? "";
 
-    // A later pass leaves it out again, and still writes nothing under the id.
+    // Remembered at its etag, so a later pass does not read it again, and
+    // still writes nothing under the id.
+    expect((await readBrokenObjects(db, ARCHIVE.id)).has(KEY)).toBe(true);
+    const before = fake.calls.length;
     await poke(LATER);
     await driveUntilIdle();
+    expect(operationsSince(fake, before)).not.toContain("GetObject");
     const [again] = await db
       .select()
       .from(trackLyrics)
@@ -264,5 +268,6 @@ describe("a key that hashes to another library's track id (ADR-0009)", () => {
     expect(await trackAt(1, SHAPED)).toBeUndefined();
     expect((await trackAt(ARCHIVE.id, KEY))?.id).toBe(trackId(ARCHIVE.id, KEY));
     expect((await readLastScanSummary(database(testEnv)))?.libraries["1"]?.broken).toBe(1);
+    expect((await readBrokenObjects(database(testEnv), 1)).has(SHAPED)).toBe(true);
   });
 });

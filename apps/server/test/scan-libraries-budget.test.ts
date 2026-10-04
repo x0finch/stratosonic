@@ -1,6 +1,13 @@
+import { property } from "@stratosonic/db";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { database } from "../src/db";
 import type { Env } from "../src/env";
-import { ROWS_PER_INDEXED_TRACK } from "../src/scanner/budget";
+import {
+  type RowLedger,
+  SCAN_ROWS_WRITTEN_KEY,
+  WORST_ROWS_PER_INDEXED_TRACK,
+} from "../src/scanner/budget";
 import { DEFAULT_SCAN_LIMITS, runScan, type ScanRun } from "../src/scanner/scan";
 import { bootstrapAdmin } from "./browsing-support";
 import { cost, countingD1, type RecordedStatement } from "./console-auth-support";
@@ -131,12 +138,12 @@ let fake: FakeS3;
 let installed: FakeLibrary;
 
 /** Runs one step, stamped `now`, with every subrequest counted. */
-async function countedStep(now: Date): Promise<StepCost> {
+async function countedStep(now: Date, ledger: RowLedger): Promise<StepCost> {
   const d1 = countingD1(testEnv.DB);
   const binding: string[] = [];
   const env: Env = { ...testEnv, DB: d1.binding, MUSIC: countingBinding(testEnv.MUSIC, binding) };
   const before = fake.calls.length;
-  const run = await runScan(env, now, DEFAULT_SCAN_LIMITS, { writeBudget: 0 });
+  const run = await runScan(env, now, DEFAULT_SCAN_LIMITS, { writeBudget: 0, ledger });
   const fetches = fake.calls.slice(before).map((call) => call.operation);
   const d1Trips = cost(d1.statements).roundTrips;
 
@@ -150,14 +157,44 @@ async function countedStep(now: Date): Promise<StepCost> {
   };
 }
 
-/** Every step of a pass, counted, until it completes. */
-async function countedPass(now: Date, limit = 100): Promise<StepCost[]> {
+/** The day's write tally, as the row holds it. */
+async function tallied(): Promise<number> {
+  const [row] = await database(testEnv)
+    .select()
+    .from(property)
+    .where(eq(property.id, SCAN_ROWS_WRITTEN_KEY));
+  return row === undefined ? 0 : (JSON.parse(row.value) as { rows: number }).rows;
+}
+
+/** A pass's steps, and how its rows reached the tally. */
+interface CountedPass {
+  readonly steps: StepCost[];
+  /** Every row D1 says the pass's statements wrote. */
+  readonly written: number;
+  /** What the pass added to the day's tally. */
+  readonly tallied: number;
+  /** The last batch's rows, which the driver would carry on (`unreported`). */
+  readonly unreported: number;
+}
+
+/**
+ * Every step of a pass, counted, until it completes, with the rows ledger
+ * carried from step to step as the driver carries it.
+ */
+async function countedPass(now: Date, limit = 100): Promise<CountedPass> {
+  const before = await tallied();
+  const ledger: RowLedger = { rows: 0 };
   const steps: StepCost[] = [];
   for (let step = 0; step < limit; step++) {
-    const counted = await countedStep(now);
+    const counted = await countedStep(now, ledger);
     steps.push(counted);
     if (counted.run.completed) {
-      return steps;
+      return {
+        steps,
+        written: steps.flatMap((each) => each.d1).reduce((sum, each) => sum + each.rowsWritten, 0),
+        tallied: (await tallied()) - before,
+        unreported: ledger.rows,
+      };
     }
   }
   throw new Error(`the pass was still running after ${limit} steps`);
@@ -190,10 +227,12 @@ afterAll(() => {
 });
 
 describe("a first index of library 2 over S3", () => {
+  let pass: CountedPass;
   let steps: StepCost[] = [];
 
   beforeAll(async () => {
-    steps = await countedPass(new Date(1_790_000_000_000));
+    pass = await countedPass(new Date(1_790_000_000_000));
+    steps = pass.steps;
   });
 
   it("makes at most 42 subrequests a step, at most 21 of them over fetch", () => {
@@ -219,7 +258,7 @@ describe("a first index of library 2 over S3", () => {
   });
 
   it("writes each track's rows: about 13 for a track that is its own artist's own album", () => {
-    const written = steps.flatMap((step) => step.d1).reduce((sum, s) => sum + s.rowsWritten, 0);
+    const written = pass.written;
     const perTrack = written / TRACKS;
     console.log(
       `first index of library 2: ${steps.length} steps, ${written} rows written, ` +
@@ -229,17 +268,29 @@ describe("a first index of library 2 over S3", () => {
           .join(" "),
     );
     // Every track here inserts an artist and an album with their indexes,
-    // which a library of ten-track albums pays once an album (below).
-    expect(perTrack).toBeGreaterThan(ROWS_PER_INDEXED_TRACK);
-    expect(perTrack).toBeLessThanOrEqual(2 * ROWS_PER_INDEXED_TRACK);
+    // which a library of ten-track albums pays once an album (below); the
+    // check before a page reserves this worst case.
+    expect(perTrack).toBeGreaterThan(9);
+    expect(perTrack).toBeLessThanOrEqual(WORST_ROWS_PER_INDEXED_TRACK);
+  });
+
+  it("tallies every row D1 says it wrote, the last batch's left for the driver", () => {
+    expect(pass.tallied + pass.unreported).toBe(pass.written);
+    expect(pass.unreported).toBeGreaterThan(0);
   });
 });
 
 describe("an unchanged pass over both libraries", () => {
+  let pass: CountedPass;
   let steps: StepCost[] = [];
 
   beforeAll(async () => {
-    steps = await countedPass(new Date(1_790_000_100_000));
+    pass = await countedPass(new Date(1_790_000_100_000));
+    steps = pass.steps;
+  });
+
+  it("tallies every row D1 says it wrote", () => {
+    expect(pass.tallied + pass.unreported).toBe(pass.written);
   });
 
   it("makes at most 42 subrequests a step", () => {
@@ -275,7 +326,7 @@ describe("an unchanged pass over both libraries", () => {
 });
 
 describe("a first index of ten-track albums", () => {
-  it("writes about the 8 rows a track the daily budget counts", async () => {
+  it("writes about 9.4 rows a track, as D1 reports them", async () => {
     // Twenty more tracks, ten an album, both albums one artist's.
     for (let index = 0; index < 20; index++) {
       await putInArchive(
@@ -287,8 +338,9 @@ describe("a first index of ten-track albums", () => {
       );
     }
 
-    const steps = await countedPass(new Date(1_790_000_200_000));
-    const written = steps.flatMap((step) => step.d1).reduce((sum, s) => sum + s.rowsWritten, 0);
+    const pass = await countedPass(new Date(1_790_000_200_000));
+    const { steps, written } = pass;
+    expect(pass.tallied + pass.unreported).toBe(written);
     const indexed = steps.reduce((sum, step) => sum + step.run.counts.indexed, 0);
     console.log(
       `ten-track albums: ${steps.length} steps, ${indexed} tracks, ${written} rows written, ` +
@@ -299,6 +351,7 @@ describe("a first index of ten-track albums", () => {
       expect(step.total).toBeLessThanOrEqual(42);
     }
     // With the pass's own progress, stamps, summary and tally rows spread over it.
-    expect(written / indexed).toBeLessThanOrEqual(ROWS_PER_INDEXED_TRACK + 2);
+    expect(written / indexed).toBeGreaterThan(8);
+    expect(written / indexed).toBeLessThanOrEqual(10.5);
   });
 });

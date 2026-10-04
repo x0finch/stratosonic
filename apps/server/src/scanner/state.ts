@@ -353,6 +353,11 @@ export interface ScanReport {
   readonly lastChangedAt: number | null;
   /** The day's write tally, which says whether the scan is paused (`scanner/budget.ts`). */
   readonly rowsWritten: RowsWritten | null;
+  /**
+   * The rows the import in flight carries for the tally in its progress row
+   * (the scan's are `progress.untallied`), or null.
+   */
+  readonly importUntallied: RowsWritten | null;
 }
 
 /** Everything a pass shows the outside world, in one query. */
@@ -390,6 +395,10 @@ export function toScanReport(rows: Awaited<ReturnType<typeof scanReportQuery>>):
     lastCompleted: readSummary(stored.get(LAST_SCAN_SUMMARY_KEY)),
     lastChangedAt: wholeNumber(stored.get(LIBRARY_CHANGED_AT_KEY)?.at),
     rowsWritten: readRowsWritten(stored.get(SCAN_ROWS_WRITTEN_KEY)),
+    importUntallied:
+      typeof importing?.untallied === "object" && importing.untallied !== null
+        ? readRowsWritten(importing.untallied as Record<string, unknown>)
+        : null,
   };
 }
 

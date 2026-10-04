@@ -17,6 +17,7 @@ import {
 import { and, eq } from "drizzle-orm";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { database } from "../src/db";
+import { tallyStatement, utcDay } from "../src/scanner/budget";
 import { CLEANUP_TRACKS_PER_STEP } from "../src/scanner/cleanup";
 import type { ScanDriver } from "../src/scanner/driver";
 import { brokenObjectsKey, readLastScanSummary } from "../src/scanner/state";
@@ -26,10 +27,12 @@ import type { FakeS3 } from "./fake-s3";
 import {
   ARCHIVE,
   connectLibrary,
+  driveCounted,
   type FakeLibrary,
   installFakeLibrary,
   libraryRow,
   resetLibraries,
+  talliedRows,
   tracksIn,
 } from "./scan-libraries-support";
 import {
@@ -301,12 +304,17 @@ describe("removing a large library", () => {
     }
     await markRemoving();
 
-    // Six rows a track: the first step's ten tracks spend the budget.
+    // One row short of the budget: the first stage runs, and its rows, as
+    // D1 reports them, spend the rest.
+    const db = database(testEnv);
+    await db.batch([tallyStatement(db, utcDay(Date.now()), 49)]);
     await poke(T, { ...slowTuning, writeBudget: 50 });
-    await driveUntilIdle();
+    const written = await driveCounted();
 
     expect(await tracksIn(ARCHIVE.id)).toEqual([]);
     expect(await libraryRow(ARCHIVE.id)).toBeDefined();
     expect(await readLastScanSummary(database(testEnv))).toBeNull();
+    expect(await talliedRows()).toBe(49 + written);
+    expect(written).toBeGreaterThan(10);
   });
 });
