@@ -1,5 +1,5 @@
 import type { StoredObject } from "../storage/storage";
-import { checkUploadKey, isAscii } from "./keys";
+import { BOUND_RESERVED_PREFIXES, checkUploadKey, isAscii } from "./keys";
 
 /**
  * The upload check's own work (#141), apart from its storage calls so
@@ -37,12 +37,17 @@ export function inNfc(name: string): string {
 /**
  * The keys to look for, each once, grouped by folder and then by name in
  * NFC, in the order given. A key the upload rules refuse (`checkUploadKey`
- * under `prefix`) is left out: the check does not report it.
+ * under `prefix`, with the library's `reserved` prefixes) is left out: the
+ * check does not report it.
  */
-export function groupCheckKeys(prefix: string, keys: readonly string[]): CheckGroups {
+export function groupCheckKeys(
+  prefix: string,
+  keys: readonly string[],
+  reserved: readonly string[] = BOUND_RESERVED_PREFIXES,
+): CheckGroups {
   const folders: CheckGroups = new Map();
   for (const key of new Set(keys)) {
-    const checked = checkUploadKey(key, prefix);
+    const checked = checkUploadKey(key, prefix, reserved);
     if ("error" in checked) {
       continue;
     }

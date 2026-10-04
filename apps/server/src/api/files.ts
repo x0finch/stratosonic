@@ -1,4 +1,3 @@
-import { DEFAULT_LIBRARY_ID } from "@stratosonic/db";
 import type { Context } from "hono";
 import { requireFreshSession, requirePermission, requireSession } from "../console-auth/middleware";
 import { database } from "../db";
@@ -7,6 +6,7 @@ import { CHECK_BATCH, type ExistingKey, groupCheckKeys, matchListing } from "../
 import { bucketName, fileWritesEnabled, requireFileWrites, uploadsStatus } from "../files/config";
 import {
   ALLOWED,
+  BOUND_RESERVED_PREFIXES,
   checkBrowsePrefix,
   checkFolderPrefix,
   checkUploadKey,
@@ -20,14 +20,18 @@ import {
   newKeySpelling,
   oneSpellingPrefix,
   type PathRefusal,
+  reservedPrefixesOf,
   utf8Length,
 } from "../files/keys";
 import { RESCAN_QUIET_MS, recordLibraryChange, type ScanSchedule } from "../files/library-change";
 import { folderListing, playlistKeysOf } from "../files/listing";
+import { findLibrary, listActiveLibraries } from "../libraries/repository";
 import { deletePlaylistRowsByKeys } from "../playlists/repository";
-import { bindingStorage } from "../storage/binding";
+import { BOUND_LIBRARY_ID, bindingStorage } from "../storage/binding";
+import { storageFor } from "../storage/for-library";
 import type { PresignedUpload } from "../storage/presign";
-import type { LibraryStorage, StorageListing } from "../storage/storage";
+import { deleteRequests } from "../storage/s3";
+import { type LibraryStorage, StorageError, type StorageListing } from "../storage/storage";
 import type { ApiApp } from "./app";
 import {
   invalidRequest,
@@ -39,53 +43,89 @@ import {
 import { requireSameOrigin } from "./same-origin";
 
 /**
- * The console's Files page (#83): the bound bucket, `MUSIC`, browsed one
- * folder at a time, files and folders deleted from it, and files uploaded to
- * it, all through its storage (storage/binding.ts). An upload's bytes go from
- * the browser straight to R2, with a URL the storage presigns
+ * The console's Files page (#83; #84, "Files across libraries"): a library's
+ * bucket browsed one folder at a time, files and folders deleted from it,
+ * and files uploaded to it, all through the library's storage (`storageFor`,
+ * storage/for-library.ts): the bound bucket, `MUSIC`, for library 1, and a
+ * connected library's bucket over the S3 API. An upload's bytes go from the
+ * browser straight to the bucket, with a URL the storage presigns
  * (`presignPut`, storage/presign.ts), and never through the Worker.
  *
  * R2 has no folders: a folder is a common key prefix ending in `/`, as a
  * delimited listing reports it. Keys are used exactly as R2 lists them, never
  * normalised (files/keys.ts). The scanner's own `_covers/` prefix is hidden
- * from browse and refused to every write, `403 {"error":"reserved_path"}`.
+ * from browse and refused to every write, `403 {"error":"reserved_path"}`,
+ * in library 1 only: every library's covers are written there, and a
+ * connected bucket holds nothing of the scanner's (#84, "Covers").
+ *
+ * ## Which library
+ *
+ * Every route but the config takes a library: `?library=` on `GET
+ * /api/files`, `"library"` in every write's body, a library id, 1 when
+ * missing, so a console that sends none acts on the bound bucket exactly as
+ * before. Library 1 is the binding, and is never read from D1: its requests
+ * make the statements and calls they always made. Any other library's row is
+ * read once, the one statement the route adds (`filesLibrary`):
+ *
+ * - an id no active library has (none, or one being removed) answers
+ *   `404 {"error":"library_not_found"}`, and an id that is not an integer
+ *   `404` too on `GET` (it names no library), `400 invalid_request` in a body;
+ * - a write to a library whose last connection test found it read-only
+ *   answers `403 {"error":"library_read_only"}`. Browsing it still works.
+ *   The upload check counts as a write: it only serves an upload;
+ * - `FILE_WRITES = "off"` refuses every library's writes, before any of this.
  *
  * Reads need a session, which the cookie cache may vouch for, and
  * `files:read`. Writes go through `requireSameOrigin`, a body cap,
  * `requireFreshSession` (D1, past the cookie cache), `files:write` and
  * `requireFileWrites` (files/config.ts), in that order; each sends a JSON
- * object. The answers:
+ * object, then has its body checked, then its library, then its paths. The
+ * answers:
  *
- * - `GET /api/files/config`: `200 FilesConfig`, the bucket's name, whether
- *   uploads are configured, the allow-list, the limits, the quiet window and
- *   whether writes are enabled.
- * - `GET /api/files?prefix=&cursor=`: `200 {prefix, folders, files, cursor}`;
- *   `400 invalid_path`, `403 reserved_path`, `400 invalid_cursor` (a cursor
- *   R2 refuses: forged, stale or from another prefix).
- * - `POST /api/files/delete`, `{keys}`, 1–250 keys:
- *   `200 {deleted, scan}`; `400 invalid_request`, `403 reserved_path`.
- * - `POST /api/files/delete-folder`, `{prefix}`:
+ * - `GET /api/files/config`: `200 FilesConfig`, the bound bucket's name,
+ *   whether its uploads are configured, the active libraries (`libraries:
+ *   [{id, name, writable, uploads, reservedPrefixes}]`, one D1 statement),
+ *   the allow-list, the limits, the quiet window and whether writes are
+ *   enabled.
+ * - `GET /api/files?library=&prefix=&cursor=`: `200 {prefix, folders, files,
+ *   cursor}`; `400 invalid_path`, `403 reserved_path`, `400 invalid_cursor`
+ *   (a cursor the bucket refuses: forged, stale or from another prefix).
+ * - `POST /api/files/delete`, `{library?, keys}`, 1–250 keys:
+ *   `200 {deleted, scan}`; `400 invalid_request`, `403 reserved_path`, and,
+ *   in a connected library, `400 too_many_keys` when the keys holding a
+ *   control character would need more than `S3_DELETE_CALLS` requests (each
+ *   is deleted with its own `DeleteObject`).
+ * - `POST /api/files/delete-folder`, `{library?, prefix}`:
  *   `200 {deleted, done, scan}`, called again until `done`, or
  *   `200 {deleted: 0, done: true}`, with no `scan`, when there was nothing
  *   left to delete; `400 invalid_path`, `403 reserved_path`.
- * - `POST /api/files/uploads`, `{prefix?, files: [{key, size, overwrite?}]}`,
- *   1–10 files: `200 {uploads}`, one result per file, in order, each a presigned
- *   `PUT` or a per-file `error` (`invalid_path`, `path_too_long`,
- *   `reserved_path`, `type_not_allowed`, `too_large`, `empty_file`,
- *   `exists`, or `replace_unavailable`: replace that file with rclone);
- *   `400 invalid_request`, `503 uploads_not_configured`. `prefix` is the
+ * - `POST /api/files/uploads`, `{library?, prefix?, files: [{key, size,
+ *   overwrite?}]}`, 1–10 files: `200 {uploads}`, one result per file, in
+ *   order, each a presigned `PUT` or a per-file `error` (`invalid_path`,
+ *   `path_too_long`, `reserved_path`, `type_not_allowed`, `too_large`,
+ *   `empty_file`, `exists`, or `replace_unavailable`: replace that file with
+ *   rclone); `400 invalid_request`, and for library 1
+ *   `503 uploads_not_configured` (a connected library's uploads are signed
+ *   with its stored token, so they are always configured). `prefix` is the
  *   folder uploaded into, exactly as browse listed it: it is kept as it is,
  *   and only the part of each key after it is normalised to NFC; a key
  *   outside it answers `invalid_path` for that file, and a bad prefix
  *   `400 invalid_path` or `403 reserved_path` for the request.
- * - `POST /api/files/uploads/check`, `{prefix?, keys}`, 1–500 keys about
- *   to be uploaded: `200 {existing: [{key, storedKey, size, uploadedAt}],
- *   unchecked: [key]}`; `400 invalid_request`, and for a bad prefix
- *   `400 invalid_path` or `403 reserved_path`. It needs no upload
- *   configuration: it reads the binding.
- * - `POST /api/files/uploads/complete`, `{keys}`, 1–10 keys whose `PUT`
- *   succeeded: `200 {scan}`; `400 invalid_request`, `403 reserved_path`.
+ * - `POST /api/files/uploads/check`, `{library?, prefix?, keys}`, 1–500
+ *   keys about to be uploaded: `200 {existing: [{key, storedKey, size,
+ *   uploadedAt}], unchecked: [key]}`; `400 invalid_request`, and for a bad
+ *   prefix `400 invalid_path` or `403 reserved_path`. It needs no upload
+ *   configuration: it reads the bucket.
+ * - `POST /api/files/uploads/complete`, `{library?, keys}`, 1–10 keys whose
+ *   `PUT` succeeded: `200 {scan}`; `400 invalid_request`, `403 reserved_path`.
+ * - Any route but the config, for a library that is not there or is being
+ *   removed: `404 library_not_found`; any write, for a read-only library:
+ *   `403 library_read_only`.
  * - Any write, where `FILE_WRITES` is `"off"`: `403 file_writes_disabled`.
+ *
+ * A connected bucket that fails (a refused token, a missing bucket, an
+ * outage: a `StorageError`, storage/storage.ts) answers 500, as a failed
+ * binding call does, but for a refused cursor (`400 invalid_cursor`).
  *
  * ## Deletes are permanent
  *
@@ -99,8 +139,10 @@ import { requireSameOrigin } from "./same-origin";
  * its artists and their covers. A delete therefore removes only the objects
  * and records the change (files/library-change.ts), which schedules that
  * pass. Playlists leave at once, as `deletePlaylist` makes them leave
- * (ADR-0006): the rows of every deleted key with a playlist suffix are
- * deleted right after the objects, in one round trip.
+ * (ADR-0006): the rows of every deleted key with a playlist suffix, in the
+ * library the keys were deleted from (by `(library_id, r2_key)`, so another
+ * library's playlist under the same key stays), are deleted right after the
+ * objects, in one round trip.
  *
  * ## `scan`
  *
@@ -140,21 +182,26 @@ import { requireSameOrigin } from "./same-origin";
  *    exactly as given; each folder is listed with a delimiter, page after
  *    page, and the names compared in NFC, since the stored spelling may
  *    differ. At most `CHECK_LISTINGS` (40) listings a request, and
- *    `CHECK_ENTRIES` (2,000) entries listed in all, as much as one
- *    `delete-folder` round. A key whose folder was not listed to its end
- *    (a large flat folder, or one past the budget) is then looked for with
- *    one `head()` (Class B), as many as the request's `CHECK_CALLS` (47)
- *    binding calls leave room for: at least 7. A key still unknown is
+ *    `CHECK_ENTRIES` (2,000; `S3_CHECK_ENTRIES`, 1,000, over the S3 API)
+ *    entries listed in all, as much as one `delete-folder` round. A key
+ *    whose folder was not listed to its end (a large flat folder, or one
+ *    past the budget) is then looked for with one `head()` (Class B), as
+ *    many as the request's `CHECK_CALLS` (46) storage calls leave room
+ *    for: at least 6. A key still unknown is
  *    answered in `unchecked`, never as new, and the console asks again for
  *    those, each request with a fresh budget. A folder stored in another
  *    spelling than the one given lists nothing, so its keys read as new;
  *    the `PUT`'s `If-None-Match: *` still refuses them. Its cost: one
  *    `ListObjects` (Class A) per page and one `HeadObject` (Class B) per
- *    key looked up, no D1 statement past the session check's, no driver
- *    call: 47 binding calls + at most 3 D1 statements = 50 subrequests
+ *    key looked up, no D1 statement past the session check's and a
+ *    connected library's row, no driver call: 46 storage calls + at most 3
+ *    D1 statements for the session + 1 for the library = 50 subrequests
  *    (`requireFreshSession` reads the session and its user, and updates
- *    the session once it is past `updateAge`). At most `CHECK_BATCH` (500) keys a
- *    request: checking them against the upload rules is most of its CPU.
+ *    the session once it is past `updateAge`). At most `CHECK_BATCH` (500)
+ *    keys a request: checking them against the upload rules is most of its
+ *    CPU. A `head()` over the S3 API answers null for a missing bucket as
+ *    for a missing key, but a listing always comes first, and a listing
+ *    tells a missing bucket apart (`bucket_not_found`).
  * 1. `POST /api/files/uploads` checks each file against the upload rules
  *    (files/keys.ts), asks R2 whether its key exists, and presigns a `PUT`
  *    bound to the key, the exact size and the content type. A new key is
@@ -169,12 +216,20 @@ import { requireSameOrigin } from "./same-origin";
  *    owner replaces it with rclone. Nothing has changed yet, so the library
  *    is not marked changed.
  *
+ *    Over the S3 API, a `head()` answers null for a missing bucket as for a
+ *    missing key (a `HEAD` has no body to tell them apart), so a connected
+ *    library's request lists one key of the bucket before it trusts the
+ *    first null (`confirmBucket`): a missing bucket then fails the request,
+ *    rather than every file reading as new and every browser `PUT` failing.
+ *
  *    Its cost: one `HeadObject` (Class B) per file that passes the rules,
  *    and, for a Replace of an existing key with more than one possible
  *    spelling, one `ListObjects` (Class A) per page listed to find it, at
  *    most `SPELLING_LISTINGS` (3) a file. So a request of 10 files makes at
- *    most 10 + 30 = 40 binding calls, and with the session check's D1
- *    statements (at most 2) at most 42 subrequests, inside the 50.
+ *    most 10 + 30 = 40 storage calls (a connected library's one confirming
+ *    listing is made only when a file is new, which leaves at most 27
+ *    lookups), and with the session check's D1 statements (at most 2) and a
+ *    connected library's row at most 43 subrequests, inside the 50.
  * 2. `POST /api/files/uploads/complete` reports the keys whose `PUT`
  *    succeeded, and records the change as a delete does. It makes no R2 call:
  *    the keys are bounded by the upload rules, and a key that was not really
@@ -210,13 +265,15 @@ export const SPELLING_LISTINGS = 3;
 export { CHECK_BATCH } from "../files/check";
 
 /**
- * The most binding calls one upload check makes, listings and `head()`s
- * together: 47 binding calls + at most 3 D1 statements = 50 subrequests.
- * The session check (`requireFreshSession`) reads the session and its
- * user, and updates the session once it is past Better Auth's `updateAge`
- * (test/console-auth-sessions.test.ts).
+ * The most storage calls one upload check makes, listings and `head()`s
+ * together: 46 storage calls + at most 3 D1 statements for the session + 1
+ * for a connected library's row = 50 subrequests. The session check
+ * (`requireFreshSession`) reads the session and its user, and updates the
+ * session once it is past Better Auth's `updateAge`
+ * (test/console-auth-sessions.test.ts). Library 1 reads no row, and keeps
+ * the same bound (#84, "Files across libraries").
  */
-export const CHECK_CALLS = 47;
+export const CHECK_CALLS = 46;
 
 /** The most of those calls that are listings: the rest are left for `head()`s. */
 export const CHECK_LISTINGS = 40;
@@ -230,6 +287,13 @@ export const CHECK_LISTINGS = 40;
  */
 export const CHECK_ENTRIES = 2000;
 
+/**
+ * `CHECK_ENTRIES` over the S3 API: 1,000, since each entry is also XML the
+ * route parses (storage/s3-list.ts, about 3 ms per 1,000 entries in workerd,
+ * scripts/bench-files.ts), so the request stays inside its 10 ms (#84, "CPU").
+ */
+export const S3_CHECK_ENTRIES = 1000;
+
 /** The keys one listing of an upload check reaches at most: R2's own most. */
 const CHECK_PAGE = 1000;
 
@@ -240,7 +304,24 @@ export const DELETE_BATCH = 250;
 const BROWSE_PAGE = 1000;
 
 /** The most keys one listing of a folder delete reaches: R2's own most. */
-const FOLDER_DELETE_PAGE = 1000;
+export const FOLDER_DELETE_PAGE = 1000;
+
+/**
+ * `FOLDER_DELETE_PAGE` over the S3 API: 500, so a round's two listings parse
+ * 1,000 entries of XML, inside the request's 10 ms (#84, "CPU").
+ */
+export const S3_FOLDER_DELETE_PAGE = 500;
+
+/**
+ * The most S3 requests a connected library's delete, or folder-delete round,
+ * makes: its listings, its `DeleteObjects` and, for each key holding a
+ * character XML cannot carry, that key's own `DeleteObject`
+ * (`deleteRequests`, storage/s3.ts). With at most 3 D1 statements for the
+ * session, 1 for the library's row, 1 for the playlists' rows, 1 for the
+ * change and 1 driver call, a request stays at 47 subrequests of the 50.
+ * The binding deletes any keys in one call, so library 1 needs no bound.
+ */
+export const S3_DELETE_CALLS = 40;
 
 /**
  * The listings one `delete-folder` request makes at most: 2,000 keys, which
@@ -253,16 +334,31 @@ export function registerFileRoutes(api: ApiApp): void {
 
   /**
    * `GET /api/files/config`: what the console needs to know once a session,
-   * with no binding call and no D1 statement.
+   * with no storage call and one D1 statement, the active libraries.
    */
-  api.get("/files/config", requireSession, requirePermission("files:read"), (c) =>
-    c.json({
+  api.get("/files/config", requireSession, requirePermission("files:read"), async (c) => {
+    const libraries = await listActiveLibraries(database(c.env));
+
+    return c.json({
       allowed: ALLOWED,
       // R2_BUCKET_NAME, or null when unset.
       bucket: bucketName(c.env),
-      // Whether uploads can be signed here; `missing` names the values that
-      // are not set, never their contents.
+      // Whether library 1's uploads can be signed here; `missing` names the
+      // values that are not set, never their contents.
       uploads: uploadsView(c.env),
+      // Every active library, by id, and what the Files page may do in it.
+      libraries: libraries.map((row) => {
+        const bound = row.id === BOUND_LIBRARY_ID;
+        return {
+          id: row.id,
+          name: row.name,
+          // Library 1 is always written to, as the routes take it (`filesLibrary`).
+          writable: bound || row.writable,
+          // A connected library's uploads are signed with its stored token.
+          uploads: bound ? uploadsView(c.env) : { configured: true as const },
+          reservedPrefixes: reservedPrefixesOf(row.id),
+        };
+      }),
       limits: {
         maxKeyBytes: MAX_KEY_BYTES,
         maxSegmentBytes: MAX_SEGMENT_BYTES,
@@ -273,23 +369,28 @@ export function registerFileRoutes(api: ApiApp): void {
       // Whether the write routes are open here: false where `FILE_WRITES` is
       // "off", the preview environment, and the console hides their controls.
       writes: { enabled: fileWritesEnabled(c.env) },
-    }),
-  );
+    });
+  });
 
   /**
-   * `GET /api/files`: one page of one folder, in one binding call
-   * (`folderListing`). `prefix` is the root when missing; `cursor` is R2's,
-   * null on the last page.
+   * `GET /api/files`: one page of one folder of a library, in one storage
+   * call (`folderListing`). `library` is 1 when missing, `prefix` the root;
+   * `cursor` is the bucket's, null on the last page.
    *
-   * A listing R2 refuses while carrying a cursor answers
-   * `400 {"error":"invalid_cursor"}`: the cursor came from the client, and R2
-   * is what decides it is not one of its own. The console's answer is the
-   * same either way, to open the folder again from its first page. Without a
-   * cursor, a failed listing is the 500 it is.
+   * A listing the bucket refuses while carrying a cursor answers
+   * `400 {"error":"invalid_cursor"}`: the cursor came from the client, and
+   * the bucket is what decides it is not one of its own. The console's
+   * answer is the same either way, to open the folder again from its first
+   * page. Without a cursor, a failed listing is the 500 it is, and so is any
+   * other failure a connected bucket names (`StorageError`).
    */
   api.get("/files", requireSession, requirePermission("files:read"), async (c) => {
+    const library = await filesLibrary(c, queryLibraryId(c.req.query("library")), "read");
+    if (library instanceof Response) {
+      return library;
+    }
     const prefix = c.req.query("prefix") ?? "";
-    const refusal = checkBrowsePrefix(prefix);
+    const refusal = checkBrowsePrefix(prefix, library.reserved);
     if (refusal !== null) {
       return refused(c, refusal);
     }
@@ -297,50 +398,66 @@ export function registerFileRoutes(api: ApiApp): void {
     const cursor = c.req.query("cursor") || undefined;
     let listing: StorageListing;
     try {
-      listing = await bindingStorage(c.env).list({
+      listing = await library.storage.list({
         prefix,
         delimiter: "/",
         limit: BROWSE_PAGE,
         cursor,
       });
     } catch (error) {
-      if (cursor === undefined) {
+      if (
+        cursor === undefined ||
+        (error instanceof StorageError && error.reason !== "invalid_cursor")
+      ) {
         throw error;
       }
-      console.warn("files: R2 refused a listing's cursor", error);
+      console.warn("files: the bucket refused a listing's cursor", error);
       return c.json({ error: "invalid_cursor" }, 400);
     }
 
-    return c.json(folderListing(prefix, listing));
+    return c.json(folderListing(prefix, listing, library.reserved));
   });
 
   /**
-   * `POST /api/files/delete` with `{keys}`: 1–250 keys, exactly as browse
-   * listed them, deleted in one binding call. A key that is not there is not
-   * an error, so `deleted` counts the distinct keys given.
+   * `POST /api/files/delete` with `{library?, keys}`: 1–250 keys, exactly as
+   * browse listed them, deleted in one storage call. A key that is not there
+   * is not an error, so `deleted` counts the distinct keys given.
    */
   api.post("/files/delete", requireSameOrigin, limitFileDeleteBody, ...write, async (c) => {
-    const { keys } = (await readJsonObject(c)) ?? {};
-    if (!isKeyList(keys)) {
+    const body = (await readJsonObject(c)) ?? {};
+    const libraryId = bodyLibraryId(body.library);
+    const { keys } = body;
+    if (!isKeyList(keys) || libraryId === null) {
       return invalidRequest(c);
     }
-    if (keys.some(isReservedKey)) {
+    const library = await filesLibrary(c, libraryId, "write");
+    if (library instanceof Response) {
+      return library;
+    }
+    if (keys.some((key) => isReservedKey(key, library.reserved))) {
       // The whole request, before any object is touched.
       return refused(c, "reserved_path");
     }
 
     const distinct = [...new Set(keys)];
-    await bindingStorage(c.env).delete(distinct);
-    const scan = await afterDelete(c.env, distinct);
+    if (library.overS3 && deleteRequests(distinct) > S3_DELETE_CALLS) {
+      // Keys with a control character are deleted one request each: more
+      // than a request may make. The console deletes fewer at a time.
+      return c.json({ error: "too_many_keys" }, 400);
+    }
+    await library.storage.delete(distinct);
+    const scan = await afterDelete(c.env, library.id, distinct);
 
     return c.json({ deleted: distinct.length, scan });
   });
 
   /**
-   * `POST /api/files/delete-folder` with `{prefix}`: every key under the
-   * prefix, at any depth, at most `FOLDER_DELETE_PAGES` listings of
-   * `FOLDER_DELETE_PAGE` keys a request. `done` is true once a listing comes
-   * back complete; until then the console calls again.
+   * `POST /api/files/delete-folder` with `{library?, prefix}`: every key
+   * under the prefix, at any depth, at most `FOLDER_DELETE_PAGES` listings of
+   * `FOLDER_DELETE_PAGE` keys a request (`S3_FOLDER_DELETE_PAGE` over the S3
+   * API, where a round also stops at `S3_DELETE_CALLS` requests). `done` is
+   * true once a listing comes back complete and every key of it is deleted;
+   * until then the console calls again.
    *
    * Each listing starts from the beginning of the prefix, since the keys the
    * one before it found are gone, so the request needs no cursor. A file
@@ -348,27 +465,49 @@ export function registerFileRoutes(api: ApiApp): void {
    * is what was asked.
    */
   api.post("/files/delete-folder", requireSameOrigin, limitJsonBody, ...write, async (c) => {
-    const { prefix } = (await readJsonObject(c)) ?? {};
-    if (typeof prefix !== "string") {
+    const body = (await readJsonObject(c)) ?? {};
+    const libraryId = bodyLibraryId(body.library);
+    const { prefix } = body;
+    if (typeof prefix !== "string" || libraryId === null) {
       return invalidRequest(c);
     }
-    const refusal = checkFolderPrefix(prefix);
+    const library = await filesLibrary(c, libraryId, "write");
+    if (library instanceof Response) {
+      return library;
+    }
+    const refusal = checkFolderPrefix(prefix, library.reserved);
     if (refusal !== null) {
       return refused(c, refusal);
     }
 
-    const storage = bindingStorage(c.env);
+    const { storage, overS3 } = library;
+    const page = overS3 ? S3_FOLDER_DELETE_PAGE : FOLDER_DELETE_PAGE;
     // The keys of every delete call that succeeded.
     const deleted: string[] = [];
     let done = false;
     let completed = false;
+    // The S3 requests made so far, which `S3_DELETE_CALLS` bounds.
+    let calls = 0;
     try {
-      for (let page = 0; page < FOLDER_DELETE_PAGES && !done; page++) {
-        const listing = await storage.list({ prefix, limit: FOLDER_DELETE_PAGE });
-        const keys = listing.objects.map((object) => object.key);
+      for (let listed = 0; listed < FOLDER_DELETE_PAGES && !done; listed++) {
+        if (overS3 && calls + 2 > S3_DELETE_CALLS) {
+          // No room for a listing and a delete after it: the next round.
+          break;
+        }
+        const listing = await storage.list({ prefix, limit: page });
+        calls++;
+        let keys = listing.objects.map((object) => object.key);
+        if (overS3) {
+          const fitting = keysWithin(keys, S3_DELETE_CALLS - calls);
+          keys = fitting < keys.length ? keys.slice(0, fitting) : keys;
+          calls += deleteRequests(keys);
+        }
         await storage.delete(keys);
         deleted.push(...keys);
-        done = listing.cursor === null;
+        done = listing.cursor === null && keys.length === listing.objects.length;
+        if (keys.length < listing.objects.length) {
+          break;
+        }
       }
       completed = true;
     } finally {
@@ -376,7 +515,7 @@ export function registerFileRoutes(api: ApiApp): void {
       // the error then goes on to the 500 handler. A failure of that work is
       // logged rather than hiding the first one.
       if (!completed && deleted.length > 0) {
-        await afterDelete(c.env, deleted).catch((error: unknown) => {
+        await afterDelete(c.env, library.id, deleted).catch((error: unknown) => {
           console.error("files: recording a half-done folder delete failed", error);
         });
       }
@@ -386,73 +525,94 @@ export function registerFileRoutes(api: ApiApp): void {
       return c.json({ deleted: 0, done });
     }
 
-    const scan = await afterDelete(c.env, deleted);
+    const scan = await afterDelete(c.env, library.id, deleted);
     return c.json({ deleted: deleted.length, done, scan });
   });
 
   /**
-   * `POST /api/files/uploads` with `{prefix?, files}`: 1–10 files to sign,
-   * each `{key, size, overwrite?}`, in the folder `prefix` (as listed, never
-   * normalised) when given. A refused file does not fail the others: the
-   * request answers 200 with one result per file, in order.
+   * `POST /api/files/uploads` with `{library?, prefix?, files}`: 1–10 files
+   * to sign, each `{key, size, overwrite?}`, in the folder `prefix` (as
+   * listed, never normalised) when given. A refused file does not fail the
+   * others: the request answers 200 with one result per file, in order.
    */
   api.post("/files/uploads", requireSameOrigin, limitJsonBody, ...write, async (c) => {
-    const status = uploadsStatus(c.env);
-    if (!status.configured) {
+    const body = (await readJsonObject(c)) ?? {};
+    const libraryId = bodyLibraryId(body.library);
+    // Library 1's uploads need Phase 2's secrets, and say so first, as
+    // they always have; a connected library signs with its stored token.
+    if (libraryId === BOUND_LIBRARY_ID && !uploadsStatus(c.env).configured) {
       return c.json({ error: "uploads_not_configured" }, 503);
     }
 
-    const { prefix = "", files } = (await readJsonObject(c)) ?? {};
+    const { prefix = "", files } = body;
     const requested = readUploadRequests(files);
-    if (requested === null || typeof prefix !== "string") {
+    if (requested === null || typeof prefix !== "string" || libraryId === null) {
       return invalidRequest(c);
     }
-    const prefixRefusal = checkUploadPrefix(prefix);
+    const library = await filesLibrary(c, libraryId, "write");
+    if (library instanceof Response) {
+      return library;
+    }
+    const prefixRefusal = checkUploadPrefix(prefix, library.reserved);
     if (prefixRefusal !== null) {
       return refused(c, prefixRefusal);
     }
 
     // One instant for the whole batch: every URL expires together.
     const now = Date.now();
-    const storage = bindingStorage(c.env);
+    const { storage } = library;
+    const confirmBucket = library.overS3 ? bucketConfirmation(storage) : noConfirmation;
     const uploads = await mapInFlight(requested, HEADS_IN_FLIGHT, (file) =>
-      signUpload(storage, prefix, file, now),
+      signUpload(storage, library.reserved, confirmBucket, prefix, file, now),
     );
 
     return c.json({ uploads });
   });
 
   /**
-   * `POST /api/files/uploads/check` with `{prefix?, keys}`: which of 1–500
-   * keys already exist, as the console asks before a pick is signed (see
-   * "Uploads", step 0). It reads only the binding, so it works where uploads
-   * are not configured.
+   * `POST /api/files/uploads/check` with `{library?, prefix?, keys}`: which
+   * of 1–500 keys already exist, as the console asks before a pick is signed
+   * (see "Uploads", step 0). It reads only the bucket, so it works where
+   * uploads are not configured.
    */
   api.post("/files/uploads/check", requireSameOrigin, limitFileCheckBody, ...write, async (c) => {
-    const { prefix = "", keys } = (await readJsonObject(c)) ?? {};
-    if (!isCheckKeyList(keys) || typeof prefix !== "string") {
+    const body = (await readJsonObject(c)) ?? {};
+    const libraryId = bodyLibraryId(body.library);
+    const { prefix = "", keys } = body;
+    if (!isCheckKeyList(keys) || typeof prefix !== "string" || libraryId === null) {
       return invalidRequest(c);
     }
-    const prefixRefusal = checkUploadPrefix(prefix);
+    const library = await filesLibrary(c, libraryId, "write");
+    if (library instanceof Response) {
+      return library;
+    }
+    const prefixRefusal = checkUploadPrefix(prefix, library.reserved);
     if (prefixRefusal !== null) {
       return refused(c, prefixRefusal);
     }
 
-    return c.json(await checkExisting(bindingStorage(c.env), prefix, keys));
+    return c.json(await checkExisting(library, prefix, keys));
   });
 
   /**
-   * `POST /api/files/uploads/complete` with `{keys}`: 1–10 keys whose `PUT`
-   * R2 accepted. It records the change, in one D1 statement and one call to
-   * the scan driver, and answers what the driver will do about it.
+   * `POST /api/files/uploads/complete` with `{library?, keys}`: 1–10 keys
+   * whose `PUT` the bucket accepted. It records the change, in one D1
+   * statement and one call to the scan driver, and answers what the driver
+   * will do about it.
    */
   api.post("/files/uploads/complete", requireSameOrigin, limitJsonBody, ...write, async (c) => {
-    const { keys } = (await readJsonObject(c)) ?? {};
-    if (!isCompletedKeyList(keys)) {
+    const body = (await readJsonObject(c)) ?? {};
+    const libraryId = bodyLibraryId(body.library);
+    const { keys } = body;
+    if (!isCompletedKeyList(keys) || libraryId === null) {
       return invalidRequest(c);
     }
+    const library = await filesLibrary(c, libraryId, "write");
+    if (library instanceof Response) {
+      return library;
+    }
     const refusals = keys
-      .map((key) => checkUploadKey(key))
+      .map((key) => checkUploadKey(key, "", library.reserved))
       .flatMap((key) => ("error" in key ? [key.error] : []));
     if (refusals.includes("reserved_path")) {
       return refused(c, "reserved_path");
@@ -467,6 +627,127 @@ export function registerFileRoutes(api: ApiApp): void {
     return c.json({ scan });
   });
 }
+
+/** The library a Files request acts on, once it has been found (`filesLibrary`). */
+export interface FilesLibrary {
+  readonly id: number;
+  /** Its bucket: the binding for library 1, the S3 API for a connected library. */
+  readonly storage: LibraryStorage;
+  /** `reservedPrefixesOf`: `_covers/` in library 1, none elsewhere. */
+  readonly reserved: readonly string[];
+  /** Whether its bucket is reached over the S3 API, with the tighter bounds that brings. */
+  readonly overS3: boolean;
+}
+
+/** Library 1, the bound bucket: never read from D1, never read-only, never removed. */
+function boundLibrary(env: Env): FilesLibrary {
+  return {
+    id: BOUND_LIBRARY_ID,
+    storage: bindingStorage(env),
+    reserved: BOUND_RESERVED_PREFIXES,
+    overS3: false,
+  };
+}
+
+/**
+ * The library a request names, or the refusal to answer instead:
+ *
+ * - library 1 is the bound bucket, with no D1 statement, so its requests
+ *   cost what they always did;
+ * - any other id is read from D1 (one statement, one row), and is
+ *   `404 library_not_found` when no library has it, or the one that has it
+ *   is being removed, and, for a write, `403 library_read_only` when its
+ *   last connection test found it read-only. Its storage is built from the
+ *   row (`storageFor`), and its token opened only when a request needs it.
+ *
+ * `null` is an id that names no library (a malformed `?library=`).
+ */
+async function filesLibrary(
+  c: Context,
+  id: number | null,
+  access: "read" | "write",
+): Promise<FilesLibrary | Response> {
+  if (id === BOUND_LIBRARY_ID) {
+    return boundLibrary(c.env);
+  }
+  const row = id === null ? undefined : await findLibrary(database(c.env), id);
+  if (row === undefined || row.state !== "active") {
+    return c.json({ error: "library_not_found" }, 404);
+  }
+  if (access === "write" && !row.writable) {
+    return c.json({ error: "library_read_only" }, 403);
+  }
+
+  return {
+    id: row.id,
+    storage: storageFor(c.env, row),
+    reserved: reservedPrefixesOf(row.id),
+    overS3: row.kind === "s3",
+  };
+}
+
+/** `?library=`: 1 when missing, a positive integer, or null for anything else. */
+function queryLibraryId(value: string | undefined): number | null {
+  if (value === undefined) {
+    return BOUND_LIBRARY_ID;
+  }
+  if (!/^[1-9][0-9]{0,15}$/.test(value)) {
+    return null;
+  }
+  const id = Number(value);
+  return Number.isSafeInteger(id) ? id : null;
+}
+
+/**
+ * A write body's `library`: 1 when missing, the integer given, or null when
+ * it is not an integer, which the route answers `400 invalid_request`. An
+ * integer no library has is the route's `404 library_not_found`.
+ */
+function bodyLibraryId(value: unknown): number | null {
+  if (value === undefined) {
+    return BOUND_LIBRARY_ID;
+  }
+  return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
+}
+
+/**
+ * How many of `keys`, from the first, one delete makes in at most `budget`
+ * requests (`deleteRequests`, which never falls as keys are added).
+ */
+function keysWithin(keys: readonly string[], budget: number): number {
+  if (deleteRequests(keys) <= budget) {
+    return keys.length;
+  }
+  let fits = 0;
+  let over = keys.length;
+  while (over - fits > 1) {
+    const middle = Math.floor((fits + over) / 2);
+    if (deleteRequests(keys.slice(0, middle)) <= budget) {
+      fits = middle;
+    } else {
+      over = middle;
+    }
+  }
+  return fits;
+}
+
+/**
+ * Proves the bucket exists before a null `head()` is taken as a missing
+ * key: over the S3 API, a `HEAD` to a missing bucket answers `404` with no
+ * body, as one to a missing key does, so the S3 client answers null for
+ * both (storage/s3.ts). One listing of one key does it, once a request, on
+ * the first null; a missing bucket throws there (`bucket_not_found`).
+ */
+function bucketConfirmation(storage: LibraryStorage): () => Promise<void> {
+  let confirmed: Promise<void> | null = null;
+  return () => {
+    confirmed ??= storage.list({ limit: 1 }).then(() => {});
+    return confirmed;
+  };
+}
+
+/** The bound bucket is the binding's, which cannot be missing: its null `head()` is a missing key. */
+const noConfirmation = async (): Promise<void> => {};
 
 /** One file `POST /api/files/uploads` is asked to sign. */
 interface UploadRequest {
@@ -492,7 +773,7 @@ export type UploadResult =
       readonly existing: { readonly size: number; readonly uploadedAt: string };
     };
 
-/** `uploads` of `GET /api/files/config`. */
+/** Library 1's `uploads` in `GET /api/files/config`: Phase 2's secrets (files/config.ts). */
 function uploadsView(env: Env) {
   const status = uploadsStatus(env);
   return status.configured
@@ -538,11 +819,13 @@ function readUploadRequests(files: unknown): UploadRequest[] | null {
  */
 async function signUpload(
   storage: LibraryStorage,
+  reserved: readonly string[],
+  confirmBucket: () => Promise<void>,
   prefix: string,
   file: UploadRequest,
   now: number,
 ): Promise<UploadResult> {
-  const checked = checkUploadKey(file.key, prefix);
+  const checked = checkUploadKey(file.key, prefix, reserved);
   if ("error" in checked) {
     return { key: newKeySpelling(file.key, prefix), error: checked.error };
   }
@@ -554,6 +837,10 @@ async function signUpload(
   // One Class B operation. R2 treats NFC-equivalent keys as one object, so
   // this finds an object stored under another spelling too.
   const stored = await storage.head(checked.key);
+  if (stored === null) {
+    // A missing key, once the bucket is known to be there.
+    await confirmBucket();
+  }
   if (stored !== null && !file.overwrite) {
     return {
       key: checked.key,
@@ -697,25 +984,31 @@ async function mapInFlight<T, R>(
 }
 
 /**
- * Which of `keys` exist. First by listing each one's folder (as given) and
- * comparing names in NFC (`matchListing`), in at most `CHECK_LISTINGS`
- * listings and `CHECK_ENTRIES` entries listed: a folder listed to its end
- * answers for every key in it. Then, for the keys whose folder was not, one
- * `head()` each, as many as the request's `CHECK_CALLS` binding calls have
- * room for: R2 finds a key under any Unicode spelling (`storedKey` is then
- * the key `head()` answers). What is still unknown is `unchecked`. A key
- * the upload rules refuse is in neither list.
+ * Which of `keys` exist in a library. First by listing each one's folder (as
+ * given) and comparing names in NFC (`matchListing`), in at most
+ * `CHECK_LISTINGS` listings and `CHECK_ENTRIES` entries listed
+ * (`S3_CHECK_ENTRIES` over the S3 API): a folder listed to its end answers
+ * for every key in it. Then, for the keys whose folder was not, one `head()`
+ * each, as many as the request's `CHECK_CALLS` storage calls have room for:
+ * R2 finds a key under any Unicode spelling (`storedKey` is then the key
+ * `head()` answers). What is still unknown is `unchecked`. A key the upload
+ * rules refuse is in neither list.
+ *
+ * The first folder is always listed before any `head()`, so a missing
+ * bucket fails that listing over the S3 API, and a null `head()` after it
+ * is a missing key.
  */
 async function checkExisting(
-  storage: LibraryStorage,
+  library: FilesLibrary,
   prefix: string,
   keys: readonly string[],
 ): Promise<{ existing: ExistingKey[]; unchecked: string[] }> {
-  const folders = groupCheckKeys(prefix, keys);
+  const { storage } = library;
+  const folders = groupCheckKeys(prefix, keys, library.reserved);
   const existing: ExistingKey[] = [];
   const unknown: string[] = [];
   let listings = 0;
-  let entries = CHECK_ENTRIES;
+  let entries = library.overS3 ? S3_CHECK_ENTRIES : CHECK_ENTRIES;
   for (const [folder, names] of folders) {
     let cursor: string | undefined;
     while (names.size > 0 && listings < CHECK_LISTINGS && entries > 0) {
@@ -782,15 +1075,18 @@ function isCompletedKeyList(keys: unknown): keys is string[] {
 }
 
 /**
- * What follows the deletion of these objects: the rows of the playlists they
- * were, then the record of the change, which schedules the pass that takes
- * the deleted tracks out of the library.
+ * What follows the deletion of these objects from a library's bucket: the
+ * rows of the playlists they were, in that library only (by `(library_id,
+ * r2_key)`: another library's playlist under the same key stays), then the
+ * record of the change, which schedules the pass that takes the deleted
+ * tracks out of the library.
  */
-async function afterDelete(env: Env, keys: readonly string[]): Promise<ScanSchedule | null> {
-  // The Files routes reach library 1 until they take a library (#84, ticket H).
-  await deletePlaylistRowsByKeys(database(env), [
-    { libraryId: DEFAULT_LIBRARY_ID, keys: playlistKeysOf(keys) },
-  ]);
+async function afterDelete(
+  env: Env,
+  libraryId: number,
+  keys: readonly string[],
+): Promise<ScanSchedule | null> {
+  await deletePlaylistRowsByKeys(database(env), [{ libraryId, keys: playlistKeysOf(keys) }]);
 
   return recordLibraryChange(env, Date.now());
 }

@@ -90,6 +90,18 @@ export function readLibraries(db: Database): Promise<Library[]> {
   return db.select().from(library).orderBy(asc(library.id));
 }
 
+/** An active library as the Files page lists it (api/files.ts, `GET /api/files/config`). */
+export type ActiveLibrary = Pick<Library, "id" | "name" | "writable">;
+
+/** Every active library, by id: one statement, a row a library. */
+export function listActiveLibraries(db: Database): Promise<ActiveLibrary[]> {
+  return db
+    .select({ id: library.id, name: library.name, writable: library.writable })
+    .from(library)
+    .where(eq(library.state, "active"))
+    .orderBy(asc(library.id));
+}
+
 /** One library's row, or undefined. */
 export async function findLibrary(db: Database, id: number): Promise<Library | undefined> {
   const [row] = await db.select().from(library).where(eq(library.id, id));

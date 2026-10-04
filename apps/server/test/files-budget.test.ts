@@ -144,20 +144,22 @@ function subrequests({ route, r2, driver }: Measured): number {
 }
 
 describe("the Files routes' budget", () => {
-  it("GET /api/files/config: no D1 statement, no binding call", async () => {
+  it("GET /api/files/config: one D1 statement, a row a library, no binding call", async () => {
     const result = await measured("GET", "/files/config");
 
     expect(result.status).toBe(200);
     expect(result.session).toEqual([]);
+    // The active libraries (#84, "Files across libraries"): library 1 alone here.
+    expect(rows(result.route)).toEqual([["select library", 1, 0]]);
     expect(cost(result.route)).toEqual({
-      statements: 0,
-      roundTrips: 0,
-      rowsRead: 0,
+      statements: 1,
+      roundTrips: 1,
+      rowsRead: 1,
       rowsWritten: 0,
     });
     expect(result.r2).toEqual([]);
     expect(result.driver).toEqual([]);
-    expect(subrequests(result)).toBe(0);
+    expect(subrequests(result)).toBe(1);
   });
 
   it("GET /api/files on a 1,000-entry folder: one listing and no D1 statement", {
@@ -343,7 +345,7 @@ describe("the Files routes' budget", () => {
     expect(subrequests(result)).toBe(1);
   });
 
-  it("POST /api/files/uploads/check at the bound: 40 listings and 7 head(), 50 subrequests with a 3-statement session check", async () => {
+  it("POST /api/files/uploads/check at the bound: 40 listings and 6 head(), 49 subrequests with a 3-statement session check", async () => {
     // A folder each: one listing each, until the bound, then a head() each
     // for as many as the calls left allow.
     const keys = Array.from({ length: CHECK_CALLS + 5 }, (_, index) => `F${index}/a.flac`);
