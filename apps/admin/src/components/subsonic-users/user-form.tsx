@@ -1,14 +1,19 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Field,
   FieldContent,
   FieldDescription,
   FieldError,
+  FieldGroup,
   FieldLabel,
+  FieldLegend,
+  FieldSet,
 } from "@/components/ui/field";
 import { Switch } from "@/components/ui/switch";
+import type { LibraryName } from "@/lib/api";
 import {
   type FieldErrors,
   fieldErrorsFrom,
@@ -18,6 +23,7 @@ import {
 } from "@/lib/field-errors";
 import {
   ADMIN_HELP,
+  ADMIN_LIBRARIES,
   USER_FIELDS_BY_CODE,
   type UserWriteNotices,
   userWriteOptions,
@@ -88,7 +94,12 @@ export function useUserFieldErrors() {
     }
   }, []);
 
-  return { fieldErrors, clear, report, onChange };
+  /** Drops a field's error: for a control that is no text input, such as the Libraries boxes. */
+  const drop = useCallback((name: string) => {
+    setFieldErrors((errors) => withoutFieldError(errors, name));
+  }, []);
+
+  return { fieldErrors, clear, report, onChange, drop };
 }
 
 /** A field's error beside it, as the account form shows its own. */
@@ -123,5 +134,69 @@ export function AdminSwitchField({
         disabled={Boolean(locked)}
       />
     </Field>
+  );
+}
+
+/**
+ * The **Libraries** field (#84, "Per-user access"): one checkbox per library
+ * a user may be given, for a user who is not a Subsonic admin. A Subsonic
+ * admin sees every library, so for one the boxes give way to a muted line.
+ * With no box checked, "Choose at least one library." shows beneath, as
+ * does a refusal the server reported for the field. Only shown where more
+ * than one library exists (lib/subsonic-users.ts, `showsLibraries`).
+ */
+export function LibrariesField({
+  libraries,
+  isAdmin,
+  checked,
+  onCheckedChange,
+  error,
+}: {
+  libraries: readonly LibraryName[];
+  isAdmin: boolean;
+  checked: readonly number[];
+  onCheckedChange: (libraryIds: number[]) => void;
+  error: string | undefined;
+}) {
+  if (isAdmin) {
+    return (
+      <FieldSet>
+        <FieldLegend variant="label">Libraries</FieldLegend>
+        <FieldDescription>{ADMIN_LIBRARIES}</FieldDescription>
+      </FieldSet>
+    );
+  }
+  const set = new Set(checked);
+  return (
+    <FieldSet data-invalid={error ? true : undefined}>
+      <FieldLegend variant="label">Libraries</FieldLegend>
+      <FieldGroup data-slot="checkbox-group">
+        {libraries.map((library) => {
+          const id = `user-library-${library.id}`;
+          return (
+            <Field key={library.id} orientation="horizontal">
+              <Checkbox
+                id={id}
+                checked={set.has(library.id)}
+                aria-invalid={error ? true : undefined}
+                onCheckedChange={(next) =>
+                  onCheckedChange(
+                    libraries
+                      .map(({ id: libraryId }) => libraryId)
+                      .filter((libraryId) =>
+                        libraryId === library.id ? next : set.has(libraryId),
+                      ),
+                  )
+                }
+              />
+              <FieldLabel htmlFor={id} className="min-w-0 font-normal wrap-anywhere">
+                {library.name}
+              </FieldLabel>
+            </Field>
+          );
+        })}
+      </FieldGroup>
+      <UserFieldError message={error} />
+    </FieldSet>
   );
 }

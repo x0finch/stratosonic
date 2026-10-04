@@ -69,7 +69,7 @@ describe("what ends with the session", () => {
   it("can end an upload queue, whose uploads are then canceled", async () => {
     const aborted: AbortSignal[] = [];
     const queue = new UploadQueue({
-      sign: async (_prefix, files) => ({
+      sign: async (_library, _prefix, files) => ({
         uploads: files.map((file) => ({
           key: file.key,
           url: "https://account.r2.cloudflarestorage.com/navidrome/a.flac",
@@ -87,7 +87,15 @@ describe("what ends with the session", () => {
     });
     const stop = whenSignedOut(() => queue.dispose());
     queue.add(
-      [{ file: { name: "a.flac", size: 1 } as never, prefix: "", key: "a.flac", refusal: null }],
+      [
+        {
+          file: { name: "a.flac", size: 1 } as never,
+          library: 1,
+          prefix: "",
+          key: "a.flac",
+          refusal: null,
+        },
+      ],
       10,
     );
     await vi.waitFor(() => expect(aborted).toHaveLength(1));

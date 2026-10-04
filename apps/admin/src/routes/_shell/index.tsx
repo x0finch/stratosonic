@@ -1,9 +1,10 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { LayoutDashboardIcon } from "lucide-react";
-import { Fragment, type ReactNode, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useState } from "react";
 
 import { ErrorAlert } from "@/components/error-alert";
+import { LibrarySelect } from "@/components/library-select";
 import { GenreChart } from "@/components/overview/genre-chart";
 import { LibraryScan } from "@/components/overview/library-scan";
 import { LibraryTotals } from "@/components/overview/library-totals";
@@ -19,14 +20,22 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Separator } from "@/components/ui/separator";
-import { meQuery } from "@/lib/api";
-import { libraryQuery, liveQuery, usageQuery } from "@/lib/overview";
+import { ApiError, meQuery } from "@/lib/api";
+import { librariesQuery } from "@/lib/libraries";
+import {
+  describeSkipped,
+  libraryQuery,
+  liveQuery,
+  usageQuery,
+  validateOverviewSearch,
+} from "@/lib/overview";
 import { can } from "@/lib/roles";
 
 /** A row of two sections, and their gap when one column stacks them without a separator. */
 const GRID = "grid gap-10";
 
 export const Route = createFileRoute("/_shell/")({
+  validateSearch: validateOverviewSearch,
   component: Overview,
   staticData: { title: "Overview" },
 });
@@ -37,16 +46,53 @@ export const Route = createFileRoute("/_shell/")({
  * Each panel needs its permission, and a role without it gets neither the
  * panel nor its requests; the routes check for themselves. How often each
  * part is read, and that a hidden tab reads nothing, is lib/overview.ts.
+ *
+ * Where more than one library exists, a library switch above the key
+ * figures narrows the totals, the genres and the albums added last to one
+ * library (`?library=`, absent for all; #84). The scan, who is listening,
+ * the usage and the playlists stay the whole server's. With one library
+ * there is no switch, and the page reads what it always read.
  */
 function Overview() {
   const { data: me } = useQuery(meQuery);
   const canReadLibrary = can(me, "library:read");
   const canReadActivity = can(me, "activity:read");
   const canReadUsage = can(me, "usage:read");
+  const { library: selected } = Route.useSearch();
+  const navigate = Route.useNavigate();
 
-  const library = useQuery({ ...libraryQuery, enabled: canReadLibrary });
+  // The last read stays while another library's is read, so the switch
+  // stays put; its figures give way to skeletons meanwhile.
+  const library = useQuery({
+    ...libraryQuery(selected ?? null),
+    enabled: canReadLibrary,
+    placeholderData: keepPreviousData,
+  });
+  const current = library.isPlaceholderData ? undefined : library.data;
+  const libraries = library.data?.libraries ?? [];
+  const filtered = libraries.length > 1;
   const live = useQuery({ ...liveQuery, enabled: canReadLibrary });
   const usage = useQuery({ ...usageQuery, enabled: canReadUsage });
+  // Which libraries the last pass skipped, from the Libraries page's list:
+  // only across libraries, for a role that reads it, and never polled here
+  // (the live route marks it stale when a pass ends).
+  const known = useQuery({
+    ...librariesQuery,
+    refetchInterval: false,
+    enabled: canReadLibrary && filtered && can(me, "libraries:read"),
+  });
+  const skipped = filtered ? describeSkipped(known.data?.libraries ?? []) : [];
+
+  // A library that is gone (removed, or a stale link) shows every library.
+  const gone =
+    selected !== undefined &&
+    library.error instanceof ApiError &&
+    library.error.code === "library_not_found";
+  useEffect(() => {
+    if (gone) {
+      void navigate({ search: {}, replace: true });
+    }
+  }, [gone, navigate]);
 
   // What "5 minutes ago" is measured from: the latest read, which moves on
   // with every poll, or the page's first render before any.
@@ -84,10 +130,22 @@ function Overview() {
       key: "totals",
       shown: canReadLibrary,
       row: (
-        <>
-          {library.isError ? <ErrorAlert error={library.error} /> : null}
-          <LibraryTotals counts={library.data?.counts} />
-        </>
+        <div className="flex flex-col gap-4">
+          {filtered ? (
+            <div className="flex">
+              <LibrarySelect
+                libraries={libraries}
+                value={selected ?? null}
+                allLabel="All libraries"
+                onValueChange={(next) =>
+                  void navigate({ search: next === null ? {} : { library: next } })
+                }
+              />
+            </div>
+          ) : null}
+          {library.isError && !gone ? <ErrorAlert error={library.error} /> : null}
+          <LibraryTotals counts={current?.counts} />
+        </div>
       ),
     },
     {
@@ -102,6 +160,7 @@ function Overview() {
               clock={live.data}
               canScan={can(me, "library:scan")}
               now={now}
+              skipped={skipped}
             />
             {showNowPlaying ? (
               <NowPlaying entries={nowPlaying} receivedAt={live.data?.receivedAt ?? now} />
@@ -120,8 +179,8 @@ function Overview() {
       shown: canReadLibrary,
       row: (
         <div className={`${GRID} xl:grid-cols-2`}>
-          <GenreChart genres={library.data?.genres} />
-          <RecentAlbums albums={library.data?.recentAlbums} now={now} />
+          <GenreChart genres={current?.genres} />
+          <RecentAlbums albums={current?.recentAlbums} now={now} />
         </div>
       ),
     },

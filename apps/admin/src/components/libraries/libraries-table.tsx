@@ -78,7 +78,9 @@ export function LibrariesTable({
                 on the menu button, and the badges wrap beneath the name. */}
             <TableCell className="py-3 align-top">
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                <span className="max-w-48 truncate font-medium">{library.name}</span>
+                <span className="max-w-48 truncate font-medium" title={library.name}>
+                  {library.name}
+                </span>
                 {libraryBadges(library).map((badge) => (
                   <StateBadge key={badge.label} badge={badge} />
                 ))}

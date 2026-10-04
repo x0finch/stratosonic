@@ -31,7 +31,7 @@ function createQueue(queryClient: QueryClient): UploadQueue {
     { sign: signUploads, complete: completeUploads, put: xhrPut },
     {
       // Only the folders the landed keys change, each from its first page.
-      onRefresh: (keys) => void afterUploadsLanded(queryClient, keys),
+      onRefresh: (landed) => void afterUploadsLanded(queryClient, landed),
       onDrained: (summary) => {
         if (summary.uploaded > 0) {
           const { title, description } = uploadedToast(summary);

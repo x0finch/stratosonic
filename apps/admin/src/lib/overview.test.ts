@@ -9,9 +9,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LibraryOverview, LiveOverview, ScanStatus } from "@/lib/api";
 import {
   afterScanRequest,
+  describePause,
+  describeScanLibrary,
   describeSchedule,
+  describeSkipped,
   estimatePositionMs,
   followLive,
+  LIBRARIES_KEY,
+  LIBRARY_KEY,
   LIVE_INTERVAL_IDLE_MS,
   LIVE_INTERVAL_SCANNING_MS,
   type LiveRead,
@@ -21,6 +26,7 @@ import {
   passEnded,
   USAGE_INTERVAL_MS,
   usageQuery,
+  validateOverviewSearch,
 } from "@/lib/overview";
 
 const IDLE: ScanStatus = {
@@ -67,17 +73,18 @@ const LIBRARY: LibraryOverview = {
   genres: [],
   recentAlbums: [],
   playlists: [],
+  libraries: [{ id: 1, name: "Music Library" }],
 };
 
 /** A client holding a fresh library read, as the Overview has after its first load. */
 function clientWithLibrary(): QueryClient {
   const queryClient = new QueryClient();
-  queryClient.setQueryData(libraryQuery.queryKey, LIBRARY);
+  queryClient.setQueryData(libraryQuery().queryKey, LIBRARY);
   return queryClient;
 }
 
 function libraryIsStale(queryClient: QueryClient): boolean {
-  return queryClient.getQueryState(libraryQuery.queryKey)?.isInvalidated ?? false;
+  return queryClient.getQueryState(libraryQuery().queryKey)?.isInvalidated ?? false;
 }
 
 afterEach(() => {
@@ -148,8 +155,8 @@ describe("the live route's polling interval", () => {
   });
 
   it("leaves the library unpolled, and polls usage every 5 minutes", () => {
-    expect(libraryQuery).not.toHaveProperty("refetchInterval");
-    expect(libraryQuery.staleTime).toBe(5 * 60_000);
+    expect(libraryQuery()).not.toHaveProperty("refetchInterval");
+    expect(libraryQuery().staleTime).toBe(5 * 60_000);
     expect(usageQuery.refetchInterval).toBe(USAGE_INTERVAL_MS);
     expect(usageQuery.staleTime).toBe(5 * 60_000);
     expect(usageQuery.refetchIntervalInBackground).toBe(false);
@@ -197,7 +204,7 @@ describe("a tab coming back after a while hidden", () => {
     queryClient.mount();
     const observers = [
       new QueryObserver(queryClient, liveQuery),
-      new QueryObserver(queryClient, libraryQuery),
+      new QueryObserver(queryClient, libraryQuery()),
     ];
     const unsubscribe = observers.map((observer) => observer.subscribe(() => {}));
     try {
@@ -224,7 +231,7 @@ describe("a tab coming back after a while hidden", () => {
   }
 
   it("reads the live route again, and not the library when no pass ended", async () => {
-    expect(libraryQuery.refetchOnWindowFocus).toBe(false);
+    expect(libraryQuery().refetchOnWindowFocus).toBe(false);
     expect(await hideFor(20, false)).toEqual({ live: 2, library: 1 });
   });
 
@@ -262,11 +269,15 @@ describe("the end of a pass", () => {
     expect(passEnded(live(true), undefined)).toBe(false);
   });
 
-  it("reads the library again", () => {
+  it("reads the library again, whichever library it is narrowed to, and the libraries' list", () => {
     const queryClient = clientWithLibrary();
+    queryClient.setQueryData(libraryQuery(2).queryKey, LIBRARY);
+    queryClient.setQueryData(LIBRARIES_KEY, { libraries: [], defaultAccountId: null });
 
     expect(followLive(queryClient, live(true), live(false))).toBe(true);
     expect(libraryIsStale(queryClient)).toBe(true);
+    expect(queryClient.getQueryState(libraryQuery(2).queryKey)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(LIBRARIES_KEY)?.isInvalidated).toBe(true);
   });
 
   it("is seen by the live query itself, from the read before", async () => {
@@ -282,7 +293,7 @@ describe("the end of a pass", () => {
     expect(libraryIsStale(queryClient)).toBe(true);
 
     // The next idle read ends nothing more.
-    await queryClient.fetchQuery({ ...libraryQuery, staleTime: 0 });
+    await queryClient.fetchQuery({ ...libraryQuery(), staleTime: 0 });
     expect(libraryIsStale(queryClient)).toBe(false);
     await queryClient.fetchQuery({ ...liveQuery, staleTime: 0 });
     expect(libraryIsStale(queryClient)).toBe(false);
@@ -431,5 +442,100 @@ describe("the local position estimate", () => {
     const receivedAt = Date.parse(read.serverTime) - 3_600_000;
 
     expect(estimatePositionMs(playing, receivedAt, receivedAt + 5_000)).toBe(65_000);
+  });
+});
+
+describe("the Overview across libraries", () => {
+  it("takes one library from ?library=, and every library for anything else", () => {
+    expect(validateOverviewSearch({ library: 2 })).toEqual({ library: 2 });
+    expect(validateOverviewSearch({ library: "3" })).toEqual({ library: 3 });
+    expect(validateOverviewSearch({ library: 1 })).toEqual({ library: 1 });
+    for (const library of [undefined, 0, -1, 2.5, "x", "", "02", null, true, {}, 2 ** 60]) {
+      expect(validateOverviewSearch({ library })).toEqual({});
+    }
+  });
+
+  it("keys each library's read apart, under one key for every read", () => {
+    expect(libraryQuery().queryKey).toEqual([...LIBRARY_KEY, "all"]);
+    expect(libraryQuery(null).queryKey).toEqual([...LIBRARY_KEY, "all"]);
+    expect(libraryQuery(2).queryKey).toEqual([...LIBRARY_KEY, 2]);
+  });
+
+  it("reads every library with no parameter, and one with ?library=", async () => {
+    const fetch = vi.fn(
+      async (_path: string) => new Response(JSON.stringify(LIBRARY), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const queryClient = new QueryClient();
+
+    await queryClient.fetchQuery(libraryQuery());
+    await queryClient.fetchQuery(libraryQuery(2));
+
+    expect(fetch.mock.calls.map(([path]) => path)).toEqual([
+      "/api/overview/library",
+      "/api/overview/library?library=2",
+    ]);
+  });
+});
+
+describe("the scan's sentences across libraries", () => {
+  it("names the library a pass is in, as one of several", () => {
+    expect(describeScanLibrary({ library: { id: 2, name: "Archive", index: 2, of: 3 } })).toBe(
+      "Scanning Archive (2 of 3).",
+    );
+  });
+
+  it("says nothing more with one library, or while the pass is in none", () => {
+    expect(
+      describeScanLibrary({ library: { id: 1, name: "Music Library", index: 1, of: 1 } }),
+    ).toBeNull();
+    expect(describeScanLibrary({ library: null })).toBeNull();
+    expect(describeScanLibrary({})).toBeNull();
+  });
+
+  it("says the scan is paused at the daily write budget, and when it resumes", () => {
+    const paused = { reason: "daily_write_budget" as const, until: "2026-10-05T00:00:00.000Z" };
+    // 22:00 UTC: 00:00 UTC is tomorrow, in UTC.
+    expect(describePause(paused, Date.parse("2026-10-04T22:00:00Z"), "en-US", "UTC")).toBe(
+      "Paused until tomorrow at 12:00 AM: daily write budget.",
+    );
+    // In Los Angeles, 00:00 UTC is 5:00 PM the same day.
+    expect(
+      describePause(paused, Date.parse("2026-10-04T15:00:00Z"), "en-US", "America/Los_Angeles"),
+    ).toBe("Paused until 5:00 PM: daily write budget.");
+    // In Tokyo, 00:00 UTC is 9:00 AM tomorrow.
+    expect(describePause(paused, Date.parse("2026-10-04T12:00:00Z"), "en-US", "Asia/Tokyo")).toBe(
+      "Paused until tomorrow at 9:00 AM: daily write budget.",
+    );
+    expect(describePause({ ...paused, until: "not a time" }, 0)).toBe(
+      "Paused until tomorrow: daily write budget.",
+    );
+  });
+
+  it("says nothing while not paused", () => {
+    expect(describePause(null, 0)).toBeNull();
+    expect(describePause(undefined, 0)).toBeNull();
+  });
+
+  it("names each library the last pass skipped, and why", () => {
+    const library = (name: string, lastScanError: string | null, state = "active") => ({
+      name,
+      lastScanError,
+      state: state as "active" | "removing",
+    });
+    expect(
+      describeSkipped([
+        library("Music Library", null),
+        library("Archive", "auth"),
+        library("Live", "bucket_not_found"),
+        library("Old", "auth", "removing"),
+        library("Vinyl", "something_new"),
+      ]),
+    ).toEqual([
+      "Archive was skipped: the key was refused.",
+      "Live was skipped: the bucket was not found.",
+      "Vinyl was skipped: the bucket did not answer.",
+    ]);
+    expect(describeSkipped([])).toEqual([]);
   });
 });

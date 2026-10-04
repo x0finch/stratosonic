@@ -214,6 +214,29 @@ describe("describeError", () => {
     }
   });
 
+  it("has its own words for every refusal across libraries (#84)", () => {
+    const titles = new Set<string>();
+    for (const code of [
+      // The Subsonic users API's per-user access.
+      "libraries_required",
+      "invalid_library",
+      "admin_has_all_libraries",
+      // The Files API's, in any library.
+      "library_not_found",
+      "library_read_only",
+      "too_many_keys",
+    ]) {
+      const { title, description } = describeError(new ApiError(400, code, ""));
+      expect(title).not.toBe("Something went wrong");
+      expect(description).not.toBe("");
+      titles.add(title);
+    }
+    expect(titles.size).toBe(6);
+    expect(describeError(new ApiError(400, "too_many_keys", "")).description).toContain(
+      "Select fewer",
+    );
+  });
+
   it("falls back to the server's own message, then to the status", () => {
     expect(describeError(new ApiError(400, "odd", "Odd request")).description).toBe("Odd request");
     expect(describeError(new ApiError(418, "http_418", "")).description).toBe(

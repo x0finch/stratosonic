@@ -62,11 +62,14 @@ export interface RowActions {
  * file writes off), and so are the checkboxes and each row's menu.
  */
 export function FilesTable({
+  library,
   folders,
   files,
   now,
   actions,
 }: {
+  /** The library browsed, which every folder's link keeps. */
+  library: number;
   folders: readonly FolderEntry[];
   files: readonly FileEntry[];
   now: number;
@@ -114,7 +117,11 @@ export function FilesTable({
               actions={actions}
               icon={<FolderIcon className={ICON} />}
               name={
-                <FolderLink prefix={folder.prefix} className="underline-offset-4 hover:underline">
+                <FolderLink
+                  library={library}
+                  prefix={folder.prefix}
+                  className="underline-offset-4 hover:underline"
+                >
                   {folder.name}
                 </FolderLink>
               }

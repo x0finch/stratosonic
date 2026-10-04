@@ -23,6 +23,7 @@ import {
   describeQueue,
   describeUploadsStatus,
   percentOf,
+  rowLibraries,
   shownRows,
   splitKey,
   type UploadQueue,
@@ -174,7 +175,7 @@ function UploadList({
   onEmptied,
 }: {
   queue: UploadQueue;
-  config: Pick<FilesConfig, "allowed" | "limits"> | undefined;
+  config: Pick<FilesConfig, "allowed" | "limits" | "libraries"> | undefined;
   /** The popover's heading, which takes focus as it opens and once no row has a button. */
   headingRef: RefObject<HTMLHeadingElement | null>;
   /** The queue is empty, and the trigger goes: the page gets focus. */
@@ -185,6 +186,8 @@ function UploadList({
   const listRef = useRef<HTMLDivElement>(null);
 
   const { active, settled, rows, hidden } = shownRows(items);
+  // Across libraries, each row says which library it goes to (#84).
+  const libraryNames = rowLibraries(items, config?.libraries);
   const { earlier, later } = describeHidden(hidden);
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
@@ -274,7 +277,13 @@ function UploadList({
           {active.length > 0 ? (
             <ul className="flex flex-col gap-4">
               {active.map((item) => (
-                <UploadRow key={item.id} item={item} config={config} onCancel={cancel} />
+                <UploadRow
+                  key={item.id}
+                  item={item}
+                  libraryName={libraryNames.get(item.library)}
+                  config={config}
+                  onCancel={cancel}
+                />
               ))}
             </ul>
           ) : null}
@@ -284,7 +293,13 @@ function UploadList({
           {settled.length > 0 ? (
             <ul className="flex flex-col gap-4">
               {settled.map((item) => (
-                <UploadRow key={item.id} item={item} config={config} onCancel={cancel} />
+                <UploadRow
+                  key={item.id}
+                  item={item}
+                  libraryName={libraryNames.get(item.library)}
+                  config={config}
+                  onCancel={cancel}
+                />
               ))}
             </ul>
           ) : null}
@@ -314,10 +329,13 @@ function stateLabel(item: UploadView): string {
 /** One file's row, redrawn only when the queue gives it a new row object. */
 const UploadRow = memo(function UploadRow({
   item,
+  libraryName,
   config,
   onCancel,
 }: {
   item: UploadView;
+  /** The library it goes to, where the list names libraries (`rowLibraries`). */
+  libraryName: string | undefined;
   config: Pick<FilesConfig, "allowed" | "limits"> | undefined;
   onCancel: (id: number) => void;
 }) {
@@ -329,12 +347,24 @@ const UploadRow = memo(function UploadRow({
       <div className="flex items-center justify-between gap-3">
         {/* The file's name is the row's line, cut short on one line with
             the whole name in its title (the text itself stays whole for a
-            screen reader); the folder it goes to is metadata beneath. */}
+            screen reader); the folder it goes to is metadata beneath,
+            after its library's name across libraries. Only the path is
+            mono. */}
         <div className="flex min-w-0 flex-col gap-1">
           <span className="truncate" title={name}>
             {name}
           </span>
-          {folder ? (
+          {libraryName ? (
+            <span className="text-xs wrap-anywhere text-muted-foreground">
+              {libraryName}
+              {folder ? (
+                <>
+                  {": "}
+                  <span className="font-mono">{folder}</span>
+                </>
+              ) : null}
+            </span>
+          ) : folder ? (
             <span className="font-mono text-xs wrap-anywhere text-muted-foreground">{folder}</span>
           ) : null}
         </div>
@@ -364,7 +394,9 @@ const UploadRow = memo(function UploadRow({
           <span className="flex h-5 shrink-0 items-center">
             <CircleAlertIcon className="size-4" aria-hidden="true" />
           </span>
-          <span className="min-w-0">Failed: {describeFailure(item.failure, item.key, config)}</span>
+          <span className="min-w-0">
+            Failed: {describeFailure(item.failure, item.key, config, item.library)}
+          </span>
         </p>
       ) : (
         <p className="min-w-0 font-medium">{stateLabel(item)}</p>

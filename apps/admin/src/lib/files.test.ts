@@ -23,15 +23,19 @@ import {
   deleteTitle,
   describeListing,
   filesConfigQuery,
+  filesLibrary,
+  filesSearch,
   folderPath,
   folderQuery,
   folderTrail,
   latestView,
   leaveFolder,
+  libraryWrites,
   listedNames,
   NO_SELECTION,
   planDelete,
   reopenFolder,
+  reservedPrefixesOf,
   runDelete,
   scanActive,
   scanLine,
@@ -87,6 +91,94 @@ describe("the folder path", () => {
     expect(validateFilesSearch({ prefix: 2024 })).toEqual({ prefix: "2024/" });
     expect(validateFilesSearch({ prefix: true })).toEqual({ prefix: "true/" });
   });
+
+  it("takes a library from ?library=, absent for library 1 and anything that names none", () => {
+    expect(validateFilesSearch({ library: 2, prefix: "A/" })).toEqual({ library: 2, prefix: "A/" });
+    expect(validateFilesSearch({ library: "3" })).toEqual({ library: 3 });
+    for (const library of [1, "1", 0, -2, 1.5, "2a", "", null, true, {}, Number.NaN, 2 ** 60]) {
+      expect(validateFilesSearch({ library })).toEqual({});
+    }
+  });
+
+  it("links a folder of a library, with no search for library 1's root", () => {
+    expect(filesSearch(1, "")).toEqual({});
+    expect(filesSearch(1, "A/")).toEqual({ prefix: "A/" });
+    expect(filesSearch(2, "")).toEqual({ library: 2 });
+    expect(filesSearch(2, "A/")).toEqual({ library: 2, prefix: "A/" });
+  });
+});
+
+describe("a library on the Files page", () => {
+  const CONFIG = {
+    writes: { enabled: true },
+    libraries: [
+      {
+        id: 1,
+        name: "Music Library",
+        writable: true,
+        uploads: { configured: false as const, missing: ["R2_ACCESS_KEY_ID"] },
+        reservedPrefixes: ["_covers/"],
+      },
+      {
+        id: 2,
+        name: "Archive",
+        writable: false,
+        uploads: { configured: true as const },
+        reservedPrefixes: [],
+      },
+      {
+        id: 3,
+        name: "Live",
+        writable: true,
+        uploads: { configured: true as const },
+        reservedPrefixes: [],
+      },
+    ],
+  };
+
+  it("finds a library in the configuration", () => {
+    expect(filesLibrary(CONFIG, 2)?.name).toBe("Archive");
+    expect(filesLibrary(CONFIG, 9)).toBeUndefined();
+    expect(filesLibrary(undefined, 1)).toBeUndefined();
+  });
+
+  it("writes where the library takes writes, and uploads where they are configured too", () => {
+    expect(libraryWrites(CONFIG, 1)).toEqual({
+      writable: true,
+      uploads: false,
+      readOnly: false,
+      uploadsMissing: true,
+    });
+    expect(libraryWrites(CONFIG, 2)).toEqual({
+      writable: false,
+      uploads: false,
+      readOnly: true,
+      uploadsMissing: false,
+    });
+    expect(libraryWrites(CONFIG, 3)).toEqual({
+      writable: true,
+      uploads: true,
+      readOnly: false,
+      uploadsMissing: false,
+    });
+    // Writes off on the deployment: no library takes any, and none reads as read-only.
+    expect(libraryWrites({ ...CONFIG, writes: { enabled: false } }, 3)).toEqual({
+      writable: false,
+      uploads: false,
+      readOnly: false,
+      uploadsMissing: false,
+    });
+    // A library the server does not list, or no configuration yet: nothing.
+    expect(libraryWrites(CONFIG, 9).writable).toBe(false);
+    expect(libraryWrites(undefined, 1).writable).toBe(false);
+  });
+
+  it("reserves library 1's _covers/ only", () => {
+    expect(reservedPrefixesOf(CONFIG, 1)).toEqual(["_covers/"]);
+    expect(reservedPrefixesOf(CONFIG, 3)).toEqual([]);
+    expect(reservedPrefixesOf(undefined, 1)).toEqual(["_covers/"]);
+    expect(reservedPrefixesOf(undefined, 2)).toEqual([]);
+  });
 });
 
 describe("the folder section's description", () => {
@@ -130,6 +222,10 @@ describe("a New folder name", () => {
       error: "_covers is the scanner's own folder.",
     });
     expect(checkFolderName("_covers", "Artist/", LIMITS)).toEqual({ prefix: "Artist/_covers/" });
+  });
+
+  it("allows _covers in a connected library, which reserves nothing", () => {
+    expect(checkFolderName("_covers", "", LIMITS, [])).toEqual({ prefix: "_covers/" });
   });
 });
 
@@ -513,28 +609,31 @@ function answer(status: number, body: unknown, headers: Record<string, string> =
 }
 
 describe("the Files API client", () => {
-  it("lists a folder by prefix and cursor", async () => {
+  it("lists a folder of a library by prefix and cursor", async () => {
     const fetch = answer(200, { prefix: "A B/", folders: [], files: [], cursor: null });
 
-    await fetchFiles("A B/", "c&1");
+    await fetchFiles(1, "A B/", "c&1");
 
-    expect(fetch).toHaveBeenCalledWith("/api/files?prefix=A+B%2F&cursor=c%261", expect.anything());
-    await fetchFiles("");
-    expect(fetch).toHaveBeenLastCalledWith("/api/files?prefix=", expect.anything());
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/files?library=1&prefix=A+B%2F&cursor=c%261",
+      expect.anything(),
+    );
+    await fetchFiles(2, "");
+    expect(fetch).toHaveBeenLastCalledWith("/api/files?library=2&prefix=", expect.anything());
   });
 
   it("counts a write's schedule on the server's clock, from its Date header", async () => {
     vi.spyOn(Date, "now").mockReturnValue(5_000);
     answer(200, { deleted: 1, scan: SCHEDULED }, { Date: "Fri, 02 Oct 2026 12:00:00 GMT" });
 
-    expect(await deleteFiles(["a"])).toEqual({
+    expect(await deleteFiles(1, ["a"])).toEqual({
       deleted: 1,
       scan: SCHEDULED,
       clock: { serverTime: "2026-10-02T12:00:00.000Z", receivedAt: 5_000 },
     });
 
     answer(200, { deleted: 0, done: true });
-    expect(await deleteFolderRound("A/")).toEqual({
+    expect(await deleteFolderRound(1, "A/")).toEqual({
       deleted: 0,
       done: true,
       // No Date header: this browser's clock stands in for the server's.
@@ -543,17 +642,23 @@ describe("the Files API client", () => {
     vi.restoreAllMocks();
   });
 
-  it("posts the keys and the prefix as JSON", async () => {
+  it("posts the library, the keys and the prefix as JSON", async () => {
     const fetch = answer(200, { deleted: 2, scan: null });
-    await deleteFiles(["a", "b"]);
+    await deleteFiles(2, ["a", "b"]);
     expect(fetch).toHaveBeenCalledWith(
       "/api/files/delete",
-      expect.objectContaining({ method: "POST", body: JSON.stringify({ keys: ["a", "b"] }) }),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ library: 2, keys: ["a", "b"] }),
+      }),
     );
-    await deleteFolderRound("A/");
+    await deleteFolderRound(1, "A/");
     expect(fetch).toHaveBeenLastCalledWith(
       "/api/files/delete-folder",
-      expect.objectContaining({ method: "POST", body: JSON.stringify({ prefix: "A/" }) }),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ library: 1, prefix: "A/" }),
+      }),
     );
   });
 });
@@ -573,12 +678,14 @@ describe("the Files queries", () => {
   });
 
   it("reads one folder a page at a time, and never on a return to the tab", () => {
-    const query = folderQuery("A/");
-    expect(query.queryKey).toEqual(["files", "folder", "A/"]);
+    const query = folderQuery(1, "A/");
+    expect(query.queryKey).toEqual(["files", "folder", 1, "A/"]);
     expect(query.staleTime).toBe(30_000);
     expect(query.refetchOnWindowFocus).toBe(false);
     expect(query.getNextPageParam(page("a", "next"), [], null, [])).toBe("next");
     expect(query.getNextPageParam(page("a", null), [], null, [])).toBeNull();
+    // Each library's folders are their own entries.
+    expect(folderQuery(2, "A/").queryKey).toEqual(["files", "folder", 2, "A/"]);
   });
 
   /**
@@ -593,33 +700,43 @@ describe("the Files queries", () => {
       return new Response(JSON.stringify(body), { status: 200 });
     });
     vi.stubGlobal("fetch", fetch);
-    const observer = new InfiniteQueryObserver(queryClient, folderQuery("A/"));
+    const observer = new InfiniteQueryObserver(queryClient, folderQuery(1, "A/"));
     const unsubscribe = observer.subscribe(() => {});
     await vi.waitFor(() => expect(observer.getCurrentResult().isSuccess).toBe(true));
     await observer.fetchNextPage();
     expect(observer.getCurrentResult().data?.pages).toHaveLength(2);
     queryClient.setQueryData<InfiniteData<FolderListing, string | null>>(
-      folderQuery("B/").queryKey,
+      folderQuery(1, "B/").queryKey,
       { pages: [page("b1", "c1"), page("b2", null)], pageParams: [null, "c1"] },
     );
     fetch.mockClear();
     return { queryClient, fetch, observer, unsubscribe };
   }
 
+  it("leaves another library's folders alone after a change", async () => {
+    const { queryClient, fetch, unsubscribe } = await twoPagesOnScreen();
+
+    await afterFilesChange(queryClient, 2);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(queryClient.getQueryState(folderQuery(1, "B/").queryKey)?.isInvalidated).toBe(false);
+    unsubscribe();
+  });
+
   it("reads only the first page of the folder on screen after a change", async () => {
     const { queryClient, fetch, observer, unsubscribe } = await twoPagesOnScreen();
 
-    await afterFilesChange(queryClient);
+    await afterFilesChange(queryClient, 1);
 
     expect(fetch).toHaveBeenCalledTimes(1);
-    expect(fetch).toHaveBeenCalledWith("/api/files?prefix=A%2F", expect.anything());
+    expect(fetch).toHaveBeenCalledWith("/api/files?library=1&prefix=A%2F", expect.anything());
     expect(observer.getCurrentResult().data?.pages).toHaveLength(1);
     // The folder not on screen is cut back too, and read again when it opens.
-    const other = queryClient.getQueryState(folderQuery("B/").queryKey);
+    const other = queryClient.getQueryState(folderQuery(1, "B/").queryKey);
     expect(other?.isInvalidated).toBe(true);
     expect(
       queryClient.getQueryData<InfiniteData<FolderListing, string | null>>(
-        folderQuery("B/").queryKey,
+        folderQuery(1, "B/").queryKey,
       )?.pages,
     ).toHaveLength(1);
     unsubscribe();
@@ -627,44 +744,51 @@ describe("the Files queries", () => {
 
   it("after uploads, reads again only the folders the landed keys change", async () => {
     const { queryClient, fetch, observer, unsubscribe } = await twoPagesOnScreen();
-    queryClient.setQueryData<InfiniteData<FolderListing, string | null>>(folderQuery("").queryKey, {
-      pages: [
-        {
-          prefix: "",
-          folders: [
-            { name: "A", prefix: "A/" },
-            { name: "B", prefix: "B/" },
-          ],
-          files: [],
-          cursor: null,
-        },
-      ],
-      pageParams: [null],
-    });
+    queryClient.setQueryData<InfiniteData<FolderListing, string | null>>(
+      folderQuery(1, "").queryKey,
+      {
+        pages: [
+          {
+            prefix: "",
+            folders: [
+              { name: "A", prefix: "A/" },
+              { name: "B", prefix: "B/" },
+            ],
+            files: [],
+            cursor: null,
+          },
+        ],
+        pageParams: [null],
+      },
+    );
     const pagesOf = (prefix: string) =>
       queryClient.getQueryData<InfiniteData<FolderListing, string | null>>(
-        folderQuery(prefix).queryKey,
+        folderQuery(1, prefix).queryKey,
       )?.pages.length;
 
+    // A key of another library changes none of library 1's folders.
+    await afterUploadsLanded(queryClient, [{ library: 2, key: "B/01.flac" }]);
+    expect(queryClient.getQueryState(folderQuery(1, "B/").queryKey)?.isInvalidated).toBe(false);
+
     // Into B/, which the root lists already: only B/ changes.
-    await afterUploadsLanded(queryClient, ["B/01.flac"]);
+    await afterUploadsLanded(queryClient, [{ library: 1, key: "B/01.flac" }]);
     expect(fetch).not.toHaveBeenCalled();
     expect(observer.getCurrentResult().data?.pages).toHaveLength(2);
     expect(pagesOf("B/")).toBe(1);
-    expect(queryClient.getQueryState(folderQuery("B/").queryKey)?.isInvalidated).toBe(true);
-    expect(queryClient.getQueryState(folderQuery("").queryKey)?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(folderQuery(1, "B/").queryKey)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(folderQuery(1, "").queryKey)?.isInvalidated).toBe(false);
 
     // A new folder at the root changes the root only.
-    await afterUploadsLanded(queryClient, ["New/01.flac"]);
+    await afterUploadsLanded(queryClient, [{ library: 1, key: "New/01.flac" }]);
     expect(fetch).not.toHaveBeenCalled();
-    expect(queryClient.getQueryState(folderQuery("").queryKey)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(folderQuery(1, "").queryKey)?.isInvalidated).toBe(true);
     expect(observer.getCurrentResult().data?.pages).toHaveLength(2);
 
     // Into a new subfolder of A/, the folder on screen: read again, from its
     // first page, since its listing gains the folder.
-    await afterUploadsLanded(queryClient, ["A/Sub/02.flac"]);
+    await afterUploadsLanded(queryClient, [{ library: 1, key: "A/Sub/02.flac" }]);
     expect(fetch).toHaveBeenCalledTimes(1);
-    expect(fetch).toHaveBeenCalledWith("/api/files?prefix=A%2F", expect.anything());
+    expect(fetch).toHaveBeenCalledWith("/api/files?library=1&prefix=A%2F", expect.anything());
     expect(observer.getCurrentResult().data?.pages).toHaveLength(1);
     unsubscribe();
   });
@@ -673,9 +797,9 @@ describe("the Files queries", () => {
     const { queryClient, fetch, unsubscribe } = await twoPagesOnScreen();
     unsubscribe();
 
-    leaveFolder(queryClient, "A/");
-    await queryClient.invalidateQueries({ queryKey: folderQuery("A/").queryKey });
-    const back = new InfiniteQueryObserver(queryClient, folderQuery("A/"));
+    leaveFolder(queryClient, 1, "A/");
+    await queryClient.invalidateQueries({ queryKey: folderQuery(1, "A/").queryKey });
+    const back = new InfiniteQueryObserver(queryClient, folderQuery(1, "A/"));
     const again = back.subscribe(() => {});
     await vi.waitFor(() => expect(back.getCurrentResult().isFetching).toBe(false));
 
@@ -687,10 +811,10 @@ describe("the Files queries", () => {
   it("opens a folder again from its first page after a refused cursor", async () => {
     const { queryClient, fetch, observer, unsubscribe } = await twoPagesOnScreen();
 
-    await reopenFolder(queryClient, "A/");
+    await reopenFolder(queryClient, 1, "A/");
 
     expect(fetch).toHaveBeenCalledTimes(1);
-    expect(fetch).toHaveBeenCalledWith("/api/files?prefix=A%2F", expect.anything());
+    expect(fetch).toHaveBeenCalledWith("/api/files?library=1&prefix=A%2F", expect.anything());
     expect(observer.getCurrentResult().data?.pages.map((p) => p.files[0]?.name)).toEqual(["first"]);
     unsubscribe();
   });

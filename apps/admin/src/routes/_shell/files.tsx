@@ -7,10 +7,11 @@ import { ErrorAlert } from "@/components/error-alert";
 import { ConflictDialog } from "@/components/files/conflict-dialog";
 import { DeleteDialog } from "@/components/files/delete-dialog";
 import { FilesTable } from "@/components/files/files-table";
-import { FolderPath, folderSearch } from "@/components/files/folder-path";
+import { FolderPath } from "@/components/files/folder-path";
 import { NewFolderDialog } from "@/components/files/new-folder-dialog";
 import { ScanLine } from "@/components/files/scan-line";
 import { UploadMenu } from "@/components/files/upload-menu";
+import { LibrarySelect } from "@/components/library-select";
 import { Section } from "@/components/section";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -28,16 +29,21 @@ import { useClock } from "@/hooks/use-clock";
 import { useUploadQueue, useUploads } from "@/hooks/use-upload-queue";
 import { ApiError, checkUploads, type Me, meQuery } from "@/lib/api";
 import {
+  BOUND_LIBRARY,
   BUCKET_FALLBACK,
   countOf,
   type DeleteTarget,
   describeListing,
   filesConfigQuery,
+  filesLibrary,
+  filesSearch,
   folderQuery,
   latestView,
   leaveFolder,
+  libraryWrites,
   NO_SELECTION,
   reopenFolder,
+  reservedPrefixesOf,
   type ScanView,
   type Selection,
   scanActive,
@@ -77,6 +83,11 @@ export const Route = createFileRoute("/_shell/files")({
  * whose files and folders a role with `files:write` deletes and uploads
  * (ticket E). A folder is `?prefix=`, so it is a deep link, and the
  * browser's back button walks up.
+ *
+ * Across libraries (#84), a library switch before the path picks the
+ * bucket browsed (`?library=`, absent for library 1), and the path's root
+ * is the library's name. Only where more than one library exists: with one,
+ * the page is as it was.
  */
 function Files() {
   const { data: me } = useQuery(meQuery);
@@ -116,7 +127,7 @@ interface AskingState {
 }
 
 function FilesPage({ me }: { me: Me | null }) {
-  const { prefix = "" } = Route.useSearch();
+  const { prefix = "", library = BOUND_LIBRARY } = Route.useSearch();
   const navigate = Route.useNavigate();
   const queryClient = useQueryClient();
 
@@ -129,28 +140,35 @@ function FilesPage({ me }: { me: Me | null }) {
   const { data: session } = useQuery(meQuery);
   const signedIn = session != null;
   const config = useQuery({ ...filesConfigQuery, enabled: signedIn });
-  const folder = useInfiniteQuery({ ...folderQuery(prefix), enabled: signedIn });
+  const folder = useInfiniteQuery({ ...folderQuery(library, prefix), enabled: signedIn });
   const [selection, setSelection] = useState<Selection>(NO_SELECTION);
-  // Leaving a folder cuts its listing back to its first page, so that a
-  // return to it once stale reads one page, not every page loaded, and
-  // drops the selection with it: rows chosen on a later page are not shown
-  // on return, and must not be deleted unseen.
+  // Leaving a folder, or its library, cuts its listing back to its first
+  // page, so that a return to it once stale reads one page, not every page
+  // loaded, and drops the selection with it: rows chosen on a later page
+  // are not shown on return, and must not be deleted unseen.
   useEffect(
     () => () => {
-      leaveFolder(queryClient, prefix);
+      leaveFolder(queryClient, library, prefix);
       setSelection(NO_SELECTION);
     },
-    [queryClient, prefix],
+    [queryClient, library, prefix],
   );
 
   // The write controls: for a role with `files:write`, where the server
-  // takes file writes (owner decision 2: not in the preview).
+  // takes file writes (owner decision 2: not in the preview) and the
+  // library is not read-only (#84).
   const mayWrite = can(me, "files:write");
-  const writable = mayWrite && config.data?.writes.enabled === true;
+  const writes = libraryWrites(config.data, library);
+  const writable = mayWrite && writes.writable;
   const readOnlyHere = mayWrite && config.data?.writes.enabled === false;
-  // Uploads, where the server can presign them too: R2 API credentials.
-  const uploadable = writable && config.data?.uploads.configured === true;
-  const uploadsMissing = writable && config.data?.uploads.configured === false;
+  const readOnlyLibrary = mayWrite && writes.readOnly;
+  // Uploads, where the server can presign them too: R2 API credentials for
+  // library 1, a connected library's stored token.
+  const uploadable = mayWrite && writes.uploads;
+  const uploadsMissing = mayWrite && writes.uploadsMissing;
+  // The library switch, only across libraries.
+  const libraries = config.data?.libraries ?? [];
+  const switchable = libraries.length > 1;
   // The page redraws for the queue only when a completion brings a new
   // schedule; the rows are the header's Uploads popover's own.
   const queue = useUploadQueue();
@@ -190,7 +208,11 @@ function FilesPage({ me }: { me: Me | null }) {
   });
 
   const now = Math.max(useClock(), folder.dataUpdatedAt);
-  const bucket = config.data?.bucket ?? BUCKET_FALLBACK;
+  // The path's root: the bucket's name, or across libraries the library's.
+  const root = switchable
+    ? (filesLibrary(config.data, library)?.name ?? `Library ${library}`)
+    : (config.data?.bucket ?? BUCKET_FALLBACK);
+  const madeKey = `${library}\u0000${prefix}`;
   const pages = folder.data?.pages ?? [];
   const folders = pages.flatMap((page) => page.folders);
   const files = pages.flatMap((page) => page.files);
@@ -212,18 +234,26 @@ function FilesPage({ me }: { me: Me | null }) {
       return;
     }
     const listed = (at: string) =>
-      queryClient.getQueryData(folderQuery(at).queryKey)?.pages.flatMap((page) => page.folders);
+      queryClient
+        .getQueryData(folderQuery(library, at).queryKey)
+        ?.pages.flatMap((page) => page.folders);
+    // The files go to the library on screen, under its reserved prefixes.
+    const rules = {
+      ...settings,
+      library,
+      reservedPrefixes: reservedPrefixesOf(settings, library),
+    };
     let planned: PlannedUpload[];
     if (picked.length > PLAN_SLICE) {
       // A large pick is prepared in slices, with the button saying so.
       setBusy(`Preparing ${countOf(picked.length, "file")}…`);
       try {
-        planned = await planUploadsInSlices(picked, prefix, settings, listed);
+        planned = await planUploadsInSlices(picked, prefix, rules, listed);
       } finally {
         setBusy(null);
       }
     } else {
-      planned = planUploads(picked, prefix, settings, listed);
+      planned = planUploads(picked, prefix, rules, listed);
     }
     if (planned.length === 0) {
       // A folder pick of hidden files only, such as a folder whose name
@@ -291,8 +321,8 @@ function FilesPage({ me }: { me: Me | null }) {
         // The selection keeps only the rows that page shows again, so a
         // delete never takes a row that is no longer on screen.
         toastError(result.error);
-        void reopenFolder(queryClient, prefix).then(() => {
-          const shown = shownIds(queryClient.getQueryData(folderQuery(prefix).queryKey));
+        void reopenFolder(queryClient, library, prefix).then(() => {
+          const shown = shownIds(queryClient.getQueryData(folderQuery(library, prefix).queryKey));
           setSelection((current) =>
             current.prefix === prefix
               ? { prefix, targets: selectionWhere(current.targets, (id) => shown.has(id)) }
@@ -333,11 +363,33 @@ function FilesPage({ me }: { me: Me | null }) {
     </>
   ) : readOnlyHere ? (
     <p className="text-sm text-muted-foreground">Read-only on this deployment</p>
+  ) : readOnlyLibrary ? (
+    <p className="text-sm text-muted-foreground">Read-only: its key cannot write to the bucket</p>
   ) : null;
+
+  const path = <FolderPath library={library} prefix={prefix} root={root} />;
 
   return (
     <div className="@container flex min-w-0 flex-col gap-4">
-      <FolderPath prefix={prefix} bucket={bucket} />
+      {switchable ? (
+        // The switch first, then the path in the library: side by side
+        // where the column has room, stacked on a phone. Switching opens
+        // the library's root, and drops the selection with the folder.
+        <div className="flex min-w-0 flex-col gap-3 @xl:flex-row @xl:items-center">
+          <div className="flex shrink-0">
+            <LibrarySelect
+              libraries={libraries}
+              value={library}
+              onValueChange={(next) =>
+                void navigate({ search: filesSearch(next ?? BOUND_LIBRARY, "") })
+              }
+            />
+          </div>
+          <div className="min-w-0">{path}</div>
+        </div>
+      ) : (
+        path
+      )}
       <ScanLine view={view} />
       {/* The folder is the page's one block: it has no h2, since the path's
           current page names it, and is no named region (DESIGN.md, "A page
@@ -370,7 +422,7 @@ function FilesPage({ me }: { me: Me | null }) {
         ) : empty ? (
           <FolderEmpty
             prefix={prefix}
-            made={made.has(prefix)}
+            made={made.has(madeKey)}
             upload={
               uploadable ? (
                 <UploadMenu variant="outline" onPick={(files) => void upload(files)} busy={busy} />
@@ -380,6 +432,7 @@ function FilesPage({ me }: { me: Me | null }) {
         ) : (
           <>
             <FilesTable
+              library={library}
               folders={folders}
               files={files}
               now={now}
@@ -413,9 +466,10 @@ function FilesPage({ me }: { me: Me | null }) {
             onOpenChange={closeOf("new-folder")}
             prefix={prefix}
             limits={config.data.limits}
+            reserved={reservedPrefixesOf(config.data, library)}
             onCreate={(next) => {
-              setMade((current) => new Set(current).add(next));
-              void navigate({ search: folderSearch(next) });
+              setMade((current) => new Set(current).add(`${library}\u0000${next}`));
+              void navigate({ search: filesSearch(library, next) });
             }}
           />
           <ConflictDialog
@@ -427,6 +481,7 @@ function FilesPage({ me }: { me: Me | null }) {
             onDecide={decide}
           />
           <DeleteDialog
+            library={library}
             targets={dialog.targets}
             open={dialog.open === "delete"}
             onOpenChange={closeOf("delete")}

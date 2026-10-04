@@ -7,6 +7,7 @@ import {
   deleteSubsonicUser,
   fetchSubsonicUsers,
   type SubsonicUser,
+  type SubsonicUserList,
   setSubsonicPassword,
   subsonicUsersQuery,
   updateSubsonicUser,
@@ -15,10 +16,18 @@ import { describeError } from "@/lib/errors";
 import { fieldErrorsFrom } from "@/lib/field-errors";
 import {
   ADMIN_HELP,
+  ADMIN_LIBRARIES,
   adminRequired,
   afterUserWrite,
+  checkedLibraries,
+  defaultLibraryIds,
   deleteConsequences,
+  editLibrariesError,
   formatDay,
+  LIBRARIES_REQUIRED,
+  librariesError,
+  librariesLabel,
+  showsLibraries,
   USER_FIELDS_BY_CODE,
   userChanges,
   userNamesMatch,
@@ -34,9 +43,16 @@ function user(overrides: Partial<SubsonicUser> = {}): SubsonicUser {
     updatedAt: "2026-09-30T12:00:00.000Z",
     lastAccessAt: null,
     playlistCount: 0,
+    libraryIds: [1],
     ...overrides,
   };
 }
+
+const LIBRARIES = [
+  { id: 1, name: "Music Library" },
+  { id: 2, name: "Archive" },
+  { id: 3, name: "Live recordings" },
+];
 
 function answer(status: number, body: unknown) {
   const fetch = vi.fn(
@@ -57,10 +73,10 @@ afterEach(() => {
 });
 
 describe("the Subsonic users API client", () => {
-  it("lists the users", async () => {
-    const fetch = answer(200, { users: [user()] });
+  it("lists the users, and the libraries a user may be given", async () => {
+    const fetch = answer(200, { users: [user()], libraries: LIBRARIES });
 
-    expect(await fetchSubsonicUsers()).toEqual([user()]);
+    expect(await fetchSubsonicUsers()).toEqual({ users: [user()], libraries: LIBRARIES });
     expect(fetch).toHaveBeenCalledWith("/api/subsonic-users", {
       method: "GET",
       credentials: "same-origin",
@@ -89,6 +105,22 @@ describe("the Subsonic users API client", () => {
       headers: WRITE_HEADERS,
       body: JSON.stringify({ username: "Alice" }),
     });
+
+    fetch = answer(201, { user: user({ libraryIds: [2] }) });
+    await createSubsonicUser({ username: "bob", password: "pw", isAdmin: false, libraryIds: [2] });
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/subsonic-users",
+      expect.objectContaining({
+        body: JSON.stringify({ username: "bob", password: "pw", isAdmin: false, libraryIds: [2] }),
+      }),
+    );
+
+    fetch = answer(200, { user: user({ libraryIds: [1, 3] }) });
+    await updateSubsonicUser("u-1", { libraryIds: [1, 3] });
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/subsonic-users/u-1",
+      expect.objectContaining({ body: JSON.stringify({ libraryIds: [1, 3] }) }),
+    );
 
     fetch = answer(200, { ok: true });
     await setSubsonicPassword("u-1", "new");
@@ -239,10 +271,112 @@ describe("the table's dates", () => {
   });
 });
 
+describe("the Libraries field (#84)", () => {
+  it("shows only where more than one library exists", () => {
+    expect(showsLibraries([])).toBe(false);
+    expect(showsLibraries(LIBRARIES.slice(0, 1))).toBe(false);
+    expect(showsLibraries(LIBRARIES)).toBe(true);
+  });
+
+  it("starts a new user from the libraries marked for new users", () => {
+    const known = [
+      { id: 1, defaultNewUsers: true },
+      { id: 2, defaultNewUsers: false },
+      { id: 3, defaultNewUsers: true },
+      // Being removed: not assignable, whatever its default.
+      { id: 4, defaultNewUsers: true },
+    ];
+    expect(defaultLibraryIds(LIBRARIES, known)).toEqual([1, 3]);
+    // Without the Libraries page's list, the defaults are not known here.
+    expect(defaultLibraryIds(LIBRARIES, undefined)).toEqual([]);
+  });
+
+  it("needs at least one library for a user who is not a Subsonic admin", () => {
+    expect(librariesError(false, [])).toBe(LIBRARIES_REQUIRED);
+    expect(LIBRARIES_REQUIRED).toBe("Choose at least one library.");
+    expect(librariesError(false, [2])).toBeNull();
+    // An admin sees every library: nothing to choose.
+    expect(librariesError(true, [])).toBeNull();
+    expect(ADMIN_LIBRARIES).toBe("Admins see every library.");
+  });
+
+  it("checks the defaults until a box is touched, even defaults that arrive late", () => {
+    // The dialog opened before the Libraries page's list arrived: no defaults yet.
+    expect(checkedLibraries(null, [])).toEqual([]);
+    // They arrive: the untouched field checks them.
+    expect(checkedLibraries(null, [1, 3])).toEqual([1, 3]);
+    // Once the owner has chosen, later defaults change nothing.
+    expect(checkedLibraries([2], [1, 3])).toEqual([2]);
+    expect(checkedLibraries([], [1, 3])).toEqual([]);
+  });
+
+  it("lets an edit rename a user with no libraries while the boxes are unchanged", () => {
+    // Their only library was removed: they have none, and none is checked.
+    const orphan = user({ libraryIds: [] });
+    expect(editLibrariesError(orphan, { isAdmin: false, libraryIds: [] })).toBeNull();
+    expect(userChanges(orphan, { username: "alicia", isAdmin: false, libraryIds: [] })).toEqual({
+      username: "alicia",
+    });
+    // Unchecking every box of a user who has some is still refused.
+    expect(editLibrariesError(user({ libraryIds: [1] }), { isAdmin: false, libraryIds: [] })).toBe(
+      LIBRARIES_REQUIRED,
+    );
+    // A promotion sends no list, so nothing is required.
+    expect(
+      editLibrariesError(user({ libraryIds: [1] }), { isAdmin: true, libraryIds: [] }),
+    ).toBeNull();
+  });
+
+  it("sends a list only for a non-admin whose libraries change", () => {
+    const listener = user({ libraryIds: [1] });
+    expect(
+      userChanges(listener, { username: "alice", isAdmin: false, libraryIds: [1] }),
+    ).toBeNull();
+    expect(
+      userChanges(listener, { username: "alice", isAdmin: false, libraryIds: [3, 2, 3] }),
+    ).toEqual({ libraryIds: [2, 3] });
+    // Without the field (one library), nothing about libraries goes.
+    expect(userChanges(listener, { username: "alice", isAdmin: false })).toBeNull();
+    // Promoted: an admin has every library, and the server refuses a list.
+    expect(userChanges(listener, { username: "alice", isAdmin: true, libraryIds: [2] })).toEqual({
+      isAdmin: true,
+    });
+    // Demoted with every box still checked: they keep their rows.
+    const admin = user({ isAdmin: true, libraryIds: [1, 2, 3] });
+    expect(
+      userChanges(admin, { username: "alice", isAdmin: false, libraryIds: [1, 2, 3] }),
+    ).toEqual({ isAdmin: false });
+    expect(userChanges(admin, { username: "alice", isAdmin: false, libraryIds: [2] })).toEqual({
+      isAdmin: false,
+      libraryIds: [2],
+    });
+  });
+
+  it("says in the table which libraries a user sees", () => {
+    expect(librariesLabel(user({ isAdmin: true, libraryIds: [1, 2, 3] }), LIBRARIES)).toBe("All");
+    expect(librariesLabel(user({ libraryIds: [2] }), LIBRARIES)).toBe("Archive");
+    expect(librariesLabel(user({ libraryIds: [2, 1] }), LIBRARIES)).toBe("Music Library, Archive");
+    expect(librariesLabel(user({ libraryIds: [1, 2, 3] }), LIBRARIES)).toBe("3 libraries");
+    expect(librariesLabel(user({ libraryIds: [] }), LIBRARIES)).toBe("—");
+  });
+
+  it("shows a refused list beside the field", () => {
+    for (const code of ["libraries_required", "invalid_library"]) {
+      expect(fieldErrorsFrom(new ApiError(400, code, ""), USER_FIELDS_BY_CODE)).toEqual({
+        libraries: `${describeError(new ApiError(400, code, "")).title}.`,
+      });
+    }
+    // An admin's list is the dialog's mistake, not a field's: a toast.
+    expect(
+      fieldErrorsFrom(new ApiError(400, "admin_has_all_libraries", ""), USER_FIELDS_BY_CODE),
+    ).toBeUndefined();
+  });
+});
+
 describe("afterUserWrite", () => {
   it("reads the users again, and marks the Overview's library stale", async () => {
     const queryClient = new QueryClient();
-    queryClient.setQueryData(subsonicUsersQuery.queryKey, [user()]);
+    queryClient.setQueryData(subsonicUsersQuery.queryKey, { users: [user()], libraries: [] });
     queryClient.setQueryData(["overview", "library"], { playlists: [] });
     queryClient.setQueryData(["overview", "live"], { scan: null });
 
@@ -337,9 +471,17 @@ describe("userWriteOptions", () => {
     expect(write.perCall).toEqual(["error"]);
   });
 
+  it("keeps no password in the mutation cache once nothing shows the write", async () => {
+    const write = harness();
+    expect(write.queryClient.getMutationCache().getAll()[0]?.options.gcTime).toBe(0);
+    await write.started;
+    write.answer()?.resolve("ok");
+    await write.done;
+  });
+
   it("reads the users again however the write ends", async () => {
     const write = harness();
-    write.queryClient.setQueryData(subsonicUsersQuery.queryKey, []);
+    write.queryClient.setQueryData(subsonicUsersQuery.queryKey, { users: [], libraries: [] });
     await write.started;
     write.unsubscribe();
     write.answer()?.reject(new ApiError(500, "internal", ""));
@@ -359,9 +501,9 @@ describe("userWriteOptions", () => {
       const observer = new QueryObserver(queryClient, {
         queryKey: subsonicUsersQuery.queryKey,
         queryFn: () =>
-          new Promise<SubsonicUser[]>((resolve) => {
+          new Promise<SubsonicUserList>((resolve) => {
             reads += 1;
-            answer = () => resolve([]);
+            answer = () => resolve({ users: [], libraries: [] });
           }),
         staleTime: Number.POSITIVE_INFINITY,
       });

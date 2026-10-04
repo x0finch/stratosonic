@@ -3,6 +3,7 @@ import { type FormEvent, useState } from "react";
 
 import {
   AdminSwitchField,
+  LibrariesField,
   UserFieldError,
   useUserFieldErrors,
   useUserWrite,
@@ -20,43 +21,77 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { type SubsonicUser, updateSubsonicUser } from "@/lib/api";
+import {
+  type LibraryName,
+  type SubsonicUser,
+  type SubsonicUserChanges,
+  updateSubsonicUser,
+} from "@/lib/api";
 import { MAX_USERNAME_LENGTH } from "@/lib/errors";
-import { userChanges, userNamesMatch } from "@/lib/subsonic-users";
+import {
+  editLibrariesError,
+  librariesLabel,
+  userChanges,
+  userNamesMatch,
+} from "@/lib/subsonic-users";
 
 /**
- * Renames a Subsonic user, or turns **Subsonic admin** on or off. The server
- * refuses to demote the last Subsonic admin (`last_admin`), which is a toast.
+ * Renames a Subsonic user, turns **Subsonic admin** on or off, or, where
+ * more than one library exists (`libraries` is then not empty), sets the
+ * libraries a user who is not an admin sees (#84). The server refuses to
+ * demote the last Subsonic admin (`last_admin`), which is a toast.
  */
 export function EditUserDialog({
   user,
   open,
   onOpenChange,
+  libraries,
 }: {
   user: SubsonicUser | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  libraries: readonly LibraryName[];
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        {user && <EditUserForm key={user.id} user={user} onDone={() => onOpenChange(false)} />}
+        {user && (
+          <EditUserForm
+            key={user.id}
+            user={user}
+            libraries={libraries}
+            onDone={() => onOpenChange(false)}
+          />
+        )}
       </DialogContent>
     </Dialog>
   );
 }
 
-function EditUserForm({ user, onDone }: { user: SubsonicUser; onDone: () => void }) {
+function EditUserForm({
+  user,
+  libraries,
+  onDone,
+}: {
+  user: SubsonicUser;
+  libraries: readonly LibraryName[];
+  onDone: () => void;
+}) {
   const [username, setUsername] = useState(user.username);
   const [isAdmin, setIsAdmin] = useState(user.isAdmin);
-  const { fieldErrors, clear, report, onChange } = useUserFieldErrors();
+  // The boxes start from what the user sees: every library for an admin, so
+  // a demoted admin who changes nothing keeps them all.
+  const [libraryIds, setLibraryIds] = useState<readonly number[]>(() =>
+    libraries.map(({ id }) => id).filter((id) => user.libraryIds.includes(id)),
+  );
+  const { fieldErrors, clear, report, onChange, drop } = useUserFieldErrors();
+  const choosesLibraries = libraries.length > 0 && !isAdmin;
 
   const mutation = useUserWrite({
-    mutationFn: (changes: { username?: string; isAdmin?: boolean }) =>
-      updateSubsonicUser(user.id, changes),
+    mutationFn: (changes: SubsonicUserChanges) => updateSubsonicUser(user.id, changes),
     succeeded: (saved) => ({
       title: "Subsonic user saved",
-      description: savedDescription(user, saved),
+      description: savedDescription(user, saved, libraries),
     }),
     fields: true,
   });
@@ -70,7 +105,15 @@ function EditUserForm({ user, onDone }: { user: SubsonicUser; onDone: () => void
     const target = event.currentTarget;
     const form = new FormData(target);
     clear();
-    const changes = userChanges(user, { username, isAdmin });
+    if (choosesLibraries && editLibrariesError(user, { isAdmin, libraryIds }) !== null) {
+      // "Choose at least one library." shows beside the boxes already.
+      return;
+    }
+    const changes = userChanges(user, {
+      username,
+      isAdmin,
+      ...(libraries.length > 0 ? { libraryIds } : {}),
+    });
     if (!changes) {
       onDone();
       return;
@@ -93,7 +136,9 @@ function EditUserForm({ user, onDone }: { user: SubsonicUser; onDone: () => void
       <DialogHeader>
         <DialogTitle>Edit {user.username}</DialogTitle>
         <DialogDescription>
-          Rename this Subsonic user, or change whether they are a Subsonic admin.
+          {libraries.length > 0
+            ? "Rename this Subsonic user, change whether they are a Subsonic admin, or choose the libraries they see."
+            : "Rename this Subsonic user, or change whether they are a Subsonic admin."}
         </DialogDescription>
       </DialogHeader>
       <FieldGroup>
@@ -123,6 +168,22 @@ function EditUserForm({ user, onDone }: { user: SubsonicUser; onDone: () => void
           </Alert>
         )}
         <AdminSwitchField checked={isAdmin} onCheckedChange={setIsAdmin} />
+        {libraries.length > 0 ? (
+          <LibrariesField
+            libraries={libraries}
+            isAdmin={isAdmin}
+            checked={libraryIds}
+            onCheckedChange={(next) => {
+              setLibraryIds(next);
+              drop("libraries");
+            }}
+            error={
+              fieldErrors.libraries ??
+              editLibrariesError(user, { isAdmin, libraryIds }) ??
+              undefined
+            }
+          />
+        ) : null}
       </FieldGroup>
       <DialogFooter>
         <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
@@ -135,7 +196,11 @@ function EditUserForm({ user, onDone }: { user: SubsonicUser; onDone: () => void
 }
 
 /** What the save changed, in words, for its toast. */
-function savedDescription(before: SubsonicUser, after: SubsonicUser): string {
+function savedDescription(
+  before: SubsonicUser,
+  after: SubsonicUser,
+  libraries: readonly LibraryName[],
+): string {
   const parts: string[] = [];
   if (after.username !== before.username) {
     parts.push(`${before.username} is now ${after.username}.`);
@@ -146,6 +211,10 @@ function savedDescription(before: SubsonicUser, after: SubsonicUser): string {
         ? `${after.username} is now a Subsonic admin.`
         : `${after.username} is no longer a Subsonic admin.`,
     );
+  }
+  const seen = (user: SubsonicUser) => librariesLabel(user, libraries);
+  if (libraries.length > 0 && !after.isAdmin && seen(after) !== seen(before)) {
+    parts.push(`${after.username} now sees ${seen(after)}.`);
   }
   return parts.join(" ") || `${after.username} is saved.`;
 }

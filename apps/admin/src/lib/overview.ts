@@ -4,13 +4,16 @@ import {
   fetchLibraryOverview,
   fetchLiveOverview,
   fetchUsage,
+  type Library,
   type LiveOverview,
   type NowPlayingEntry,
+  type ScanPause,
   type ScanRequestResult,
   type ScanSchedule,
   type ScanStatus,
   type ServerClock,
 } from "@/lib/api";
+import { describeConnectionFailure } from "@/lib/errors";
 
 /**
  * How the Overview reads the Worker (#82, "Polling and refetch"). Only the
@@ -47,15 +50,55 @@ export function liveRefetchInterval(live: LiveOverview | undefined): number {
   return live?.scan.running ? LIVE_INTERVAL_SCANNING_MS : LIVE_INTERVAL_IDLE_MS;
 }
 
-export const libraryQuery = queryOptions({
-  queryKey: ["overview", "library"],
-  queryFn: fetchLibraryOverview,
-  staleTime: LIBRARY_STALE_MS,
-  // Only a pass changes the library, and the live route's read on return
-  // tells whether one ended meanwhile (`passEnded`): a return with nothing
-  // new reads nothing.
-  refetchOnWindowFocus: false,
-});
+/** Every read of the Overview's library, whichever library it is narrowed to. */
+export const LIBRARY_KEY = ["overview", "library"] as const;
+
+/**
+ * The libraries list's key (lib/libraries.ts, `librariesQuery`), here so the
+ * live route can mark it stale when a pass ends without an import cycle.
+ */
+export const LIBRARIES_KEY = ["libraries"] as const;
+
+/**
+ * The Overview's library: every active library's (`null`), or one's, each
+ * its own entry in the cache (#84, "Console"), so switching back shows the
+ * last read at once.
+ */
+export function libraryQuery(library: number | null = null) {
+  return queryOptions({
+    queryKey: [...LIBRARY_KEY, library ?? "all"],
+    queryFn: () => fetchLibraryOverview(library),
+    staleTime: LIBRARY_STALE_MS,
+    // Only a pass changes the library, and the live route's read on return
+    // tells whether one ended meanwhile (`passEnded`): a return with nothing
+    // new reads nothing.
+    refetchOnWindowFocus: false,
+  });
+}
+
+/**
+ * The library id a search parameter names: a positive integer, given as a
+ * number or as its digits (the router parses `?library=2` as JSON first),
+ * or `undefined` for anything else.
+ */
+export function libraryParam(raw: unknown): number | undefined {
+  const id =
+    typeof raw === "number"
+      ? raw
+      : typeof raw === "string" && /^[1-9]\d*$/.test(raw)
+        ? Number(raw)
+        : Number.NaN;
+  return Number.isSafeInteger(id) && id > 0 ? id : undefined;
+}
+
+/**
+ * The `?library=` search parameter of the Overview (#84): one library's id,
+ * or absent for every library. Anything that names no library is dropped.
+ */
+export function validateOverviewSearch(search: Record<string, unknown>): { library?: number } {
+  const library = libraryParam(search.library);
+  return library === undefined ? {} : { library };
+}
 
 export const liveQuery = queryOptions({
   queryKey: ["overview", "live"],
@@ -121,7 +164,9 @@ export function followLive(
   if (!passEnded(previous, next)) {
     return false;
   }
-  void queryClient.invalidateQueries({ queryKey: libraryQuery.queryKey });
+  void queryClient.invalidateQueries({ queryKey: LIBRARY_KEY });
+  // The libraries' last scans, which say which library a pass skipped.
+  void queryClient.invalidateQueries({ queryKey: LIBRARIES_KEY });
   return true;
 }
 
@@ -138,7 +183,84 @@ export function afterScanRequest(queryClient: QueryClient, result: ScanRequestRe
   queryClient.setQueryData(liveQuery.queryKey, (live) =>
     live === undefined ? live : { ...live, scan: result.scan },
   );
-  void queryClient.invalidateQueries({ queryKey: libraryQuery.queryKey });
+  void queryClient.invalidateQueries({ queryKey: LIBRARY_KEY });
+}
+
+/**
+ * Which library a running pass is in (#84, "Console"): "Scanning Archive (2
+ * of 3).", or `null` with one library, where the sentence would add nothing,
+ * and while the pass is in none (between two, or importing playlists).
+ */
+export function describeScanLibrary(scan: Pick<ScanStatus, "library">): string | null {
+  const position = scan.library;
+  if (!position || position.of < 2) {
+    return null;
+  }
+  return `Scanning ${position.name} (${position.index} of ${position.of}).`;
+}
+
+/**
+ * The scan's pause at the daily D1 write budget (#84, "Daily D1 write
+ * budget"), with when it resumes, in this browser's zone: "Paused until
+ * tomorrow at 2:00 AM: daily write budget.", or "Paused until 5:00 PM: daily
+ * write budget." when 00:00 UTC is still today here (the time in the
+ * browser's locale; a later day by its date). `null` while not
+ * paused.
+ */
+export function describePause(
+  paused: ScanPause | null | undefined,
+  now: number,
+  locale?: string,
+  timeZone?: string,
+): string | null {
+  if (!paused) {
+    return null;
+  }
+  const until = new Date(paused.until);
+  if (Number.isNaN(until.getTime())) {
+    return "Paused until tomorrow: daily write budget.";
+  }
+  const time = new Intl.DateTimeFormat(locale, { timeStyle: "short", timeZone }).format(until);
+  const days = dayNumber(until, timeZone) - dayNumber(new Date(now), timeZone);
+  const when =
+    days <= 0 ? time : days === 1 ? `tomorrow at ${time}` : formatDayTime(until, locale, timeZone);
+  return `Paused until ${when}: daily write budget.`;
+}
+
+/** A day's number in `timeZone`, for counting the days between two instants there. */
+function dayNumber(at: Date, timeZone?: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    timeZone,
+  }).formatToParts(at);
+  const part = (type: string) => Number(parts.find((entry) => entry.type === type)?.value);
+  return Date.UTC(part("year"), part("month") - 1, part("day")) / 86_400_000;
+}
+
+function formatDayTime(at: Date, locale?: string, timeZone?: string): string {
+  return new Intl.DateTimeFormat(locale, {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone,
+  }).format(at);
+}
+
+/**
+ * The libraries the last pass skipped, each in a sentence (#84, "Skipping
+ * a library"): "Archive was skipped: the key was refused.". A library being
+ * removed is left out: nothing about it matters any more.
+ */
+export function describeSkipped(
+  libraries: readonly Pick<Library, "name" | "state" | "lastScanError">[],
+): string[] {
+  return libraries
+    .filter((library) => library.state === "active" && library.lastScanError !== null)
+    .map((library) => {
+      const { title } = describeConnectionFailure(library.lastScanError);
+      return `${library.name} was skipped: ${title.charAt(0).toLowerCase()}${title.slice(1)}.`;
+    });
 }
 
 /**
