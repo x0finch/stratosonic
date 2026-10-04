@@ -100,12 +100,15 @@ make room.
 
 ## Files: browsing and deleting
 
-The console's Files page manages the bound bucket (`MUSIC`) as folders,
-through `/api/files`. It needs no configuration to browse and delete:
+The console's Files page manages a library's bucket as folders, through
+`/api/files`: the bound bucket (`MUSIC`, library 1) unless a request names
+another library (see "Connected libraries" below). It needs no
+configuration to browse and delete:
 
 - `GET /api/files?prefix=` lists one folder, a page of 1,000 entries at a
   time. The scanner's `_covers/` prefix is hidden, and every write under it
-  is refused. A `cursor` R2 refuses answers `400 {"error":"invalid_cursor"}`.
+  is refused, in library 1 only. A `cursor` R2 refuses answers
+  `400 {"error":"invalid_cursor"}`.
 - `POST /api/files/delete` (up to 250 keys) and
   `POST /api/files/delete-folder` (2,000 keys a call, called again until
   `done`) delete objects. **Deletes are permanent**: there is no trash and no
@@ -302,8 +305,8 @@ or skip them, before any upload starts:
   as one folder-delete round reaches). A key whose folder was not listed
   to its end (a flat folder of more than 2,000 entries, or one past the
   budget) is then looked for with one `HeadObject`, which finds it under
-  any Unicode spelling, as many as the request's 47 binding calls leave
-  room for (at least 7). A key still unknown comes back in `unchecked`,
+  any Unicode spelling, as many as the request's 46 R2 calls leave room
+  for (at least 6). A key still unknown comes back in `unchecked`,
   never as new. The console asks again for those, each request with a
   fresh budget, so a pick across many folders, or into one large folder,
   is checked in a few requests; what it cannot check after that, it asks
@@ -312,10 +315,10 @@ or skip them, before any upload starts:
   `If-None-Match: *` still refuses them if they exist.
 - It costs one Class A operation per page listed (a 25-file album in one
   folder: one) and one Class B per key looked up with `HeadObject`, no D1
-  statement past the session check's, and no scan driver call: 47 binding
-  calls + at most 3 D1 statements = 50 subrequests (the session check reads
+  statement past the session check's, and no scan driver call: 46 R2
+  calls + at most 3 D1 statements = 49 subrequests (the session check reads
   the session and its user, and updates the session once it is old enough
-  to be refreshed).
+  to be refreshed), and 50 for a connected library, whose row is read too.
 
 An expired URL fails with `403` and no CORS headers, so the browser sees a
 network error. The console signs just before each upload and signs again if
@@ -359,6 +362,74 @@ A file uploaded from the console exists only in the bucket. A later
 just as ADR-0006 warns for client-made playlists. Use `rclone copy`, which
 never deletes, or first bring the bucket's files down
 (`rclone copy r2:navidrome <local>`) and sync only from a tree that has them.
+
+### Connected libraries
+
+The Files page works on every active library, the ones connected on the
+Libraries page as well as the bound bucket. `GET /api/files/config` lists
+them (`"libraries": [{id, name, writable, uploads, reservedPrefixes}]`), and
+every other Files route takes the library: `?library=<id>` on
+`GET /api/files`, `"library": <id>` in each write's body. Without it a
+request acts on library 1, the bound bucket, exactly as before.
+
+- A library that does not exist, or is being removed, answers
+  `404 {"error":"library_not_found"}`.
+- A library whose last connection test found its token read-only can be
+  browsed, but every write to it answers
+  `403 {"error":"library_read_only"}`. Test the library again on the
+  Libraries page after giving it a read and write token.
+- `FILE_WRITES = "off"` closes the writes of every library.
+- `_covers/` is reserved in library 1 only, where the scanner writes the
+  covers of every library. A connected bucket has no reserved prefix.
+- A connected bucket is read over the S3 API, whose answers the Worker
+  parses as XML, so its requests reach fewer entries inside the same 10 ms
+  of CPU: browse still lists 1,000 entries a page, but a folder-delete call
+  deletes 1,000 keys (two listings of 500), and an upload check lists
+  1,000 entries.
+- A key with a control character (which rclone can write, but no console
+  upload can) is deleted with a request of its own, because the bulk delete
+  is XML. A delete of more such keys than one request may make (40)
+  answers `400 {"error":"too_many_keys"}` and deletes nothing: delete
+  fewer at a time. A folder delete takes them a round at a time.
+
+**The token.** A connected library's uploads are signed with the token
+stored when it was connected, so they need none of the secrets above, and
+`uploads.configured` is always true for it. Create the token as in step 1,
+for that bucket: **Object Read & Write**, under **Apply to specific buckets
+only**, that bucket and no other. Create it in the account that owns the
+bucket. A token that can only read still connects the library, read-only.
+
+**CORS, per bucket.** The browser sends each upload straight to the
+connected bucket, so each bucket needs the same CORS rule as the bound one
+(step 3). The console cannot apply it: setting a bucket's CORS needs an
+admin token, and the stored token is Object Read & Write on one bucket. So
+the Libraries page shows each bucket's rule, with the console's origin
+filled in, and these commands. Save the rule as `r2-cors.json` in this
+directory, then run, with `<bucket>` the connected bucket:
+
+```sh
+pnpm exec wrangler r2 bucket cors set <bucket> --file r2-cors.json
+pnpm exec wrangler r2 bucket cors list <bucket>
+```
+
+Run them as a user of the account that owns the bucket (`wrangler login`,
+or `CLOUDFLARE_ACCOUNT_ID` set to that account): a bucket in another
+account works, and bills that account, but its CORS rule is set there.
+Without the rule, uploads to that library fail in the browser, though
+browsing and deleting, which go through the Worker, still work.
+
+**`rclone sync`, per bucket.** The warning above holds for every connected
+bucket: `rclone sync <local> r2:<bucket>` from a tree that lacks a file
+uploaded from the console, or a playlist a client saved there (ADR-0006),
+deletes it. Use `rclone copy`, or bring the bucket's files down first.
+
+**R2 Class A operations grow with the objects of every library.** Each scan
+pass lists every page of every library's bucket, and the buckets of an
+account share its free 1,000,000 Class A operations a month. At the
+15-minute cron, about **26,000 objects in all** use the whole allowance. Past
+that, change the cron in `wrangler.jsonc` (`triggers.crons`) to hourly,
+`"0 * * * *"`, which lasts to about four times as many objects; new files
+are still indexed after each console change by the debounced scan.
 
 ## Console users and Subsonic users
 
