@@ -20,11 +20,21 @@ import {
 } from "../nowplaying/repository";
 import { estimatedPositionMs } from "../nowplaying/session";
 import { playlistSummariesQuery } from "../playlists/repository";
-import { readScanReport, type ScanReport, scanReportQuery, toScanReport } from "../scanner/state";
+import { dailyWriteBudget } from "../scanner/budget";
+import {
+  libraryNamesQuery,
+  type ScanLibraryPosition,
+  type ScanReport,
+  scanLibraryPosition,
+  scanReportQuery,
+  toScanReport,
+} from "../scanner/state";
 import {
   inFlight,
   pokeScanDriver,
+  type ScanPause,
   type ScanSchedule,
+  scanPause,
   scanSchedule,
   tracksOf,
 } from "../scanner/status";
@@ -147,28 +157,41 @@ export function registerOverviewRoutes(api: ApiApp): void {
    *
    * A role without `activity:read` gets `"nowPlaying": null` rather than a
    * 403, so one polled request serves every role, and its statement is not
-   * sent at all: the batch is then the scan's one statement.
+   * sent at all: the batch is then the scan's two statements.
+   *
+   * The scan's statements are its `property` rows and the libraries' names
+   * (#84, "Console"), so `scan.library` says which library a pass is in,
+   * and `scan.paused` whether the daily write budget has stopped it, with
+   * no Durable Object request.
    */
   api.get("/overview/live", requireSession, requirePermission("library:read"), async (c) => {
     const db = database(c.env);
     const now = Date.now();
 
     let report: ScanReport;
+    let library: ScanLibraryPosition | null;
     let listening: NowPlayingEntry[] | null = null;
     if (roleGrants(c.var.session.role, "activity:read")) {
-      const [scanRows, nowPlayingRows] = await db.batch([
+      const [scanRows, libraryRows, nowPlayingRows] = await db.batch([
         scanReportQuery(db),
+        libraryNamesQuery(db),
         // For no caller, so the song carries nobody's annotation.
         nowPlayingQuery(db, NO_USER, new Date(now)),
       ]);
       report = toScanReport(scanRows);
+      library = scanLibraryPosition(report.progress, libraryRows);
       listening = toNowPlayingEntries(nowPlayingRows);
     } else {
-      report = await readScanReport(db);
+      const [scanRows, libraryRows] = await db.batch([scanReportQuery(db), libraryNamesQuery(db)]);
+      report = toScanReport(scanRows);
+      library = scanLibraryPosition(report.progress, libraryRows);
     }
 
     return c.json({
-      scan: scanView(report, inFlight(report), scanSchedule(report)),
+      scan: scanView(report, inFlight(report), scanSchedule(report), {
+        library,
+        paused: scanPause(report, dailyWriteBudget(c.env), now),
+      }),
       nowPlaying: listening?.map((entry) => nowPlayingView(entry, now)) ?? null,
       serverTime: new Date(now).toISOString(),
     });
@@ -208,11 +231,19 @@ export function registerOverviewRoutes(api: ApiApp): void {
       // A pass this poke started is stamped after every change so far, so it
       // covers them; one already in flight is followed by one more if a
       // change came after its start.
-      const report = await readScanReport(database(c.env));
+      const db = database(c.env);
+      const [scanRows, libraryRows] = await db.batch([scanReportQuery(db), libraryNamesQuery(db)]);
+      const report = toScanReport(scanRows);
       const scheduled =
         outcome === "started" ? scanSchedule(report, true, pokedAt) : scanSchedule(report, true);
 
-      return c.json({ outcome, scan: scanView(report, true, scheduled) });
+      return c.json({
+        outcome,
+        scan: scanView(report, true, scheduled, {
+          library: scanLibraryPosition(report.progress, libraryRows),
+          paused: scanPause(report, dailyWriteBudget(c.env), Date.now()),
+        }),
+      });
     },
   );
 }
@@ -256,12 +287,23 @@ function libraryNotFound(c: Context) {
  * starts once the library has been quiet, or `afterCurrentPass` when one
  * more follows the pass in flight. It is read from D1 (`LibraryChangedAt`),
  * so the polled route makes no Durable Object request.
+ *
+ * `library` is the library the scan phase is in, `{id, name, index, of}`
+ * among the active libraries, or null (#84, "Console": "Scanning Archive (2
+ * of 3)."). `paused` is set while the daily write budget stops every pass
+ * until the next 00:00 UTC (`scanner/budget.ts`); a pass it stopped is not
+ * running, though its cursor waits in D1.
  */
-function scanView(report: ScanReport, running: boolean, scheduled: ScanSchedule | null) {
+function scanView(
+  report: ScanReport,
+  running: boolean,
+  scheduled: ScanSchedule | null,
+  { library, paused }: { library: ScanLibraryPosition | null; paused: ScanPause | null },
+) {
   const { progress, importingPlaylists, lastCompleted } = report;
 
   return {
-    running,
+    running: running && paused === null,
     phase: progress !== null ? "scan" : importingPlaylists ? "playlists" : null,
     progress:
       progress === null
@@ -274,6 +316,8 @@ function scanView(report: ScanReport, running: boolean, scheduled: ScanSchedule 
             updated: progress.counts.updated,
             removed: progress.counts.removed,
           },
+    library: paused === null ? library : null,
+    paused,
     estimatedTotal: lastCompleted === null ? null : tracksOf(lastCompleted.counts),
     last:
       lastCompleted === null

@@ -27,8 +27,10 @@ import { oracleSignature } from "./sigv4-oracle";
  *   InvalidArgument`, as S3 does;
  * - can be switched (`fail`) to answer 401, 403, `NoSuchBucket`,
  *   `SlowDown`, 429, 500 or a redirect, to fail as a network does, to
- *   report a key `DeleteObjects` did not delete, or to answer a ranged read
- *   with another range than asked;
+ *   report a key `DeleteObjects` did not delete, to answer a ranged read
+ *   with another range than asked, or to answer a listing without its
+ *   `<EncodingType>` echo; and a failure can be kept to some operations, or
+ *   to some keys;
  * - records every call (`calls`), signature verdict included.
  *
  * `encoding-type=url` is answered as S3 encodes it, a form encoding: a
@@ -59,13 +61,19 @@ export type FakeS3Failure =
   /** A ranged `GetObject` answers the range one byte later than asked. */
   | "wrong_range"
   /** A ranged `GetObject` answers one byte more than asked, when there is one. */
-  | "long_range";
+  | "long_range"
+  /**
+   * A `ListObjectsV2` answers 200 without echoing `<EncodingType>url</EncodingType>`,
+   * so its keys' encoding is unknown and the client refuses the page.
+   */
+  | "no_encoding_echo";
 
 /** The failures answered inside an operation's own answer. */
 const IN_ANSWER: ReadonlySet<FakeS3Failure> = new Set([
   "delete_error",
   "wrong_range",
   "long_range",
+  "no_encoding_echo",
 ]);
 
 /** One request the fake received. */
@@ -107,7 +115,11 @@ export class FakeS3 {
   /** Every request received, in order. */
   readonly calls: FakeS3Call[] = [];
 
-  #failure: { failure: FakeS3Failure; operations: ReadonlySet<S3Operation> | null } | null = null;
+  #failure: {
+    failure: FakeS3Failure;
+    operations: ReadonlySet<S3Operation> | null;
+    keys: ReadonlySet<string> | null;
+  } | null = null;
   #tokens = new Map<string, string>();
   #issued = 0;
 
@@ -131,14 +143,23 @@ export class FakeS3 {
   }
 
   /**
-   * Answers every request (or only those of `operations`) with `failure`
-   * from now on, or, with null, as S3 again.
+   * Answers every request (or only those of `operations`, and of those only
+   * the requests for one of `keys`) with `failure` from now on, or, with
+   * null, as S3 again.
    */
-  fail(failure: FakeS3Failure | null, operations?: readonly S3Operation[]): void {
+  fail(
+    failure: FakeS3Failure | null,
+    operations?: readonly S3Operation[],
+    keys?: readonly string[],
+  ): void {
     this.#failure =
       failure === null
         ? null
-        : { failure, operations: operations === undefined ? null : new Set(operations) };
+        : {
+            failure,
+            operations: operations === undefined ? null : new Set(operations),
+            keys: keys === undefined ? null : new Set(keys),
+          };
   }
 
   /** How many keys each `DeleteObjects` carried, in order. */
@@ -179,7 +200,8 @@ export class FakeS3 {
     if (
       failure !== null &&
       !IN_ANSWER.has(failure.failure) &&
-      (failure.operations === null || failure.operations.has(operation))
+      (failure.operations === null || failure.operations.has(operation)) &&
+      (failure.keys === null || (key !== undefined && failure.keys.has(key)))
     ) {
       if (failure.failure === "network") {
         call.status = "network";
@@ -195,7 +217,7 @@ export class FakeS3 {
     const storage = libraryTestBucket();
     switch (operation) {
       case "ListObjectsV2":
-        return answer(await this.#list(storage, url));
+        return answer(await this.#list(storage, url, failure?.failure === "no_encoding_echo"));
       case "HeadObject":
         return answer(await headObject(storage, key ?? ""));
       case "GetObject": {
@@ -309,7 +331,7 @@ export class FakeS3 {
     return expected === signature ? "valid" : "SignatureDoesNotMatch";
   }
 
-  async #list(storage: R2Bucket, url: URL): Promise<Response> {
+  async #list(storage: R2Bucket, url: URL, withoutEncodingEcho = false): Promise<Response> {
     const query = url.searchParams;
     const maxKeys = Number(query.get("max-keys") ?? "1000");
     if (!Number.isInteger(maxKeys) || maxKeys < 1 || maxKeys > 1000) {
@@ -345,7 +367,9 @@ export class FakeS3 {
       `<KeyCount>${listing.objects.length + listing.delimitedPrefixes.length}</KeyCount>`,
       `<MaxKeys>${maxKeys}</MaxKeys>`,
       delimiter === undefined ? "" : `<Delimiter>${encode(delimiter)}</Delimiter>`,
-      query.get("encoding-type") === "url" ? "<EncodingType>url</EncodingType>" : "",
+      query.get("encoding-type") === "url" && !withoutEncodingEcho
+        ? "<EncodingType>url</EncodingType>"
+        : "",
       `<IsTruncated>${listing.truncated}</IsTruncated>`,
       token === null ? "" : `<ContinuationToken>${escapeXml(token)}</ContinuationToken>`,
       next === "" ? "" : `<NextContinuationToken>${escapeXml(next)}</NextContinuationToken>`,

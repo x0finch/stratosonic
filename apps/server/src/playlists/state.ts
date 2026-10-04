@@ -15,8 +15,9 @@
  */
 
 import { property } from "@stratosonic/db";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import type { Database } from "../db";
+import { type RowsWritten, readRowsWritten, SCAN_ROWS_WRITTEN_KEY } from "../scanner/budget";
 
 /**
  * The row a pass in flight writes.
@@ -90,32 +91,65 @@ export interface PlaylistImportProgress {
    * key sorts at or below this has been seen, or deleted, in this pass.
    */
   readonly sweptTo: string;
+  /**
+   * Whether the listing was already restarted in this pass after the bucket
+   * refused its cursor (`invalid_cursor`): it is restarted once (#84,
+   * "Skipping a library").
+   */
+  readonly restarted: boolean;
   readonly counts: PlaylistImportCounts;
+  /**
+   * Progress rows this pass wrote that the day's write tally does not hold
+   * yet; they join it when the pass ends (`scanner/budget.ts`).
+   */
+  readonly untallied: RowsWritten | null;
+}
+
+/** What one import run reads before it starts, in one query. */
+export interface PlaylistImportState {
+  readonly progress: PlaylistImportProgress | null;
+  /** The day's write tally the import counts against (`scanner/budget.ts`). */
+  readonly rowsWritten: RowsWritten | null;
+}
+
+/** The import's progress and the day's write tally, in one query. */
+export async function readPlaylistImportState(db: Database): Promise<PlaylistImportState> {
+  const rows = await db
+    .select()
+    .from(property)
+    .where(inArray(property.id, [PLAYLIST_IMPORT_PROGRESS_KEY, SCAN_ROWS_WRITTEN_KEY]));
+  const stored = new Map(rows.map((row) => [row.id, parsedObject(row.value)]));
+
+  return {
+    progress: readProgress(stored.get(PLAYLIST_IMPORT_PROGRESS_KEY) ?? null),
+    rowsWritten: readRowsWritten(stored.get(SCAN_ROWS_WRITTEN_KEY) ?? undefined),
+  };
 }
 
 /** The progress of a pass in flight, or null when none is. */
 export async function readPlaylistImportProgress(
   db: Database,
 ): Promise<PlaylistImportProgress | null> {
-  const rows = await db
-    .select()
-    .from(property)
-    .where(eq(property.id, PLAYLIST_IMPORT_PROGRESS_KEY))
-    .limit(1);
+  return (await readPlaylistImportState(db)).progress;
+}
 
-  const value = rows[0]?.value;
-  if (value === undefined || value === "") {
-    return null;
+function parsedObject(value: string): Record<string, unknown> | undefined {
+  if (value === "") {
+    return undefined;
   }
 
-  let stored: Record<string, unknown>;
   try {
     const parsed: unknown = JSON.parse(value);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      return null;
-    }
-    stored = parsed as Record<string, unknown>;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
   } catch {
+    return undefined;
+  }
+}
+
+function readProgress(stored: Record<string, unknown> | null): PlaylistImportProgress | null {
+  if (stored === null) {
     return null;
   }
 
@@ -130,24 +164,32 @@ export async function readPlaylistImportProgress(
     cursor: typeof stored.cursor === "string" ? stored.cursor : "",
     skip: wholeNumber(stored.skip) ?? 0,
     sweptTo: typeof stored.sweptTo === "string" ? stored.sweptTo : "",
+    restarted: stored.restarted === true,
     counts,
+    untallied: readRowsWritten(
+      typeof stored.untallied === "object" && stored.untallied !== null
+        ? (stored.untallied as Record<string, unknown>)
+        : undefined,
+    ),
   };
 }
 
-export async function writePlaylistImportProgress(
+/** Writes the progress, as a statement for the page's batch. */
+export function writePlaylistImportProgressStatement(
   db: Database,
   progress: PlaylistImportProgress,
-): Promise<void> {
+) {
   const value = JSON.stringify(progress);
 
-  await db
+  return db
     .insert(property)
     .values({ id: PLAYLIST_IMPORT_PROGRESS_KEY, value })
     .onConflictDoUpdate({ target: property.id, set: { value } });
 }
 
-export async function clearPlaylistImportProgress(db: Database): Promise<void> {
-  await db.delete(property).where(eq(property.id, PLAYLIST_IMPORT_PROGRESS_KEY));
+/** Clears the progress at the end of a pass, as a statement for a batch. */
+export function clearPlaylistImportProgressStatement(db: Database) {
+  return db.delete(property).where(eq(property.id, PLAYLIST_IMPORT_PROGRESS_KEY));
 }
 
 /**

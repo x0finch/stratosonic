@@ -205,22 +205,25 @@ describe("the overview's budget on the reference library", () => {
     ]);
   });
 
-  it("GET /api/overview/live: one round trip of two statements, no writes", async () => {
+  it("GET /api/overview/live: one round trip of three statements, no writes", async () => {
     const statements = await measured("/api/overview/live");
 
     expect(cost(statements)).toEqual({
-      statements: 2,
+      statements: 3,
       roundTrips: 1,
-      rowsRead: 15,
+      rowsRead: 17,
       rowsWritten: 0,
     });
     expect(rows(statements)).toEqual([
-      // The four `property` keys, looked up by primary key: #82's three and
-      // `LibraryChangedAt`, which carries the scan's schedule (#83). D1
-      // counts one row read per key looked up and one more for each row
-      // found, so the schedule costs one row read before the console has
-      // changed a file, two after, and no round trip.
-      ["select property", 5, 0],
+      // The five `property` keys, looked up by primary key: #82's three,
+      // `LibraryChangedAt`, which carries the scan's schedule (#83), and
+      // `ScanRowsWritten`, the daily write tally that says whether the scan
+      // is paused (#84). D1 counts one row read per key looked up and one
+      // more for each row found, so each costs one row read before its row
+      // exists, two after, and no round trip.
+      ["select property", 6, 0],
+      // The libraries' names, for `scan.library` (#84): one row a library.
+      ["select library", 1, 0],
       // Both sessions, each with its track, album and user by key, and the
       // sort by start.
       ["select now_playing", 10, 0],
@@ -234,12 +237,16 @@ describe("the overview's budget on the reference library", () => {
     const last = statements.at(-1)?.roundTrip;
 
     expect(rows(statements.filter((statement) => statement.roundTrip === last))).toEqual([
-      ["select property", 5, 0],
+      ["select property", 6, 0],
+      ["select library", 1, 0],
     ]);
     expect(driverRequests).toBe(1);
     // The rest is `requireFreshSession`'s read of the session past the
     // cookie cache, which every write pays.
-    expect(statements.slice(0, -1).map(shape)).toEqual(["select session", "select user"]);
+    expect(statements.filter((statement) => statement.roundTrip !== last).map(shape)).toEqual([
+      "select session",
+      "select user",
+    ]);
     expect(cost(statements).rowsWritten).toBe(0);
   });
 });

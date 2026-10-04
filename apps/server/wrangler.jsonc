@@ -92,9 +92,17 @@
   // `R2_BUCKET_NAME` is the bucket's name, which the `MUSIC` binding does not
   // expose and the presigned upload URLs need. It must equal
   // `r2_buckets[].bucket_name` below.
+  //
+  // `SCAN_DAILY_WRITE_BUDGET` is how many D1 rows the scan may write in a UTC
+  // day (#84, ADR-0009): a D1 that reaches the free tier's 100,000 refuses
+  // every query until 00:00 UTC, so a large first index or a library's
+  // removal pauses at this and resumes the next day. `0` means no cap
+  // (Workers Paid has no daily limit). The limit is per account, so preview's
+  // database shares it.
   "vars": {
     "INITIAL_USER": "admin",
-    "R2_BUCKET_NAME": "navidrome"
+    "R2_BUCKET_NAME": "navidrome",
+    "SCAN_DAILY_WRITE_BUDGET": "50000"
   },
   "d1_databases": [
     {
@@ -146,11 +154,17 @@
       // so its console may browse the bucket but never delete or upload, and
       // the write routes under `/api/files` answer 403 file_writes_disabled.
       // `R2_BUCKET_NAME` must equal `r2_buckets[].bucket_name` below, as at
-      // the top level.
+      // the top level. `SCAN_DAILY_WRITE_BUDGET` is lower than production's:
+      // D1's 100,000 rows written a day are per account, so preview's
+      // database and production's share them, and preview binds the
+      // production bucket, so its scan indexes the same library a second
+      // time. 20,000 leaves production's 50,000 and the rest of the
+      // account's writes room under the limit when both scans run full.
       "vars": {
         "INITIAL_USER": "admin",
         "FILE_WRITES": "off",
-        "R2_BUCKET_NAME": "navidrome"
+        "R2_BUCKET_NAME": "navidrome",
+        "SCAN_DAILY_WRITE_BUDGET": "20000"
       },
       "d1_databases": [
         {

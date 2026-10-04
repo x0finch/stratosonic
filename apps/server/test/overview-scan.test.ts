@@ -142,6 +142,8 @@ describe("the scan before any pass", () => {
       running: false,
       phase: null,
       progress: null,
+      library: null,
+      paused: null,
       estimatedTotal: null,
       last: null,
       scheduled: null,
@@ -202,6 +204,8 @@ describe("the scan in flight, then completed", () => {
       running: false,
       phase: null,
       progress: null,
+      library: null,
+      paused: null,
       estimatedTotal: status.count,
       last: lastOf(summary),
       scheduled: null,
@@ -378,7 +382,7 @@ describe("POST /api/library/scan", () => {
   });
 
   it("reads the scan's rows once after the session, and writes nothing", () => {
-    expect(firstShapes.at(-1)).toBe("select property");
+    expect(firstShapes.slice(-2)).toEqual(["select property", "select library"]);
     expect(firstCost.rowsWritten).toBe(0);
   });
 });

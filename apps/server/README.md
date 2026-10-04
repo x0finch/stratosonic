@@ -62,6 +62,42 @@ the path"), which fails the whole request: the Worker's log line gives the
 error's path (for example `viewer/accounts/0/r2Storage`), which tells the two
 apart.
 
+## Daily D1 write budget (`SCAN_DAILY_WRITE_BUDGET`)
+
+A D1 database that reaches the free plan's 100,000 rows written in a day
+refuses **every** query, reads included, until 00:00 UTC. The scan is the one
+writer that can get there on its own: a first index of a large library writes
+about 9.4 rows per track for ten-track albums, and up to about 13.4 for a track
+that is its own artist's own album (both measured); the cleanup of a removed
+library writes about 2 per track. So the scan counts the rows it writes in
+each UTC day - what D1 reports each batch wrote, its progress rows, the
+cleanup and the playlist import included - and stops at the var
+`SCAN_DAILY_WRITE_BUDGET` in `wrangler.jsonc`:
+
+- the default is **50,000**. The cron's passes over unchanged libraries
+  write about 11,000 a day, which leaves room for roughly 3,000 to 4,000 new
+  tracks a day; a bigger first index is spread over several days;
+- preview's is **20,000**: the limit is per account, so preview's database
+  shares it with production's, and preview binds the production bucket, so
+  its scan indexes the same library again;
+- `0` means no cap, for Workers Paid, which has no daily limit;
+- anything that is not a whole number is the default.
+
+Before each page the scan also leaves room for the page itself (14 rows for
+each track the step may still read), so a page does not overshoot the budget
+by much; a cleanup stage (up to 500 tracks) or a playlist page may.
+
+At the budget the pass stops as a give-up does: its cursor stays in D1, and
+every cron poke that UTC day stops at its first step. The first poke after
+midnight resumes the pass where it stopped. The Overview says "Paused until
+tomorrow: daily write budget" (`scan.paused` in `GET /api/overview/live`).
+
+**One pass walks the libraries in turn,** by design: the cleanup of a removed
+library comes first, then each library in id order, then the playlist import.
+So a long cleanup, or a library the budget paused the pass in, holds back the
+libraries after it and the import until it is done; nothing is skipped to
+make room.
+
 ## Files: browsing and deleting
 
 The console's Files page manages the bound bucket (`MUSIC`) as folders,

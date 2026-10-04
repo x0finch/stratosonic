@@ -54,9 +54,26 @@
 import { DEFAULT_LIBRARY_ID, playlistId } from "@stratosonic/db";
 import { type Database, database } from "../db";
 import type { Env } from "../env";
+import {
+  budgetReached,
+  countedBatch,
+  dailyWriteBudget,
+  flushLedger,
+  type RowLedger,
+  rowsWrittenOn,
+  tallyStatement,
+  utcDay,
+} from "../scanner/budget";
 import { isCoverKey } from "../scanner/covers";
+import { LibraryListingError, listingFailure, skipsAtOnce } from "../scanner/listing-failure";
+import { stampLibraryStatement } from "../scanner/repository";
 import { bindingStorage } from "../storage/binding";
-import type { LibraryStorage, StoredObject } from "../storage/storage";
+import type {
+  LibraryStorage,
+  StorageFailure,
+  StorageListing,
+  StoredObject,
+} from "../storage/storage";
 import { findFirstAdmin } from "../users/repository";
 import { entryKeyCandidates, isPlaylistKey, parseM3u, playlistNameFromKey } from "./m3u";
 import {
@@ -66,17 +83,17 @@ import {
   type ImportedPlaylist,
   type IndexedPlaylist,
   matchesStoredPlaylist,
-  runBatch,
   sweepMissingPlaylists,
   upsertPlaylistStatements,
 } from "./repository";
 import {
   addPlaylistImportCounts,
-  clearPlaylistImportProgress,
+  clearPlaylistImportProgressStatement,
   noPlaylistImportCounts,
   type PlaylistImportCounts,
-  readPlaylistImportProgress,
-  writePlaylistImportProgress,
+  type PlaylistImportProgress,
+  readPlaylistImportState,
+  writePlaylistImportProgressStatement,
 } from "./state";
 
 /** How much of the bucket one run gets through. See the notes above. */
@@ -110,10 +127,26 @@ export const DEFAULT_PLAYLIST_IMPORT_LIMITS: PlaylistImportLimits = {
  */
 export const DEFAULT_PUBLIC = true;
 
+/** What a run is given beyond its stamp and limits, as the scan is (`ScanOptions`). */
+export interface PlaylistImportOptions {
+  /** The day's D1 write budget, `0` for no cap; `SCAN_DAILY_WRITE_BUDGET` when absent. */
+  readonly writeBudget?: number;
+  /** The wall clock, which says what UTC day the budget is counted in. */
+  readonly clock?: () => number;
+  /**
+   * The rows written that neither the tally nor a progress row holds yet,
+   * as the scan's (`ScanOptions.ledger`): the run adds its own batches'
+   * rows, and leaves its last batch's for the driver to carry.
+   */
+  readonly ledger?: RowLedger;
+}
+
 /** What one run of the import did. */
 export interface PlaylistImportRun {
-  /** Whether the pass finished: the listing ran out and the sweep ran. */
+  /** Whether the pass finished: the listing ran out and the sweep ran, or the library was skipped. */
   readonly completed: boolean;
+  /** Whether the run stopped at the daily write budget (`scanner/budget.ts`). */
+  readonly paused: boolean;
   /** Epoch milliseconds the pass - not this run - began at. */
   readonly startedAt: number;
   /** What this run alone did. */
@@ -133,19 +166,53 @@ export interface PlaylistImportRun {
  * Nothing here is fatal. An object R2 cannot produce is counted as deferred
  * and left for the next run; an entry that names no track is counted and
  * skipped, because one bad line must not cost the whole playlist (#17).
+ *
+ * A failed listing judges the library as the scan's does (#84, "Skipping a
+ * library", `scanner/listing-failure.ts`): refused credentials or a missing
+ * bucket skip it at once, a refused cursor restarts the listing once, and
+ * anything else is a `LibraryListingError` the driver retries, then skips
+ * (`skipPlaylistLibrary`). The import reads library 1, the bound bucket; the
+ * import from every library is #84's ticket F.
+ *
+ * Every row it writes counts against the daily write budget, as D1 reports
+ * it: the progress rows, and each playlist's row and entries. A run that
+ * finds the budget spent stops before its next page and answers `paused`.
  */
 export async function importPlaylists(
   env: Env,
   now: Date = new Date(),
   limits: PlaylistImportLimits = DEFAULT_PLAYLIST_IMPORT_LIMITS,
+  options: PlaylistImportOptions = {},
 ): Promise<PlaylistImportRun> {
   const db = database(env);
+  const libraryId = DEFAULT_LIBRARY_ID;
   const storage = bindingStorage(env);
-  const previous = await readPlaylistImportProgress(db);
+  const budget = options.writeBudget ?? dailyWriteBudget(env);
+  const day = utcDay((options.clock ?? Date.now)());
+  const { progress: previous, rowsWritten } = await readPlaylistImportState(db);
+  // Today's rows the tally does not hold yet: carried in the progress row
+  // (`untallied`), and in the ledger.
+  let untallied = rowsWrittenOn(previous?.untallied ?? null, day);
+  const ledger = options.ledger ?? { rows: 0 };
+  let spent = rowsWrittenOn(rowsWritten, day) + untallied + ledger.rows;
   const startedAt = previous?.startedAt ?? now.getTime();
   const before = previous?.counts ?? noPlaylistImportCounts();
   const counts = noPlaylistImportCounts();
   counts.steps = 1;
+  const ran = (completed: boolean, paused = false): PlaylistImportRun => ({
+    completed,
+    paused,
+    startedAt,
+    counts,
+    totals: totalsOf(before, counts),
+  });
+
+  if (budgetReached(spent, budget)) {
+    console.warn(`playlists: paused until tomorrow, ${spent} of ${budget} rows written today`);
+    await flushLedger(db, day, ledger);
+
+    return ran(false, true);
+  }
 
   const owner = await findFirstAdmin(db);
   if (owner === null) {
@@ -155,20 +222,101 @@ export async function importPlaylists(
     // rather than a state anything should reach.
     console.warn("playlists: no admin user yet; nothing imported");
 
-    return { completed: false, startedAt, counts, totals: totalsOf(before, counts) };
+    return ran(false);
   }
 
   let cursor = previous?.cursor ?? "";
   let skip = previous?.skip ?? 0;
   let sweptTo = previous?.sweptTo ?? "";
+  let restarted = previous?.restarted ?? false;
   let imports = 0;
   let completed = false;
 
+  const progress = (carrying: number = untallied): PlaylistImportProgress => ({
+    startedAt,
+    cursor,
+    skip,
+    sweptTo,
+    restarted,
+    counts: totalsOf(before, counts),
+    untallied: carrying === 0 ? null : { day, rows: carrying },
+  });
+
+  /**
+   * Writes the progress row, which carries the rows written so far for the
+   * day's tally (`untallied`), or, at the end of the pass, clears it and
+   * puts every row it carried on the tally, then the end's own
+   * (`flushLedger`), as nothing comes after it (`scanner/budget.ts`).
+   */
+  const commit = async (done: boolean): Promise<void> => {
+    // Nothing is moved until the batch has run: one D1 refuses changes
+    // nothing, the carry included.
+    const carried = untallied + ledger.rows;
+    if (done) {
+      const rows = await countedBatch(db, [
+        clearPlaylistImportProgressStatement(db),
+        ...(carried > 0 ? [tallyStatement(db, day, carried)] : []),
+      ]);
+      untallied = 0;
+      ledger.rows = rows;
+      spent += rows;
+      await flushLedger(db, day, ledger);
+      return;
+    }
+    const rows = await countedBatch(db, [
+      writePlaylistImportProgressStatement(db, progress(carried)),
+    ]);
+    untallied = carried;
+    ledger.rows = rows;
+    spent += rows;
+  };
+
   for (;;) {
-    const listing = await storage.list({
-      limit: limits.pageSize,
-      ...(cursor === "" ? {} : { cursor }),
-    });
+    if (budgetReached(spent, budget)) {
+      // Every page so far is committed with its progress: the next UTC day
+      // resumes from here.
+      console.warn(`playlists: paused until tomorrow, ${spent} of ${budget} rows written today`);
+      await flushLedger(db, day, ledger);
+
+      return ran(false, true);
+    }
+
+    let listing: StorageListing;
+    try {
+      listing = await storage.list({
+        limit: limits.pageSize,
+        ...(cursor === "" ? {} : { cursor }),
+      });
+    } catch (error) {
+      const reason = listingFailure(error);
+      if (skipsAtOnce(reason)) {
+        console.warn(`playlists: skipping library ${libraryId} for this pass (${reason})`, error);
+        const carried = untallied + ledger.rows;
+        ledger.rows = await countedBatch(db, [
+          stampLibraryStatement(db, libraryId, { lastScanError: reason }),
+          clearPlaylistImportProgressStatement(db),
+          ...(carried > 0 ? [tallyStatement(db, day, carried)] : []),
+        ]);
+        untallied = 0;
+        await flushLedger(db, day, ledger);
+
+        return ran(true);
+      }
+      if (reason === "invalid_cursor" && cursor !== "" && !restarted) {
+        console.warn(`playlists: library ${libraryId} refused its cursor; listing it again`);
+        cursor = "";
+        skip = 0;
+        sweptTo = "";
+        restarted = true;
+        await commit(false);
+        continue;
+      }
+      throw new LibraryListingError(
+        libraryId,
+        reason === "invalid_cursor" ? "unavailable" : reason,
+        { cause: error },
+      );
+    }
     const objects = listing.objects;
     // Every playlist the page offered, which is what the sweep is allowed to
     // measure the library against - and, separately, the ones this run will
@@ -214,7 +362,7 @@ export async function importPlaylists(
       counts.examined++;
       imports++;
 
-      await importOne(storage, db, object, owner.id, stored.get(object.key), counts);
+      ledger.rows += await importOne(storage, db, object, owner.id, stored.get(object.key), counts);
     }
 
     if (interrupted) {
@@ -233,6 +381,7 @@ export async function importPlaylists(
       listing.cursor !== null ? (lastKey ?? sweptTo) : null,
       pageKeys,
       new Date(startedAt),
+      ledger,
     );
     counts.removed += removed.length;
 
@@ -249,24 +398,40 @@ export async function importPlaylists(
 
     // Written per page, not per run: a run the platform cuts short must not
     // cost more than the page it was in.
-    await writePlaylistImportProgress(db, {
-      startedAt,
-      cursor,
-      skip,
-      sweptTo,
-      counts: totalsOf(before, counts),
-    });
+    await commit(false);
   }
 
-  const totals = totalsOf(before, counts);
+  await commit(completed);
 
-  if (completed) {
-    await clearPlaylistImportProgress(db);
-  } else {
-    await writePlaylistImportProgress(db, { startedAt, cursor, skip, sweptTo, counts: totals });
-  }
+  return ran(completed);
+}
 
-  return { completed, startedAt, counts, totals };
+/**
+ * Skips the import of a library whose listing kept failing
+ * (`LibraryListingError`, `maxFailures` times): one batch writes its
+ * `last_scan_error` and ends the import's pass, so the pass ends rather than
+ * being given up. Its playlists stay.
+ */
+export async function skipPlaylistLibrary(
+  env: Env,
+  libraryId: number,
+  reason: StorageFailure,
+  options: Pick<PlaylistImportOptions, "clock" | "ledger"> = {},
+): Promise<void> {
+  const db = database(env);
+  const day = utcDay((options.clock ?? Date.now)());
+  const ledger = options.ledger ?? { rows: 0 };
+  const { progress } = await readPlaylistImportState(db);
+  console.warn(`playlists: skipping library ${libraryId} for this pass (${reason})`);
+  // The pass ends here: what the progress row carried and the ledger holds
+  // go on the tally, and then this batch's own rows.
+  const carried = rowsWrittenOn(progress?.untallied ?? null, day) + ledger.rows;
+  ledger.rows = await countedBatch(db, [
+    stampLibraryStatement(db, libraryId, { lastScanError: reason }),
+    clearPlaylistImportProgressStatement(db),
+    ...(carried > 0 ? [tallyStatement(db, day, carried)] : []),
+  ]);
+  await flushLedger(db, day, ledger);
 }
 
 /**
@@ -274,7 +439,8 @@ export async function importPlaylists(
  *
  * The entries are resolved in one lookup for the whole file rather than one
  * per line: a playlist of two hundred songs is then two D1 reads, not two
- * hundred.
+ * hundred. It answers the rows D1 says it wrote: none for a playlist the
+ * library already holds exactly.
  */
 async function importOne(
   storage: LibraryStorage,
@@ -283,10 +449,10 @@ async function importOne(
   adminId: string,
   held: IndexedPlaylist | undefined,
   counts: PlaylistImportCounts,
-): Promise<void> {
+): Promise<number> {
   const text = await readPlaylistText(storage, object.key, counts);
   if (text === null) {
-    return;
+    return 0;
   }
 
   const parsed = parseM3u(text);
@@ -338,10 +504,10 @@ async function importOne(
   if (matchesStoredPlaylist(held, imported)) {
     counts.unchanged++;
 
-    return;
+    return 0;
   }
 
-  await runBatch(db, upsertPlaylistStatements(db, imported));
+  return countedBatch(db, upsertPlaylistStatements(db, imported));
 }
 
 /**

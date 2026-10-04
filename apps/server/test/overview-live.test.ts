@@ -110,6 +110,8 @@ describe("GET /api/overview/live before any scan or listener", () => {
         running: false,
         phase: null,
         progress: null,
+        library: null,
+        paused: null,
         estimatedTotal: null,
         last: null,
         scheduled: null,
@@ -242,12 +244,16 @@ describe("GET /api/overview/live with listeners", () => {
     expect(paused?.track.albumId).toMatch(/^al-/);
   });
 
-  it("makes exactly one D1 round trip, of two statements, and writes nothing", async () => {
+  it("makes exactly one D1 round trip, of three statements, and writes nothing", async () => {
     d1.reset();
     await liveOf(owner);
 
-    expect(cost(d1.statements)).toMatchObject({ statements: 2, roundTrips: 1, rowsWritten: 0 });
-    expect(d1.statements.map(shape)).toEqual(["select property", "select now_playing"]);
+    expect(cost(d1.statements)).toMatchObject({ statements: 3, roundTrips: 1, rowsWritten: 0 });
+    expect(d1.statements.map(shape)).toEqual([
+      "select property",
+      "select library",
+      "select now_playing",
+    ]);
   });
 
   it("answers nowPlaying: null to a role without activity:read, reading no listener", async () => {
@@ -255,8 +261,8 @@ describe("GET /api/overview/live with listeners", () => {
     const body = await liveOf(reader);
 
     expect(body.nowPlaying).toBeNull();
-    expect(cost(d1.statements)).toMatchObject({ statements: 1, roundTrips: 1, rowsWritten: 0 });
-    expect(d1.statements.map(shape)).toEqual(["select property"]);
+    expect(cost(d1.statements)).toMatchObject({ statements: 2, roundTrips: 1, rowsWritten: 0 });
+    expect(d1.statements.map(shape)).toEqual(["select property", "select library"]);
     expect(body.scan).toEqual((await liveOf(owner)).scan);
   });
 });

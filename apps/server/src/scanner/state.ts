@@ -15,7 +15,13 @@
  *   the accessors below are the module's interface rather than the keys.
  * - **`BrokenObjects`** remembers, by key and etag, the objects whose bytes
  *   could not be read, so a permanently broken file is read once rather than
- *   once every pass.
+ *   once every pass. It is library 1's memo; every other library has its own,
+ *   `BrokenObjects:<id>` (#84, "Scanning several libraries").
+ *
+ * A pass walks every active library in turn, in ascending id, so
+ * `ScanProgress` also says which library its cursor belongs to. A row written
+ * by v0.5.0 names none, and means library 1, so a pass in flight resumes
+ * across the deploy.
  *
  * Each row holds JSON rather than a bare value, and the reads take several
  * keys at a time, so a run's whole state costs one query in and one statement
@@ -31,10 +37,11 @@
  * always correct, while a scan that trusts a half-written cursor is not.
  */
 
-import { property } from "@stratosonic/db";
-import { eq, inArray, sql } from "drizzle-orm";
+import { DEFAULT_LIBRARY_ID, type Library, library, property } from "@stratosonic/db";
+import { asc, eq, inArray, like, or, sql } from "drizzle-orm";
 import type { Database } from "../db";
 import { PLAYLIST_IMPORT_PROGRESS_KEY } from "../playlists/state";
+import { type RowsWritten, readRowsWritten, SCAN_ROWS_WRITTEN_KEY } from "./budget";
 import type { ScanStatement } from "./repository";
 
 /** The row a pass in flight writes. */
@@ -43,8 +50,25 @@ const SCAN_PROGRESS_KEY = "ScanProgress";
 /** The row a completed pass writes. */
 const LAST_SCAN_SUMMARY_KEY = "LastScanSummary";
 
-/** The row that remembers which objects are not worth reading again. */
+/** The row that remembers which objects of library 1 are not worth reading again. */
 const BROKEN_OBJECTS_KEY = "BrokenObjects";
+
+/** The memo of a library's broken objects: library 1's keeps v0.5.0's key. */
+export function brokenObjectsKey(libraryId: number): string {
+  return libraryId === DEFAULT_LIBRARY_ID
+    ? BROKEN_OBJECTS_KEY
+    : `${BROKEN_OBJECTS_KEY}:${libraryId}`;
+}
+
+/** The library a memo key belongs to, or null for a key that is no memo. */
+function libraryOfBrokenObjectsKey(key: string): number | null {
+  if (key === BROKEN_OBJECTS_KEY) {
+    return DEFAULT_LIBRARY_ID;
+  }
+  const match = /^BrokenObjects:([1-9][0-9]{0,15})$/.exec(key);
+
+  return match === null ? null : Number(match[1]);
+}
 
 /**
  * The row the console's file routes write after an upload or delete:
@@ -112,11 +136,21 @@ export function addedCounts(left: ScanCounts, right: ScanCounts): ScanCounts {
   return total;
 }
 
+/** What a pass has done in each library, by library id. */
+export type LibraryCounts = Readonly<Record<string, ScanCounts>>;
+
 /** A pass that has not finished, as the next run needs to find it. */
 export interface ScanProgress {
   /** Epoch milliseconds the pass began at. */
   readonly startedAt: number;
-  /** The R2 cursor that produces the page to resume in; `""` is the start. */
+  /**
+   * The library the cursor belongs to. The pass resumes in the first active
+   * library whose id is at least this, so a library that is gone, or being
+   * removed, is left with its cursor, and an id past every library means
+   * every library has been listed. A v0.5.0 row has none: library 1.
+   */
+  readonly libraryId: number;
+  /** The storage cursor that produces the page to resume in; `""` is the start. */
   readonly cursor: string;
   /** How many objects of that page the last run already handled. */
   readonly skip: number;
@@ -125,7 +159,24 @@ export interface ScanProgress {
    * sorts at or below this has been seen, or deleted, in this pass.
    */
   readonly sweptTo: string;
+  /**
+   * Whether this library's listing was already restarted in this pass after
+   * the storage refused its cursor (`invalid_cursor`): it is restarted once,
+   * and a second refusal is a failure like any other.
+   */
+  readonly restarted: boolean;
+  /** What the whole pass has done so far, every library together. */
   readonly counts: ScanCounts;
+  /** The same, library by library. */
+  readonly libraries: LibraryCounts;
+  /**
+   * Rows this pass wrote that the day's tally (`ScanRowsWritten`) does not
+   * hold yet: the progress rows of pages that wrote nothing else. They ride
+   * in this row, which every page writes anyway, and join the tally with
+   * the next batch that writes more than its progress, so an unchanged
+   * page costs one row written, not two (`scanner/budget.ts`).
+   */
+  readonly untallied: RowsWritten | null;
 }
 
 /** A pass that finished. */
@@ -133,6 +184,8 @@ export interface ScanSummary {
   readonly startedAt: number;
   readonly finishedAt: number;
   readonly counts: ScanCounts;
+  /** What the pass did in each library it scanned, by library id. */
+  readonly libraries: LibraryCounts;
 }
 
 /**
@@ -147,20 +200,117 @@ export interface ScanSummary {
  */
 export type BrokenObjects = Map<string, string>;
 
+/** What a step reads of a library row: where its bucket is, and whether it is served. */
+export type ScanLibrary = Pick<
+  Library,
+  "id" | "name" | "kind" | "path" | "endpoint" | "bucket" | "credentials" | "state"
+>;
+
 /** Everything one run needs to read before it starts. */
 export interface ScanState {
   readonly progress: ScanProgress | null;
-  readonly broken: BrokenObjects;
+  /** Each library's memo, by library id; a library with none is absent. */
+  readonly broken: ReadonlyMap<number, BrokenObjects>;
+  /** The day's write tally (`scanner/budget.ts`). */
+  readonly rowsWritten: RowsWritten | null;
+  /** Every library row, in ascending id, so a step sees each one's `state`. */
+  readonly libraries: readonly ScanLibrary[];
 }
 
-/** The state of a scan in one query. */
+/**
+ * The state of a scan and the library rows, in one batch: one round trip,
+ * one subrequest (#84, "The step budget, recomputed for S3"). Every memo is
+ * read, one row per library, so a step that moves to the next library has
+ * its memo already.
+ */
 export async function readScanState(db: Database): Promise<ScanState> {
-  const stored = await readProperties(db, [SCAN_PROGRESS_KEY, BROKEN_OBJECTS_KEY]);
+  const [rows, libraries] = await db.batch([
+    db
+      .select()
+      .from(property)
+      .where(
+        or(
+          inArray(property.id, [SCAN_PROGRESS_KEY, SCAN_ROWS_WRITTEN_KEY, BROKEN_OBJECTS_KEY]),
+          like(property.id, `${BROKEN_OBJECTS_KEY}:%`),
+        ),
+      ),
+    scanLibrariesQuery(db),
+  ]);
+  const stored = parsedProperties(rows);
+  const broken = new Map<number, BrokenObjects>();
+  for (const [key, value] of stored) {
+    const libraryId = libraryOfBrokenObjectsKey(key);
+    if (libraryId !== null) {
+      broken.set(libraryId, readBroken(value));
+    }
+  }
 
   return {
     progress: readProgress(stored.get(SCAN_PROGRESS_KEY)),
-    broken: readBroken(stored.get(BROKEN_OBJECTS_KEY)),
+    broken,
+    rowsWritten: readRowsWritten(stored.get(SCAN_ROWS_WRITTEN_KEY)),
+    libraries,
   };
+}
+
+/**
+ * The libraries' names and states, in ascending id: what the console's live
+ * view needs to say which library a pass is in (`scanLibraryPosition`), as a
+ * statement for its batch.
+ */
+export function libraryNamesQuery(db: Database) {
+  return db
+    .select({ id: library.id, name: library.name, state: library.state })
+    .from(library)
+    .orderBy(asc(library.id));
+}
+
+/** The library a pass in flight is scanning, as the console shows it. */
+export interface ScanLibraryPosition {
+  readonly id: number;
+  readonly name: string;
+  /** Its place among the active libraries, from 1. */
+  readonly index: number;
+  /** How many libraries are active. */
+  readonly of: number;
+}
+
+/**
+ * Which library the scan in flight is in, by the rule the scan resumes by
+ * (the first active library whose id is at least the progress row's), or
+ * null when no scan is in flight or every library has been listed.
+ */
+export function scanLibraryPosition(
+  progress: ScanProgress | null,
+  libraries: readonly Pick<Library, "id" | "name" | "state">[],
+): ScanLibraryPosition | null {
+  if (progress === null) {
+    return null;
+  }
+  const active = libraries.filter((row) => row.state === "active");
+  const index = active.findIndex((row) => row.id >= progress.libraryId);
+  const current = active[index];
+
+  return current === undefined
+    ? null
+    : { id: current.id, name: current.name, index: index + 1, of: active.length };
+}
+
+/** Every library row a step needs, in ascending id, as a statement for a batch. */
+export function scanLibrariesQuery(db: Database) {
+  return db
+    .select({
+      id: library.id,
+      name: library.name,
+      kind: library.kind,
+      path: library.path,
+      endpoint: library.endpoint,
+      bucket: library.bucket,
+      credentials: library.credentials,
+      state: library.state,
+    })
+    .from(library)
+    .orderBy(asc(library.id));
 }
 
 /** The progress of a pass in flight, or null when none is. */
@@ -201,6 +351,13 @@ export interface ScanReport {
   readonly lastCompleted: ScanSummary | null;
   /** When the console last changed a file in the bucket, or null if it never has. */
   readonly lastChangedAt: number | null;
+  /** The day's write tally, which says whether the scan is paused (`scanner/budget.ts`). */
+  readonly rowsWritten: RowsWritten | null;
+  /**
+   * The rows the import in flight carries for the tally in its progress row
+   * (the scan's are `progress.untallied`), or null.
+   */
+  readonly importUntallied: RowsWritten | null;
 }
 
 /** Everything a pass shows the outside world, in one query. */
@@ -219,6 +376,7 @@ export function scanReportQuery(db: Database) {
     PLAYLIST_IMPORT_PROGRESS_KEY,
     LAST_SCAN_SUMMARY_KEY,
     LIBRARY_CHANGED_AT_KEY,
+    SCAN_ROWS_WRITTEN_KEY,
   ]);
 }
 
@@ -236,6 +394,11 @@ export function toScanReport(rows: Awaited<ReturnType<typeof scanReportQuery>>):
     importStartedAt: importing === undefined ? null : wholeNumber(importing.startedAt),
     lastCompleted: readSummary(stored.get(LAST_SCAN_SUMMARY_KEY)),
     lastChangedAt: wholeNumber(stored.get(LIBRARY_CHANGED_AT_KEY)?.at),
+    rowsWritten: readRowsWritten(stored.get(SCAN_ROWS_WRITTEN_KEY)),
+    importUntallied:
+      typeof importing?.untallied === "object" && importing.untallied !== null
+        ? readRowsWritten(importing.untallied as Record<string, unknown>)
+        : null,
   };
 }
 
@@ -260,9 +423,14 @@ export function writeLibraryChangedAtStatement(db: Database, at: number): ScanSt
     });
 }
 
-/** The objects currently written off as unreadable. */
-export async function readBrokenObjects(db: Database): Promise<BrokenObjects> {
-  return readBroken((await readProperties(db, [BROKEN_OBJECTS_KEY])).get(BROKEN_OBJECTS_KEY));
+/** The objects of a library currently written off as unreadable. */
+export async function readBrokenObjects(
+  db: Database,
+  libraryId: number = DEFAULT_LIBRARY_ID,
+): Promise<BrokenObjects> {
+  const key = brokenObjectsKey(libraryId);
+
+  return readBroken((await readProperties(db, [key])).get(key));
 }
 
 export function writeScanProgressStatement(db: Database, progress: ScanProgress): ScanStatement {
@@ -273,12 +441,44 @@ export function writeLastScanSummaryStatement(db: Database, summary: ScanSummary
   return writeStatement(db, LAST_SCAN_SUMMARY_KEY, summary);
 }
 
-export function writeBrokenObjectsStatement(db: Database, broken: BrokenObjects): ScanStatement {
-  return writeStatement(db, BROKEN_OBJECTS_KEY, Object.fromEntries(broken));
+export function writeBrokenObjectsStatement(
+  db: Database,
+  libraryId: number,
+  broken: BrokenObjects,
+): ScanStatement {
+  return writeStatement(db, brokenObjectsKey(libraryId), Object.fromEntries(broken));
+}
+
+export function deleteBrokenObjectsStatement(db: Database, libraryId: number): ScanStatement {
+  return db.delete(property).where(eq(property.id, brokenObjectsKey(libraryId)));
 }
 
 export function clearScanProgressStatement(db: Database): ScanStatement {
   return db.delete(property).where(eq(property.id, SCAN_PROGRESS_KEY));
+}
+
+/**
+ * The statements that start a library's scan over, for a change of its
+ * bucket (#84, "Scanning several libraries": a `PATCH` that changes a
+ * library's bucket resets its cursor, if the pass is in it, and its memo, in
+ * the same batch). The pass then lists the new bucket from its start, and
+ * sweeps the tracks it no longer holds.
+ */
+export function resetLibraryScanStatements(db: Database, libraryId: number): ScanStatement[] {
+  // A v0.5.0 row names no library, and is library 1's.
+  const ofThisLibrary = sql`coalesce(json_extract(${property.value}, '$.libraryId'), ${DEFAULT_LIBRARY_ID}) = ${libraryId}`;
+
+  return [
+    db
+      .update(property)
+      .set({
+        value: sql`json_set(${property.value}, '$.cursor', '', '$.skip', 0, '$.sweptTo', '', '$.restarted', json('false'))`,
+      })
+      .where(
+        sql`${property.id} = ${SCAN_PROGRESS_KEY} and json_valid(${property.value}) and ${ofThisLibrary}`,
+      ),
+    deleteBrokenObjectsStatement(db, libraryId),
+  ];
 }
 
 /**
@@ -378,12 +578,23 @@ function readProgress(stored: Record<string, unknown> | undefined): ScanProgress
     return null;
   }
 
+  const libraryId = wholeNumber(stored.libraryId);
+
   return {
     startedAt,
+    // v0.5.0 wrote no library: its pass was in library 1.
+    libraryId: libraryId === null || libraryId < 1 ? DEFAULT_LIBRARY_ID : libraryId,
     cursor: typeof stored.cursor === "string" ? stored.cursor : "",
     skip: wholeNumber(stored.skip) ?? 0,
     sweptTo: typeof stored.sweptTo === "string" ? stored.sweptTo : "",
+    restarted: stored.restarted === true,
     counts,
+    libraries: readLibraryCounts(stored.libraries),
+    untallied: readRowsWritten(
+      typeof stored.untallied === "object" && stored.untallied !== null
+        ? (stored.untallied as Record<string, unknown>)
+        : undefined,
+    ),
   };
 }
 
@@ -399,7 +610,23 @@ function readSummary(stored: Record<string, unknown> | undefined): ScanSummary |
     return null;
   }
 
-  return { startedAt, finishedAt, counts };
+  return { startedAt, finishedAt, counts, libraries: readLibraryCounts(stored.libraries) };
+}
+
+/** Per-library counts as stored; an entry that will not parse is left out. */
+function readLibraryCounts(value: unknown): LibraryCounts {
+  const found: Record<string, ScanCounts> = {};
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return found;
+  }
+  for (const [id, stored] of Object.entries(value)) {
+    const counts = readCounts(stored);
+    if (/^[1-9][0-9]{0,15}$/.test(id) && counts !== null) {
+      found[id] = counts;
+    }
+  }
+
+  return found;
 }
 
 function readBroken(stored: Record<string, unknown> | undefined): BrokenObjects {

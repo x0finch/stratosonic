@@ -78,16 +78,34 @@
  * `maxFailures` consecutive failures the driver stops and clears its state,
  * leaving the next cron poke to start a fresh pass; a scan that cannot make
  * progress should be quiet until something changes, not spin.
+ *
+ * One failure is not given up on: a library whose bucket listing keeps
+ * failing (`LibraryListingError`, #84 "Skipping a library"). After
+ * `maxFailures` of those the library is skipped for the pass, with
+ * `last_scan_error`, and the pass carries on to the next library and the
+ * playlists, which would otherwise never run while one bucket is down. Its
+ * tracks are kept: nothing is swept from a library that was not listed.
+ *
+ * ## The daily write budget
+ *
+ * A step that finds the day's D1 write budget spent (`scanner/budget.ts`)
+ * answers that it paused, and the driver ends the pass as it gives one up:
+ * its state and alarm go, a pending change stays, and the D1 cursor waits
+ * for the first cron poke after 00:00 UTC.
  */
 
 import { DurableObject } from "cloudflare:workers";
+import { database } from "../db";
 import type { Env } from "../env";
 import {
   DEFAULT_PLAYLIST_IMPORT_LIMITS,
   importPlaylists,
   type PlaylistImportLimits,
+  skipPlaylistLibrary,
 } from "../playlists/import";
-import { DEFAULT_SCAN_LIMITS, runScan, type ScanLimits } from "./scan";
+import { flushLedger, type RowLedger, utcDay } from "./budget";
+import { LibraryListingError, skipsAtOnce } from "./listing-failure";
+import { DEFAULT_SCAN_LIMITS, runScan, type ScanLimits, skipLibrary } from "./scan";
 
 /** The one instance: a library has one scan, so it has one driver. */
 export const SCAN_DRIVER_INSTANCE = "library";
@@ -134,6 +152,11 @@ export interface ScanDriverTuning {
   readonly maxFailures?: number;
   readonly scanLimits?: Partial<ScanLimits>;
   readonly playlistLimits?: Partial<PlaylistImportLimits>;
+  /**
+   * The daily D1 write budget, `0` for no cap, in place of
+   * `SCAN_DAILY_WRITE_BUDGET` (`scanner/budget.ts`).
+   */
+  readonly writeBudget?: number;
 }
 
 /** The same, with every question answered, as the state carries it. */
@@ -145,13 +168,21 @@ interface Tuning {
   readonly maxFailures: number;
   readonly scanLimits: ScanLimits;
   readonly playlistLimits: PlaylistImportLimits;
+  /** The budget the tuning gave, or null for `SCAN_DAILY_WRITE_BUDGET`. */
+  readonly writeBudget: number | null;
 }
 
-/** Which half of a pass the next step belongs to. */
+/**
+ * Which half of a pass the next step belongs to. The scan's half also runs
+ * the cleanup of removed libraries first, and the prune last (`scan.ts`).
+ */
 type Phase = "scan" | "playlists";
 
-/** What a step leaves for the one after it: a phase, or the end of the pass. */
-type Next = Phase | "done";
+/**
+ * What a step leaves for the one after it: a phase, the end of the pass, or
+ * a pause at the daily write budget, which ends the pass as a give-up does.
+ */
+type Next = Phase | "done" | "paused";
 
 /**
  * How early a debounce alarm may fire and still start the pass. An alarm is
@@ -182,6 +213,14 @@ interface DriverState {
    * `startedAt`, so it covers only a change made before this instant.
    */
   readonly coveredFrom: number;
+  /**
+   * D1 rows the pass wrote that the daily write tally does not hold yet: the
+   * rows of the last batch a step ran, known only once it had run
+   * (`scanner/budget.ts`, `RowLedger`). The next step puts them on the tally
+   * or in its progress row; a pass that ends, pauses or is given up on puts
+   * them on the tally itself.
+   */
+  readonly unreported: number;
   readonly tuning: Tuning;
 }
 
@@ -358,18 +397,33 @@ export class ScanDriver extends DurableObject<Env> {
       return;
     }
 
+    const ledger: RowLedger = { rows: state.unreported };
     try {
-      const { next, startedAt } = await this.step(state);
-      const stepped = { ...state, coveredFrom: Math.min(state.coveredFrom, startedAt) };
+      const { next, startedAt } = await this.step(state, ledger);
+      const stepped = {
+        ...state,
+        coveredFrom: Math.min(state.coveredFrom, startedAt),
+        unreported: ledger.rows,
+      };
       if (next === "done") {
         await this.finish(stepped);
+
+        return;
+      }
+      if (next === "paused") {
+        console.warn(
+          "scan driver: the daily write budget is spent; the pass resumes from its cursor " +
+            "on the first cron poke after 00:00 UTC",
+        );
+        await this.giveUp(stepped);
 
         return;
       }
 
       await this.arm({ ...stepped, phase: next, failures: 0 }, state.tuning.stepDelayMs);
     } catch (error) {
-      await this.retry(state, error);
+      // The batches the step ran before it threw wrote what they wrote.
+      await this.retry({ ...state, unreported: ledger.rows }, error);
     }
   }
 
@@ -412,6 +466,7 @@ export class ScanDriver extends DurableObject<Env> {
    * `touch` that arrived during the step is seen.
    */
   private async finish(state: DriverState): Promise<void> {
+    await this.report(state);
     const pending = await this.readPending();
     if (pending === null || pending.changedAt < state.coveredFrom) {
       await this.stop();
@@ -429,11 +484,22 @@ export class ScanDriver extends DurableObject<Env> {
    * Runs the phase's step and says which phase the next one belongs to, and
    * when the phase's pass began, as its row in D1 says.
    */
-  private async step(state: DriverState): Promise<{ next: Next; startedAt: number }> {
+  private async step(
+    state: DriverState,
+    ledger: RowLedger,
+  ): Promise<{ next: Next; startedAt: number }> {
     const now = new Date(state.startedAt);
 
+    const budget =
+      state.tuning.writeBudget === null
+        ? { ledger }
+        : { ledger, writeBudget: state.tuning.writeBudget };
+
     if (state.phase === "scan") {
-      const run = await runScan(this.env, now, state.tuning.scanLimits);
+      const run = await runScan(this.env, now, state.tuning.scanLimits, budget);
+      if (run.paused) {
+        return { next: "paused", startedAt: run.startedAt };
+      }
       console.log(
         run.completed
           ? `scan: pass complete, ${JSON.stringify(run.totals)}`
@@ -446,7 +512,10 @@ export class ScanDriver extends DurableObject<Env> {
       return { next: run.completed ? "playlists" : "scan", startedAt: run.startedAt };
     }
 
-    const imported = await importPlaylists(this.env, now, state.tuning.playlistLimits);
+    const imported = await importPlaylists(this.env, now, state.tuning.playlistLimits, budget);
+    if (imported.paused) {
+      return { next: "paused", startedAt: imported.startedAt };
+    }
     console.log(
       imported.completed
         ? `playlists: pass complete, ${JSON.stringify(imported.totals)}`
@@ -456,7 +525,35 @@ export class ScanDriver extends DurableObject<Env> {
     return { next: imported.completed ? "done" : "playlists", startedAt: imported.startedAt };
   }
 
-  /** Logs a failed step and schedules the retry, or gives the pass up. */
+  /**
+   * Skips the library whose listing kept failing (#84, "Skipping a
+   * library"), in the phase it failed in, and carries the pass on: the scan
+   * moves to the next library, and the import, which reads library 1 alone
+   * until #84's ticket F, ends its pass. Giving the pass up instead would
+   * park every later library and the playlists on the one that does not
+   * answer.
+   */
+  private async skip(state: DriverState, failed: LibraryListingError): Promise<void> {
+    const reason = skipsAtOnce(failed.reason) ? failed.reason : "unavailable";
+    const ledger: RowLedger = { rows: state.unreported };
+    if (state.phase === "scan") {
+      await skipLibrary(this.env, new Date(state.startedAt), failed.libraryId, reason, {
+        ledger,
+      });
+      await this.arm({ ...state, failures: 0, unreported: ledger.rows }, state.tuning.stepDelayMs);
+
+      return;
+    }
+
+    await skipPlaylistLibrary(this.env, failed.libraryId, reason, { ledger });
+    await this.finish({ ...state, unreported: ledger.rows });
+  }
+
+  /**
+   * Logs a failed step and schedules the retry, or gives the pass up. A
+   * library whose listing failed is skipped instead of giving up, once it
+   * has failed `maxFailures` times in a row (#84, "Skipping a library").
+   */
   private async retry(state: DriverState, error: unknown): Promise<void> {
     const failures = state.failures + 1;
     console.error(
@@ -465,12 +562,34 @@ export class ScanDriver extends DurableObject<Env> {
       error,
     );
 
+    if (
+      error instanceof LibraryListingError &&
+      (skipsAtOnce(error.reason) || failures >= state.tuning.maxFailures)
+    ) {
+      try {
+        await this.skip(state, error);
+      } catch (skipError) {
+        // The skip could not be written (D1): a failure like any other,
+        // counted once with the one it answered, which gives the pass up
+        // once the failures reach the bound.
+        console.error("scan driver: the skip failed too", skipError);
+        await this.afterFailure(state, failures);
+      }
+
+      return;
+    }
+
+    await this.afterFailure(state, failures);
+  }
+
+  /** Schedules the retry of a pass that has failed `failures` times in a row, or gives it up. */
+  private async afterFailure(state: DriverState, failures: number): Promise<void> {
     if (failures >= state.tuning.maxFailures) {
       console.error(
         `scan driver: giving up after ${failures} failed steps; ` +
           "the next cron poke resumes the pass",
       );
-      await this.giveUp();
+      await this.giveUp(state);
 
       return;
     }
@@ -511,7 +630,8 @@ export class ScanDriver extends DurableObject<Env> {
    * it may never list the changed key, and its end queues the follow-up that
    * does (`finish`). With nothing pending the driver stops.
    */
-  private async giveUp(): Promise<void> {
+  private async giveUp(state: DriverState): Promise<void> {
+    await this.report(state);
     if ((await this.readPending()) === null) {
       await this.stop();
 
@@ -520,6 +640,19 @@ export class ScanDriver extends DurableObject<Env> {
 
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.delete(STATE_KEY);
+  }
+
+  /**
+   * Puts the rows the pass's last step wrote on the daily write tally, when
+   * the pass ends and nothing after would carry them (`flushLedger`). A D1
+   * that refuses is logged: the rows go uncounted, and the pass ends anyway.
+   */
+  private async report(state: DriverState): Promise<void> {
+    try {
+      await flushLedger(database(this.env), utcDay(Date.now()), { rows: state.unreported });
+    } catch (error) {
+      console.error("scan driver: the last step's rows could not be tallied", error);
+    }
   }
 
   /**
@@ -591,12 +724,27 @@ function resolved(tuning: ScanDriverTuning): Tuning {
         DEFAULT_PLAYLIST_IMPORT_LIMITS.objectsPerRun,
       ),
     },
+    // Zero is a budget too: no cap.
+    writeBudget:
+      typeof tuning.writeBudget === "number" &&
+      Number.isSafeInteger(tuning.writeBudget) &&
+      tuning.writeBudget >= 0
+        ? tuning.writeBudget
+        : null,
   };
 }
 
 /** The state of a pass that starts now, stamped `startedAt`. */
 function freshPass(startedAt: number, tuning: Tuning): DriverState {
-  return { phase: "scan", startedAt, armedAt: 0, failures: 0, coveredFrom: startedAt, tuning };
+  return {
+    phase: "scan",
+    startedAt,
+    armedAt: 0,
+    failures: 0,
+    coveredFrom: startedAt,
+    unreported: 0,
+    tuning,
+  };
 }
 
 function positive(value: unknown, fallback: number): number {
@@ -631,6 +779,12 @@ function restored(stored: unknown): DriverState | null {
       typeof state.coveredFrom === "number" && Number.isFinite(state.coveredFrom)
         ? Math.min(state.coveredFrom, startedAt)
         : startedAt,
+    unreported:
+      typeof state.unreported === "number" &&
+      Number.isFinite(state.unreported) &&
+      state.unreported > 0
+        ? Math.floor(state.unreported)
+        : 0,
     tuning: resolved(tuning),
   };
 }

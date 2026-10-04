@@ -1,9 +1,10 @@
 /**
- * The Scan: the scheduled pass that keeps D1 in step with the R2 bucket.
+ * The Scan: the scheduled pass that keeps D1 in step with every library's
+ * bucket.
  *
- * Music arrives in the bucket out of band, with rclone, as
+ * Music arrives in a bucket out of band, with rclone, as
  * `artist/album/title.ext` (ADR-0004). Nothing tells the server when. So the
- * scan walks the bucket, reads the header of each audio object it has not
+ * scan walks each bucket, reads the header of each audio object it has not
  * seen before, and writes the Artists, Albums and Tracks it finds; tracks
  * whose object has gone are removed, and albums and artists left with nothing
  * are pruned.
@@ -15,6 +16,35 @@
  * alarm invocation is a Worker invocation, with the same subrequest budget -
  * except that the steps now run back to back rather than a quarter of an hour
  * apart.
+ *
+ * ## Several libraries (#84, "Scanning several libraries"; ADR-0009)
+ *
+ * A pass has Navidrome's phase-by-phase shape (`scanner/scanner.go`):
+ *
+ * 1. the cleanup of libraries being removed (`scanner/cleanup.ts`), one
+ *    bounded batch a step, before anything is scanned;
+ * 2. the scan of each `active` library in ascending id, each from its own
+ *    cursor, in its own bucket (`storageFor`);
+ * 3. one prune, since artists are shared;
+ * 4. the playlist import, which the driver runs after this (`playlists/`).
+ *
+ * Every step reads the scan's state and the library rows in one batch, so it
+ * sees each library's current `state`: a library set `removing` mid-pass is
+ * left at the next step, with its cursor and no sweep. When a library's
+ * listing ends, the page's batch moves the pass to the next library and
+ * stamps both (`last_scan_at`, `last_scan_started_at`).
+ *
+ * **Only a failed `list` judges a library.** Refused credentials or a
+ * missing bucket skip it at once, with `last_scan_error`; a refused cursor
+ * restarts its listing once; anything else (throttling, an outage) is a
+ * `LibraryListingError` the driver retries with its backoff and, after
+ * `maxFailures`, skips (`skipLibrary`). A failed read of one object stays that
+ * object's `deferred`, as it always was. **Nothing is swept from a library
+ * that was not listed**: the sweep only ever removes rows inside a listed
+ * page's interval.
+ *
+ * Covers, whatever library their track is in, go to the bound bucket's
+ * `_covers/` (#84, "Covers"), and only library 1's listing hides that prefix.
  *
  * ## The budget a run has
  *
@@ -30,28 +60,39 @@
  * confirms both against a real deployment.
  *
  * Fifty calls is what the limits below are derived from. Worst case for one
- * run, with the defaults:
+ * run, with the defaults, for the bound bucket and for an S3 library alike,
+ * since an S3 call is one `fetch` as the binding call it replaces is one
+ * subrequest (#84, "The step budget, recomputed for S3"):
  *
  * | what | calls |
  * | --- | --- |
- * | read the scan's own state (one query, two rows) | 1 |
- * | 3 pages x (`list`, interval query, album-cover query, write batch) | 12 |
+ * | read the scan's state and the library rows (one batch) | 1 |
+ * | 3 pages x (`list`, interval query, page-rows query, write batch) | 12 |
  * | 6 extractions x 3 range reads (measured in #21) | 18 |
- * | up to 6 cover `put`s | 6 |
+ * | up to 6 cover `put`s, to the bound bucket | 6 |
  * | completing a pass: 3 prunes, one bulk cover delete, one summary batch | 5 |
+ * | moving to the next library (in the page's batch) | 0 |
  * | **total** | **42** |
  *
  * The eight calls of headroom are deliberate: three range reads per track is
  * what #21 measured on these formats, not a guarantee - a track carrying a
  * megabyte of artwork needs more chunks - and a page whose sweep deletes more
  * than one statement can bind adds a statement, not a call, but an unusual
- * page could still cost a little more than the table says.
+ * page could still cost a little more than the table says. The `fetch` share
+ * of an S3 step is at most 21 (3 listings and 18 range reads).
  *
- * Everything a page does goes into **one batch**, including the cursor, so a
- * run that is killed - by the CPU limit, which cannot be caught, or by a
- * subrequest it could not afford - loses at most the page it was in the
- * middle of. That is the whole reason the budget can be an estimate rather
- * than a proof.
+ * Everything a page does goes into **one batch**, including the cursor and
+ * the day's write tally (`scanner/budget.ts`), so a run that is killed - by
+ * the CPU limit, which cannot be caught, or by a subrequest it could not
+ * afford - loses at most the page it was in the middle of. That is the whole
+ * reason the budget can be an estimate rather than a proof.
+ *
+ * ## The daily write budget
+ *
+ * A step that finds the day's tally at `SCAN_DAILY_WRITE_BUDGET` does
+ * nothing and answers `paused`, and a step that reaches it stops before its
+ * next page; the driver then ends the pass as a give-up does, and the next
+ * UTC day resumes from the cursor (`scanner/budget.ts`).
  *
  * ## What the driver adds to that
  *
@@ -85,6 +126,7 @@
  * tracks. A bigger batch on the free plan would simply fail.
  */
 
+import { DEFAULT_LIBRARY_ID } from "@stratosonic/db";
 import { type Database, database } from "../db";
 import type { Env } from "../env";
 import { isAudioKey, suffixOf } from "../library/audio-formats";
@@ -95,32 +137,56 @@ import {
   MetadataError,
   type TrackMetadata,
 } from "../library/metadata";
-import { bindingStorage, boundStorage } from "../storage/binding";
-import type { LibraryStorage, StoredObject } from "../storage/storage";
+import { boundStorage } from "../storage/binding";
+import { storageFor } from "../storage/for-library";
+import {
+  type LibraryStorage,
+  type StorageFailure,
+  type StorageListing,
+  type StoredObject,
+  UnaddressableKeyError,
+} from "../storage/storage";
+import {
+  budgetReached,
+  countedBatch,
+  dailyWriteBudget,
+  flushLedger,
+  type RowLedger,
+  rowsWrittenOn,
+  tallyStatement,
+  utcDay,
+  WORST_ROWS_PER_INDEXED_TRACK,
+} from "./budget";
+import { cleanUpLibrary } from "./cleanup";
 import { coverKeyFor, isCoverKey } from "./covers";
 import { type DerivedRows, deriveRows, type LibraryObject } from "./derive";
+import { LibraryListingError, listingFailure, skipsAtOnce } from "./listing-failure";
 import {
   deleteTracksStatements,
-  findAlbumCovers,
+  findPageRows,
   findTracksInRange,
+  type LibraryStamp,
   lyricsStatement,
   pruneEmptyAlbums,
   pruneEmptyArtists,
   pruneOrphanPlaylistEntries,
   recomputeAlbumStatement,
-  runBatch,
   type ScanStatement,
   type StoredTrack,
   setAlbumCoverStatement,
+  stampLibraryStatement,
   upsertStatements,
 } from "./repository";
 import {
   addedCounts,
   type BrokenObjects,
   clearScanProgressStatement,
+  type LibraryCounts,
   noCounts,
   readScanState,
   type ScanCounts,
+  type ScanLibrary,
+  type ScanProgress,
   writeBrokenObjectsStatement,
   writeLastScanSummaryStatement,
   writeScanProgressStatement,
@@ -146,10 +212,36 @@ export const DEFAULT_SCAN_LIMITS: ScanLimits = {
   deletionsPerPage: 90,
 };
 
+/** What a run is given beyond its stamp and limits. */
+export interface ScanOptions {
+  /**
+   * The day's D1 write budget, `0` for no cap. Production passes nothing and
+   * the run reads `SCAN_DAILY_WRITE_BUDGET` (`dailyWriteBudget`); the tests
+   * inject a small one.
+   */
+  readonly writeBudget?: number;
+  /**
+   * The wall clock, which says what UTC day the budget is counted in. Not
+   * the run's stamp: a pass resumed the next day keeps its old stamp and is
+   * counted against the new day.
+   */
+  readonly clock?: () => number;
+  /**
+   * The rows earlier steps wrote that neither the tally nor a progress row
+   * holds yet (`scanner/budget.ts`). The run adds the rows of its own
+   * batches as it puts these on the tally or in the progress row, and leaves
+   * the rest - its last batch's - here for the driver to carry to the next
+   * step, even when it throws.
+   */
+  readonly ledger?: RowLedger;
+}
+
 /** What one run of the scan did. */
 export interface ScanRun {
-  /** Whether the pass finished: the listing ran out and the sweep ran. */
+  /** Whether the pass finished: every library was listed or skipped, and the prune ran. */
   readonly completed: boolean;
+  /** Whether the run stopped at the daily write budget (`scanner/budget.ts`). */
+  readonly paused: boolean;
   /** Epoch milliseconds the pass - not this run - began at. */
   readonly startedAt: number;
   /** What this run alone did. */
@@ -162,10 +254,12 @@ export interface ScanRun {
 interface Extracted {
   readonly rows: DerivedRows;
   readonly cover: EmbeddedCover | undefined;
+  /** The row the library held for it, if any. */
+  readonly held: StoredTrack | undefined;
+  /** The etag the object was read at. */
+  readonly etag: string;
   /** Whether the library already held this track with different bytes. */
   readonly changed: boolean;
-  /** Whether the library holds a lyrics row for it, which tags without lyrics remove. */
-  readonly heldLyrics: boolean;
 }
 
 /** What one listed object turns out to need. */
@@ -183,45 +277,247 @@ type Plan =
     };
 
 /**
+ * A library-1 key that could hash to another library's track id: one that
+ * begins with a library id's digits and U+200B (ADR-0009). Any key of
+ * another library could collide with such a library-1 key, so every one of
+ * those is asked about.
+ */
+const COLLISION_SHAPED = /^[1-9][0-9]*​/;
+
+/**
  * Runs one bounded step of the scan and reports what it did.
  *
  * `now` is the instant the run is stamped with - the time the pass was poked
  * at in production, a fixed value in a test. It is what every row's `updatedAt`
- * becomes and what a completed pass records as its finish, so a run is a
- * function of its inputs rather than of the clock.
+ * becomes, what a library's scan stamps record, and what a completed pass
+ * records as its finish, so a run is a function of its inputs rather than of
+ * the clock (the budget's day aside, `ScanOptions.clock`).
  *
  * A single object that cannot be read never ends a run: bytes that are not
  * what their suffix promised are counted as broken, remembered against their
- * etag so they are not read again, and passed over; an R2 failure is counted
- * as deferred and left for the next run, which will find the object unknown
- * and try again.
+ * etag so they are not read again, and passed over; a storage failure is
+ * counted as deferred and left for the next run, which will find the object
+ * unknown and try again.
  */
 export async function runScan(
   env: Env,
   now: Date = new Date(),
   limits: ScanLimits = DEFAULT_SCAN_LIMITS,
+  options: ScanOptions = {},
 ): Promise<ScanRun> {
   const db = database(env);
-  const storage = bindingStorage(env);
   const covers = boundStorage(env);
-  const { progress: previous, broken } = await readScanState(db);
-  const before = previous?.counts ?? noCounts();
-  const startedAt = previous?.startedAt ?? now.getTime();
+  const budget = options.writeBudget ?? dailyWriteBudget(env);
+  const day = utcDay((options.clock ?? Date.now)());
+  const state = await readScanState(db);
+  const previous = state.progress;
+  // Today's rows the tally does not hold yet, carried in the progress row; a
+  // carry from another day counts against that day, which is over.
+  let untallied = rowsWrittenOn(previous?.untallied ?? null, day);
+  const ledger = options.ledger ?? { rows: 0 };
+  // Every row of today the scan knows of: on the tally, carried in the
+  // progress row, and in the ledger.
+  // A ledger from a step before midnight counts against the new day: one
+  // batch over-counted, the safe direction for a budget.
+  let spent = rowsWrittenOn(state.rowsWritten, day) + untallied + ledger.rows;
 
+  const startedAt = previous?.startedAt ?? now.getTime();
+  const before = previous?.counts ?? noCounts();
   const counts = noCounts();
   counts.steps = 1;
-  let cursor = previous?.cursor ?? "";
-  let skip = previous?.skip ?? 0;
-  let sweptTo = previous?.sweptTo ?? "";
-  let extractions = 0;
-  let brokenChanged = false;
-  let completed = false;
+  const libraryTotals = copied(previous?.libraries ?? {});
+  const ran = (completed: boolean, paused: boolean): ScanRun => ({
+    completed,
+    paused,
+    startedAt,
+    counts,
+    totals: addedCounts(before, counts),
+  });
 
-  for (let page = 0; page < limits.pagesPerRun; page++) {
-    const listing = await storage.list({
-      limit: limits.pageSize,
-      ...(cursor === "" ? {} : { cursor }),
-    });
+  // The day's budget is spent: nothing is read or written, and the driver
+  // ends the pass until the next UTC day.
+  if (budgetReached(spent, budget)) {
+    console.warn(`scan: paused until tomorrow, ${spent} of ${budget} rows written today`);
+    await flushLedger(db, day, ledger);
+
+    return ran(false, true);
+  }
+
+  // Phase 1: a library being removed is deleted first, one bounded batch a
+  // step, before anything is scanned.
+  // Library 1 is the bound bucket and is never removed (ADR-0009): whatever
+  // its row says, nothing of it is cleaned up.
+  const removing = state.libraries.find(
+    (row) => row.state === "removing" && row.id !== DEFAULT_LIBRARY_ID,
+  );
+  if (removing !== undefined) {
+    await cleanUpLibrary(db, covers, removing.id, day, ledger);
+
+    return ran(false, false);
+  }
+
+  // Phase 2: the library the pass is in, from its own cursor. One that is no
+  // longer active is left with its cursor: nothing of it is swept.
+  const active = state.libraries.filter((row) => row.state === "active");
+  const wanted = previous?.libraryId ?? DEFAULT_LIBRARY_ID;
+  let current = firstActiveFrom(active, wanted);
+  const resumes = previous !== null && current !== null && current.id === previous.libraryId;
+  let cursor = resumes ? previous.cursor : "";
+  let skip = resumes ? previous.skip : 0;
+  let sweptTo = resumes ? previous.sweptTo : "";
+  let restarted = resumes ? previous.restarted : false;
+  // Where the progress points once every library has been left.
+  let past = wanted;
+  // A library the pass enters at the start of this step is stamped by its
+  // first batch; one it enters below is stamped by the batch that left the
+  // one before.
+  let unstamped = current !== null && !resumes;
+  const memos = new Map(state.broken);
+  const storages = new Map<number, LibraryStorage>();
+  const touched = new Set<number>();
+  let extractions = 0;
+  let paused = false;
+
+  const progress = (carrying: number = untallied): ScanProgress => ({
+    startedAt,
+    libraryId: current?.id ?? past,
+    cursor,
+    skip,
+    sweptTo,
+    restarted,
+    counts: addedCounts(before, counts),
+    libraries: libraryTotals,
+    untallied: carrying === 0 ? null : { day, rows: carrying },
+  });
+
+  /**
+   * Leaves the library the pass is in for the next active one, whose entry
+   * is stamped in the same batch.
+   */
+  const moveOn = (stamps: Stamps): void => {
+    const left = current;
+    if (left === null) {
+      return;
+    }
+    past = left.id + 1;
+    current = firstActiveFrom(active, past);
+    cursor = "";
+    skip = 0;
+    sweptTo = "";
+    restarted = false;
+    unstamped = false;
+    if (current !== null) {
+      stamp(stamps, current.id, { lastScanStartedAt: now });
+    }
+  };
+
+  /**
+   * Commits a page in one batch: its statements, its library stamps (one
+   * statement a library) and the pass's progress. The rows written so far
+   * and not yet on the tally go with it: a page that writes tracks puts them
+   * on the tally, and one that writes only bookkeeping carries them in the
+   * progress row (`ScanProgress.untallied`), so an unchanged pass writes the
+   * tally once, at its end. The batch's own rows, as D1 reports them, go to
+   * the ledger, for the next write to carry. Nothing is moved until the
+   * batch has run: one D1 refuses changes nothing, the carry included.
+   */
+  const commit = async (
+    writes: ScanStatement[],
+    stamps: Stamps,
+    writesTracks: boolean,
+  ): Promise<void> => {
+    for (const [libraryId, fields] of stamps) {
+      writes.push(stampLibraryStatement(db, libraryId, fields));
+    }
+    const carried = untallied + ledger.rows;
+    if (writesTracks && carried > 0) {
+      writes.push(tallyStatement(db, day, carried));
+    }
+    const carrying = writesTracks ? 0 : carried;
+    writes.push(writeScanProgressStatement(db, progress(carrying)));
+    const rows = await countedBatch(db, writes);
+    untallied = carrying;
+    ledger.rows = rows;
+    spent += rows;
+  };
+
+  /** A page's counts, into the step's and its library's. */
+  const addPage = (libraryId: number, page: ScanCounts): void => {
+    const steps = touched.has(libraryId) ? 0 : 1;
+    touched.add(libraryId);
+    for (const key of Object.keys(counts) as (keyof ScanCounts)[]) {
+      if (key !== "steps") {
+        counts[key] += page[key];
+      }
+    }
+    const into = countsOf(libraryTotals, libraryId);
+    for (const key of Object.keys(into) as (keyof ScanCounts)[]) {
+      into[key] += key === "steps" ? steps : page[key];
+    }
+  };
+
+  for (let page = 0; page < limits.pagesPerRun && current !== null; page++) {
+    // Room for the page itself: the measured worst case for each track the
+    // step may still read, so one page cannot overshoot by much.
+    const headroom =
+      WORST_ROWS_PER_INDEXED_TRACK *
+      Math.max(0, Math.min(limits.extractionsPerRun - extractions, limits.pageSize));
+    if (budgetReached(spent + headroom, budget)) {
+      console.warn(`scan: paused until tomorrow, ${spent} of ${budget} rows written today`);
+      paused = true;
+      break;
+    }
+
+    const library: ScanLibrary = current;
+    const writes: ScanStatement[] = [];
+    const stamps: Stamps = new Map();
+    if (unstamped) {
+      stamp(stamps, library.id, { lastScanStartedAt: now });
+      unstamped = false;
+    }
+
+    let storage: LibraryStorage;
+    let listing: StorageListing;
+    try {
+      storage = storages.get(library.id) ?? storageFor(env, library);
+      storages.set(library.id, storage);
+      listing = await storage.list({
+        limit: limits.pageSize,
+        ...(cursor === "" ? {} : { cursor }),
+      });
+    } catch (error) {
+      const reason = listingFailure(error);
+      if (skipsAtOnce(reason)) {
+        // The key was refused, or the bucket is gone: the library is
+        // skipped for this pass at once, with its tracks kept.
+        console.warn(`scan: skipping library ${library.id} for this pass (${reason})`, error);
+        stamp(stamps, library.id, { lastScanError: reason });
+        moveOn(stamps);
+        await commit(writes, stamps, false);
+        continue;
+      }
+      if (reason === "invalid_cursor" && cursor !== "" && !restarted) {
+        // A stale continuation token: the library's listing starts over,
+        // once. The sweep starts over with it, so nothing is skipped.
+        console.warn(`scan: library ${library.id} refused its cursor; listing it again`, error);
+        cursor = "";
+        skip = 0;
+        sweptTo = "";
+        restarted = true;
+        await commit(writes, stamps, false);
+        continue;
+      }
+      throw new LibraryListingError(
+        library.id,
+        reason === "invalid_cursor" ? "unavailable" : reason,
+        { cause: error },
+      );
+    }
+
+    const memo = memos.get(library.id) ?? new Map<string, string>();
+    memos.set(library.id, memo);
+    let memoChanged = false;
+    const pageCounts = noCounts();
     const objects = listing.objects;
     const listedKeys = new Set(objects.map(keyOf));
     const lastKey = objects.at(-1)?.key;
@@ -232,6 +528,7 @@ export async function runScan(
     // space it covers belong to objects that are gone.
     const inRange = await findTracksInRange(
       db,
+      library.id,
       sweptTo,
       through,
       limits.pageSize + limits.deletionsPerPage,
@@ -244,8 +541,8 @@ export async function runScan(
     // the page is indexed on a later run, from the same cursor.
     if (inRange.length >= limits.pageSize + limits.deletionsPerPage) {
       const removing = missing.slice(0, limits.deletionsPerPage);
-      counts.removed += removing.length;
-      await runBatch(db, [
+      pageCounts.removed += removing.length;
+      writes.push(
         ...deleteTracksStatements(
           db,
           removing.map((row) => row.id),
@@ -253,21 +550,14 @@ export async function runScan(
         ...[...new Set(removing.map((row) => row.albumId))].map((id) =>
           recomputeAlbumStatement(db, id, now),
         ),
-        writeScanProgressStatement(db, {
-          startedAt,
-          cursor,
-          skip,
-          sweptTo,
-          counts: addedCounts(before, counts),
-        }),
-      ]);
-
-      return { completed: false, startedAt, counts, totals: addedCounts(before, counts) };
+      );
+      addPage(library.id, pageCounts);
+      await commit(writes, stamps, removing.length > 0);
+      break;
     }
 
     const held = new Map(inRange.map((row) => [row.r2Key, row]));
     const extracted: Extracted[] = [];
-    const staleAlbums = new Set<string>();
     let position = skip;
     let interrupted = false;
 
@@ -277,73 +567,117 @@ export async function runScan(
         continue;
       }
 
-      const planned = planFor(object, held, broken);
+      const planned = planFor(object, held, memo, library.id);
       if (planned.work === "read" && extractions >= limits.extractionsPerRun) {
         interrupted = true;
         break;
       }
 
-      counts.examined++;
+      pageCounts.examined++;
 
       if (planned.work === "ignore") {
         continue;
       }
       if (planned.work === "unchanged") {
-        counts.unchanged++;
+        pageCounts.unchanged++;
         continue;
       }
       if (planned.work === "known-broken") {
-        counts.broken++;
+        pageCounts.broken++;
         continue;
       }
 
       extractions++;
-      const read = await readMetadata(storage, planned.object, counts);
+      const read = await readMetadata(storage, planned.object, pageCounts);
       if (!read.read) {
         // Only bytes that will read the same way for ever are worth
         // remembering; a bucket that failed says nothing about them.
         if (read.itsOwnFault) {
-          broken.set(planned.object.key, planned.object.etag);
-          brokenChanged = true;
+          memo.set(planned.object.key, planned.object.etag);
+          memoChanged = true;
         }
         continue;
       }
 
-      if (broken.delete(planned.object.key)) {
-        brokenChanged = true;
-      }
-
-      const rows = deriveRows(planned.object, read.metadata, now);
       extracted.push({
-        rows,
+        rows: deriveRows(planned.object, read.metadata, now, library.id),
         cover: read.metadata.cover,
+        held: planned.held,
+        etag: planned.object.etag,
         changed: bytesChanged(planned.held, planned.object),
-        heldLyrics: planned.held?.hasLyrics ?? false,
       });
-      counts.indexed++;
-      if (planned.held === undefined) {
-        counts.added++;
-      } else {
-        counts.updated++;
-        // A retagged file can move to another album, leaving the old one a
-        // track lighter than it says it is.
-        staleAlbums.add(planned.held.albumId);
-      }
-      staleAlbums.add(rows.album.id);
     }
 
-    const writes: ScanStatement[] = [];
+    // Before anything is written: the albums' covers, and whether another
+    // library's row already holds one of these track ids (the collision
+    // guard, ADR-0009), in one round trip.
+    const coverAlbums = [
+      ...new Set(
+        extracted.filter((item) => item.cover !== undefined).map((item) => item.rows.album.id),
+      ),
+    ];
+    const askAbout = extracted
+      .filter(
+        (item) => library.id !== DEFAULT_LIBRARY_ID || COLLISION_SHAPED.test(item.rows.track.r2Key),
+      )
+      .map((item) => item.rows.track.id);
+    const pageRows =
+      coverAlbums.length + askAbout.length === 0
+        ? { covers: new Map<string, string | null>(), foreignTrackIds: new Set<string>() }
+        : await findPageRows(db, coverAlbums, askAbout, library.id);
+
+    const written: Extracted[] = [];
+    const staleAlbums = new Set<string>();
     for (const item of extracted) {
+      if (pageRows.foreignTrackIds.has(item.rows.track.id)) {
+        // The upsert would be refused, and the lyrics, cover and album
+        // written under another library's id: the object is left out, and
+        // remembered at its etag, so it is not read again every pass. It
+        // stays memoed until its etag changes, even if the other library's
+        // row goes; only a crafted key reaches this.
+        pageCounts.broken++;
+        memo.set(item.rows.track.r2Key, item.etag);
+        memoChanged = true;
+        console.warn(
+          `scan: ${item.rows.track.r2Key} in library ${library.id} hashes to the id of ` +
+            "another library's track; skipping it",
+        );
+        continue;
+      }
+
+      written.push(item);
+      if (memo.delete(item.rows.track.r2Key)) {
+        memoChanged = true;
+      }
+      pageCounts.indexed++;
+      if (item.held === undefined) {
+        pageCounts.added++;
+      } else {
+        pageCounts.updated++;
+        // A retagged file can move to another album, leaving the old one a
+        // track lighter than it says it is.
+        staleAlbums.add(item.held.albumId);
+      }
+      staleAlbums.add(item.rows.album.id);
+    }
+
+    for (const item of written) {
       writes.push(...upsertStatements(db, item.rows, now));
-      const lyrics = lyricsStatement(db, item.rows, item.heldLyrics);
+      const lyrics = lyricsStatement(db, item.rows, item.held?.hasLyrics ?? false);
       if (lyrics !== null) {
         writes.push(lyrics);
       }
     }
-    for (const [albumId, coverKey] of await storeCovers(covers, db, extracted, counts)) {
+    for (const [albumId, coverKey] of await storeCovers(
+      covers,
+      pageRows.covers,
+      written,
+      pageCounts,
+    )) {
       writes.push(setAlbumCoverStatement(db, albumId, coverKey, now));
     }
 
+    let listedToTheEnd = false;
     if (interrupted) {
       skip = position;
     } else {
@@ -356,14 +690,14 @@ export async function runScan(
           missing.map((row) => row.id),
         ),
       );
-      counts.removed += missing.length;
+      pageCounts.removed += missing.length;
       for (const row of missing) {
         staleAlbums.add(row.albumId);
       }
-      for (const key of [...broken.keys()]) {
+      for (const key of [...memo.keys()]) {
         if (key > sweptTo && (through === null || key <= through) && !listedKeys.has(key)) {
-          broken.delete(key);
-          brokenChanged = true;
+          memo.delete(key);
+          memoChanged = true;
         }
       }
 
@@ -372,7 +706,7 @@ export async function runScan(
         cursor = listing.cursor;
         sweptTo = lastKey ?? sweptTo;
       } else {
-        completed = true;
+        listedToTheEnd = true;
       }
     }
 
@@ -380,42 +714,150 @@ export async function runScan(
     for (const id of staleAlbums) {
       writes.push(recomputeAlbumStatement(db, id, now));
     }
-    if (brokenChanged) {
-      writes.push(writeBrokenObjectsStatement(db, broken));
-      brokenChanged = false;
+    if (memoChanged) {
+      writes.push(writeBrokenObjectsStatement(db, library.id, memo));
     }
-    writes.push(
-      writeScanProgressStatement(db, {
-        startedAt,
-        cursor,
-        skip,
-        sweptTo,
-        counts: addedCounts(before, counts),
-      }),
-    );
+    addPage(library.id, pageCounts);
+    if (listedToTheEnd) {
+      // The library was listed to its end: stamped, its error cleared, and
+      // the pass moves to the next library in the same batch.
+      stamp(stamps, library.id, { lastScanAt: now, lastScanError: null });
+      moveOn(stamps);
+    }
 
     // One transaction: the page's rows, the deletions that go with them, and
     // the cursor that says they are done. A run killed anywhere else redoes
     // this page and nothing more.
-    await runBatch(db, writes);
+    await commit(writes, stamps, pageCounts.indexed + pageCounts.removed > 0);
 
-    if (interrupted || completed) {
+    if (interrupted) {
       break;
     }
   }
 
-  if (completed) {
-    await prune(covers, db, counts);
+  // Phase 3: every active library has been listed or skipped. Artists are
+  // shared, so the prune runs once, for the whole pass.
+  if (!paused && current === null) {
+    const pruned = noCounts();
+    for (const albumLibrary of await prune(covers, db, pruned, ledger)) {
+      countsOf(libraryTotals, albumLibrary).albumsRemoved++;
+    }
+    counts.albumsRemoved += pruned.albumsRemoved;
+    counts.artistsRemoved += pruned.artistsRemoved;
     const totals = addedCounts(before, counts);
-    await runBatch(db, [
-      writeLastScanSummaryStatement(db, { startedAt, finishedAt: now.getTime(), counts: totals }),
+    // Every row the progress row carried and the ledger holds, the prunes'
+    // included, goes on the tally with the summary. This batch's own rows
+    // stay in the ledger, for the driver to carry into the import.
+    const carried = untallied + ledger.rows;
+    const rows = await countedBatch(db, [
+      writeLastScanSummaryStatement(db, {
+        startedAt,
+        finishedAt: now.getTime(),
+        counts: totals,
+        libraries: libraryTotals,
+      }),
       clearScanProgressStatement(db),
+      ...(carried > 0 ? [tallyStatement(db, day, carried)] : []),
     ]);
+    untallied = 0;
+    ledger.rows = rows;
 
-    return { completed, startedAt, counts, totals };
+    return ran(true, false);
   }
 
-  return { completed, startedAt, counts, totals: addedCounts(before, counts) };
+  if (paused) {
+    // The driver ends the pass: nothing after this would carry the rows.
+    await flushLedger(db, day, ledger);
+  }
+
+  return ran(false, paused);
+}
+
+/**
+ * Skips the library a pass is in after its listing kept failing
+ * (`LibraryListingError`, `maxFailures` times): one batch writes its
+ * `last_scan_error` and moves the pass to the next library, so no later
+ * library and no playlist waits on it. Its tracks stay. A pass that has
+ * already left the library is left alone.
+ */
+export async function skipLibrary(
+  env: Env,
+  now: Date,
+  libraryId: number,
+  reason: StorageFailure,
+  options: Pick<ScanOptions, "clock" | "ledger"> = {},
+): Promise<void> {
+  const db = database(env);
+  const day = utcDay((options.clock ?? Date.now)());
+  const ledger = options.ledger ?? { rows: 0 };
+  const state = await readScanState(db);
+  const active = state.libraries.filter((row) => row.state === "active");
+  const previous = state.progress;
+  const current = firstActiveFrom(active, previous?.libraryId ?? DEFAULT_LIBRARY_ID);
+  if (current === null || current.id !== libraryId) {
+    return;
+  }
+
+  const next = firstActiveFrom(active, libraryId + 1);
+  const writes: ScanStatement[] = [stampLibraryStatement(db, libraryId, { lastScanError: reason })];
+  if (next !== null) {
+    writes.push(stampLibraryStatement(db, next.id, { lastScanStartedAt: now }));
+  }
+  console.warn(`scan: skipping library ${libraryId} for this pass (${reason})`);
+  // What the progress row carried and the ledger holds goes on the tally;
+  // this batch's own rows go to the ledger, for the next step.
+  const carried = rowsWrittenOn(previous?.untallied ?? null, day) + ledger.rows;
+  const rows = await countedBatch(db, [
+    ...writes,
+    writeScanProgressStatement(db, {
+      startedAt: previous?.startedAt ?? now.getTime(),
+      libraryId: next?.id ?? libraryId + 1,
+      cursor: "",
+      skip: 0,
+      sweptTo: "",
+      restarted: false,
+      counts: previous?.counts ?? noCounts(),
+      libraries: previous?.libraries ?? {},
+      untallied: null,
+    }),
+    ...(carried > 0 ? [tallyStatement(db, day, carried)] : []),
+  ]);
+  ledger.rows = rows;
+}
+
+/** The first active library whose id is at least `id`, or null when none is. */
+function firstActiveFrom(active: readonly ScanLibrary[], id: number): ScanLibrary | null {
+  return active.find((row) => row.id >= id) ?? null;
+}
+
+/** The stamps one batch writes, merged into one statement a library. */
+type Stamps = Map<number, LibraryStamp>;
+
+/** Adds `fields` to the stamp `libraryId` gets in this batch. */
+function stamp(stamps: Stamps, libraryId: number, fields: LibraryStamp): void {
+  stamps.set(libraryId, { ...stamps.get(libraryId), ...fields });
+}
+
+/** A library's counts in `libraries`, created at zero when it has none yet. */
+function countsOf(libraries: Record<string, ScanCounts>, libraryId: number): ScanCounts {
+  const found = libraries[String(libraryId)];
+  if (found !== undefined) {
+    return found;
+  }
+  const created = noCounts();
+  libraries[String(libraryId)] = created;
+
+  return created;
+}
+
+/** Per-library counts, copied so the step can add to them. */
+function copied(libraries: LibraryCounts): Record<string, ScanCounts> {
+  const copy: Record<string, ScanCounts> = {};
+  for (const [id, counts] of Object.entries(libraries)) {
+    copy[id] = addedCounts(noCounts(), counts);
+  }
+
+  return copy;
 }
 
 /** What this object needs, before any of it is done. */
@@ -423,8 +865,9 @@ function planFor(
   object: StoredObject,
   held: Map<string, StoredTrack>,
   broken: BrokenObjects,
+  libraryId: number,
 ): Plan {
-  if (!isTrackObject(object)) {
+  if (!isTrackObject(object, libraryId)) {
     return { work: "ignore" };
   }
 
@@ -469,7 +912,9 @@ type MetadataRead =
  * are not what they claim will read the same way for ever and are worth
  * remembering, while a bucket that failed may well answer next time, so that
  * object is left unindexed *and* unremembered and the next run reads it
- * again.
+ * again. A key the storage cannot name in a request (a `.` or `..` segment,
+ * over the S3 API) is the first kind: it is refused before any request is
+ * made, and will be refused for ever, so it is broken.
  */
 async function readMetadata(
   storage: LibraryStorage,
@@ -485,6 +930,13 @@ async function readMetadata(
     return { read: true, metadata };
   } catch (error) {
     if (error instanceof MetadataError && error.code === "source-failed") {
+      if (causedBy(error, UnaddressableKeyError)) {
+        counts.broken++;
+        console.warn(`scan: ${object.key} cannot be requested from its bucket; skipping`);
+
+        return { read: false, itsOwnFault: true };
+      }
+
       counts.deferred++;
       console.warn(`scan: could not read ${object.key}; retrying next run`, error);
 
@@ -498,9 +950,24 @@ async function readMetadata(
   }
 }
 
+/** Whether `error`, or anything in its chain of causes, is a `kind`. */
+function causedBy(error: unknown, kind: abstract new (...args: never[]) => Error): boolean {
+  let at: unknown = error;
+  for (let depth = 0; depth < 8 && typeof at === "object" && at !== null; depth++) {
+    if (at instanceof kind) {
+      return true;
+    }
+    at = (at as { cause?: unknown }).cause;
+  }
+
+  return false;
+}
+
 /**
  * Writes the covers this page's tracks earned their albums, and says which
- * album now points where.
+ * album now points where. `held` is the cover each album already has
+ * (`findPageRows`). Every cover goes to the bound bucket, whatever library
+ * its track is in (#84, "Covers").
  *
  * An album's artwork is written **once**: the first track of a new album that
  * carries a picture gives the album its cover, and the album's other tracks
@@ -523,21 +990,13 @@ async function readMetadata(
  */
 async function storeCovers(
   covers: LibraryStorage,
-  db: Database,
+  held: ReadonlyMap<string, string | null>,
   extracted: readonly Extracted[],
   counts: ScanCounts,
 ): Promise<Map<string, string>> {
   const written = new Map<string, string>();
-  const withCovers = extracted.filter((item) => item.cover !== undefined);
-  if (withCovers.length === 0) {
-    return written;
-  }
 
-  const held = await findAlbumCovers(db, [
-    ...new Set(withCovers.map((item) => item.rows.album.id)),
-  ]);
-
-  for (const item of withCovers) {
+  for (const item of extracted) {
     const cover = item.cover;
     if (cover === undefined) {
       continue;
@@ -574,32 +1033,44 @@ async function storeCovers(
 
 /**
  * The end of a pass: albums no track belongs to and artists no album belongs
- * to are removed, together with the cover objects those albums owned, and the
- * playlist entries the sweep left pointing at nothing.
+ * to are removed, together with the cover objects those albums owned (in the
+ * bound bucket), and the playlist entries the sweep left pointing at nothing.
+ * It answers the library of each album it removed.
  */
-async function prune(covers: LibraryStorage, db: Database, counts: ScanCounts): Promise<void> {
+async function prune(
+  covers: LibraryStorage,
+  db: Database,
+  counts: ScanCounts,
+  ledger: RowLedger,
+): Promise<number[]> {
   const albums = await pruneEmptyAlbums(db);
-  counts.albumsRemoved += albums.length;
+  ledger.rows += albums.rowsWritten;
+  counts.albumsRemoved += albums.removed.length;
 
-  const orphanedCovers = albums
+  const orphanedCovers = albums.removed
     .map((row) => row.coverKey)
     .filter((key): key is string => key !== null);
   // One bulk delete a thousand keys, none for none.
   await covers.delete(orphanedCovers);
 
-  counts.artistsRemoved += (await pruneEmptyArtists(db)).length;
+  const artists = await pruneEmptyArtists(db);
+  ledger.rows += artists.rowsWritten;
+  counts.artistsRemoved += artists.removed.length;
 
-  await pruneOrphanPlaylistEntries(db);
+  ledger.rows += await pruneOrphanPlaylistEntries(db);
+
+  return albums.removed.map((row) => row.libraryId);
 }
 
 /**
- * Whether the scan should treat this object as a track. `_covers/` holds what
- * the scan itself writes, and everything else is decided by the one suffix
- * allowlist that also gives a track its content type - so `.m3u` playlists,
- * artwork and stray files are never mistaken for music.
+ * Whether the scan should treat this object as a track. In library 1,
+ * `_covers/` holds what the scan itself writes; in any other library it is a
+ * folder like any other (#84, "Covers"). Everything else is decided by the
+ * one suffix allowlist that also gives a track its content type - so `.m3u`
+ * playlists, artwork and stray files are never mistaken for music.
  */
-function isTrackObject(object: StoredObject): boolean {
-  return !isCoverKey(object.key) && isAudioKey(object.key);
+function isTrackObject(object: StoredObject, libraryId: number): boolean {
+  return (libraryId !== DEFAULT_LIBRARY_ID || !isCoverKey(object.key)) && isAudioKey(object.key);
 }
 
 function asLibraryObject(object: StoredObject): LibraryObject {

@@ -113,11 +113,20 @@ export function pathNames(r2Key: string): PathNames {
  * recomputed, which is how Navidrome folds a track's birth time into its album
  * (`model/mediafile.go`, `MediaFiles.ToAlbum`).
  *
+ * `libraryId` is the library whose bucket the object is in: library 1's ids
+ * are v0.5.0's, and every other library's hash its id in as a leading part
+ * (ADR-0009). Artists are shared across libraries.
+ *
  * The album's `songCount`, `duration` and `size` are left at zero here: they
  * are recomputed from the album's tracks once the batch is written, because a
  * single track cannot know what else the album holds.
  */
-export function deriveRows(object: LibraryObject, metadata: TrackMetadata, now: Date): DerivedRows {
+export function deriveRows(
+  object: LibraryObject,
+  metadata: TrackMetadata,
+  now: Date,
+  libraryId: number = DEFAULT_LIBRARY_ID,
+): DerivedRows {
   const fromPath = pathNames(object.key);
 
   const albumArtist =
@@ -127,9 +136,8 @@ export function deriveRows(object: LibraryObject, metadata: TrackMetadata, now: 
   const year = metadata.year ?? null;
   const genre = metadata.genre ?? null;
 
-  // Every object is in the bound bucket until the scan walks other
-  // libraries (#84, ticket E).
-  const libraryId = DEFAULT_LIBRARY_ID;
+  // The track and its album belong to the library whose bucket holds the
+  // object, and their ids hash it in (ADR-0009); the artist is shared.
   const ofArtist = artistId(albumArtist);
   const ofAlbum = albumId(libraryId, albumArtist, albumName, year);
   const ofTrack = trackId(libraryId, object.key);

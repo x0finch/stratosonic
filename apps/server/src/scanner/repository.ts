@@ -31,16 +31,19 @@
 import {
   type Album,
   album,
+  annotation,
   artist,
-  DEFAULT_LIBRARY_ID,
+  bookmark,
+  library,
   playlistTrack,
   track,
   trackLyrics,
 } from "@stratosonic/db";
-import { and, eq, gt, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, lte, ne, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { D1_MAX_BOUND_PARAMETERS } from "../d1-limits";
 import type { Database } from "../db";
+import { rowsWrittenBy } from "./budget";
 import type { DerivedRows } from "./derive";
 
 /** A statement built now and run later, as part of a batch. */
@@ -84,6 +87,7 @@ export interface StoredTrack {
  */
 export async function findTracksInRange(
   db: Database,
+  libraryId: number,
   after: string,
   through: string | null,
   limit: number,
@@ -102,10 +106,11 @@ export async function findTracksInRange(
     .leftJoin(trackLyrics, eq(trackLyrics.trackId, track.id))
     .where(
       and(
-        // The scan walks library 1, the bound bucket, until it walks every
-        // library (#84, ticket E). Naming it is also what lets the unique
-        // index on `(library_id, r2_key)` serve the range in key order.
-        eq(track.libraryId, DEFAULT_LIBRARY_ID),
+        // The library whose bucket the page listed: another library's rows
+        // are neither held by this page nor swept by it. Naming it is also
+        // what lets the unique index on `(library_id, r2_key)` serve the
+        // range in key order.
+        eq(track.libraryId, libraryId),
         gt(track.r2Key, after),
         through === null ? undefined : lte(track.r2Key, through),
       ),
@@ -116,32 +121,66 @@ export async function findTracksInRange(
   return rows.map(({ lyricsOf, ...row }) => ({ ...row, hasLyrics: lyricsOf !== null }));
 }
 
+/** What a page asks D1 between reading its objects and writing their rows. */
+export interface PageRows {
+  /**
+   * The cover each of the albums asked about already has, for the albums
+   * that exist. An album missing from the map has no row yet, so it has no
+   * cover either; one present with `null` has a row and no artwork.
+   */
+  readonly covers: Map<string, string | null>;
+  /** Of the track ids asked about, those another library's row holds. */
+  readonly foreignTrackIds: Set<string>;
+}
+
 /**
- * The cover each of these albums already has, for the albums that exist. An
- * album missing from the map has no row yet, so it has no cover either; one
- * present with `null` has a row and no artwork.
+ * The covers of these albums, and which of these track ids belong to a row
+ * of another library, in one round trip.
  *
- * The ids are bound, so they are chunked - though a page cannot produce more
- * albums than it has extractions, which is far below the limit.
+ * The second question is the collision guard's (ADR-0009, #84 "Entity
+ * ids"): a library-1 key that begins with another library's digits and
+ * U+200B hashes to that library's id for the rest of the key. The track
+ * upsert's `setWhere` refuses to move such a row, but the rest of the batch
+ * (the lyrics row, the album recompute, the cover) would still be written
+ * under the colliding id, so the page asks first and leaves the object out.
+ * It shares the round trip the cover lookup makes anyway, so it costs no
+ * subrequest the step budget does not already count.
+ *
+ * The ids are bound, so they are chunked, though a page cannot produce more
+ * of either than it has extractions, which is far below the limit.
  */
-export async function findAlbumCovers(
+export async function findPageRows(
   db: Database,
-  ids: readonly string[],
-): Promise<Map<string, string | null>> {
-  const found = new Map<string, string | null>();
+  albumIds: readonly string[],
+  trackIds: readonly string[],
+  libraryId: number,
+): Promise<PageRows> {
+  const covers = new Map<string, string | null>();
+  const foreignTrackIds = new Set<string>();
+  const albumChunks = chunked(albumIds);
+  const trackChunks = chunked(trackIds);
 
-  for (const chunk of chunked(ids)) {
-    const rows = await db
-      .select({ id: album.id, coverKey: album.coverKey })
-      .from(album)
-      .where(inArray(album.id, chunk));
+  for (let index = 0; index < Math.max(albumChunks.length, trackChunks.length); index++) {
+    const [albumRows, trackRows] = await db.batch([
+      db
+        .select({ id: album.id, coverKey: album.coverKey })
+        .from(album)
+        .where(inArray(album.id, albumChunks[index] ?? [])),
+      db
+        .select({ id: track.id })
+        .from(track)
+        .where(and(inArray(track.id, trackChunks[index] ?? []), ne(track.libraryId, libraryId))),
+    ]);
 
-    for (const row of rows) {
-      found.set(row.id, row.coverKey);
+    for (const row of albumRows) {
+      covers.set(row.id, row.coverKey);
+    }
+    for (const row of trackRows) {
+      foreignTrackIds.add(row.id);
     }
   }
 
-  return found;
+  return { covers, foreignTrackIds };
 }
 
 /**
@@ -205,11 +244,10 @@ export function upsertStatements(db: Database, rows: DerivedRows, now: Date): Sc
         // The collision guard (ADR-0009). Another library's id hashes its
         // library id as a leading part, so a library-1 key that begins with
         // that library's digits and U+200B would hash to the same id. This
-        // leaves such a row alone rather than moving it into this library,
-        // but it guards the track row only: the batch's `lyricsStatement`
-        // still writes the lyrics of that id. Nothing reaches this while
-        // every caller passes library 1; the scan across libraries (#84,
-        // ticket E) must detect the refused upsert before writing the rest.
+        // leaves such a row alone rather than moving it into this library.
+        // It guards the track row only, so the scan asks first
+        // (`findPageRows`) and writes nothing for such an object, the lyrics
+        // row included; this stays as the last line of defence.
         setWhere: sql`${track.libraryId} = excluded.${sql.identifier(track.libraryId.name)}`,
       }),
   ];
@@ -308,23 +346,70 @@ export function recomputeAlbumStatement(db: Database, id: string, now: Date): Sc
     .where(eq(album.id, id));
 }
 
+/** What a prune removed, and the rows D1 says it wrote doing so. */
+export interface Pruned<T> {
+  readonly removed: T[];
+  readonly rowsWritten: number;
+}
+
 /**
- * Albums no track belongs to any more. They are returned whole so the cover
- * objects they owned can be removed from R2 as well.
+ * Albums no track belongs to any more, with the cover object each owned, so
+ * those can be removed from R2 as well, and the library each was in.
  */
-export async function pruneEmptyAlbums(db: Database): Promise<Album[]> {
-  return db
-    .delete(album)
-    .where(sql`not exists (select 1 from track where track.album_id = album.id)`)
-    .returning();
+export async function pruneEmptyAlbums(
+  db: Database,
+): Promise<Pruned<Pick<Album, "id" | "coverKey" | "libraryId">>> {
+  const { rows, rowsWritten } = await runReturning<{
+    id: string;
+    cover_key: string | null;
+    library_id: number;
+  }>(
+    db,
+    db
+      .delete(album)
+      .where(sql`not exists (select 1 from track where track.album_id = album.id)`)
+      .returning({ id: album.id, coverKey: album.coverKey, libraryId: album.libraryId }),
+  );
+
+  return {
+    removed: rows.map((row) => ({
+      id: row.id,
+      coverKey: row.cover_key,
+      libraryId: row.library_id,
+    })),
+    rowsWritten,
+  };
 }
 
 /** Artists no album belongs to any more. Run after the albums are pruned. */
-export async function pruneEmptyArtists(db: Database): Promise<{ id: string }[]> {
-  return db
-    .delete(artist)
-    .where(sql`not exists (select 1 from album where album.artist_id = artist.id)`)
-    .returning({ id: artist.id });
+export async function pruneEmptyArtists(db: Database): Promise<Pruned<{ id: string }>> {
+  const { rows, rowsWritten } = await runReturning<{ id: string }>(
+    db,
+    db
+      .delete(artist)
+      .where(sql`not exists (select 1 from album where album.artist_id = artist.id)`)
+      .returning({ id: artist.id }),
+  );
+
+  return { removed: rows, rowsWritten };
+}
+
+/**
+ * Runs a statement with a `returning` clause through the D1 binding itself,
+ * which answers its rows and its `rows_written` (Drizzle keeps only the
+ * rows). The rows carry the columns' SQL names.
+ */
+async function runReturning<Row>(
+  db: Database,
+  query: { toSQL(): { sql: string; params: unknown[] } },
+): Promise<{ rows: Row[]; rowsWritten: number }> {
+  const { sql: text, params } = query.toSQL();
+  const result = await db.$client
+    .prepare(text)
+    .bind(...params)
+    .all<Row>();
+
+  return { rows: result.results, rowsWritten: result.meta.rows_written ?? 0 };
 }
 
 /**
@@ -335,10 +420,147 @@ export async function pruneEmptyArtists(db: Database): Promise<{ id: string }[]>
  * The playlist's own song count is the importer's business and is put right
  * when it next reads the `.m3u`.
  */
-export async function pruneOrphanPlaylistEntries(db: Database): Promise<void> {
-  await db
+export async function pruneOrphanPlaylistEntries(db: Database): Promise<number> {
+  return rowsWrittenBy([await pruneOrphanPlaylistEntriesStatement(db)]);
+}
+
+/** `pruneOrphanPlaylistEntries`, as a statement for a batch. */
+export function pruneOrphanPlaylistEntriesStatement(db: Database) {
+  return db
     .delete(playlistTrack)
     .where(sql`not exists (select 1 from track where track.id = playlist_track.track_id)`);
+}
+
+/* ------------------------------------------------------ the library rows -- */
+
+/** What the scan stamps on a library row as it enters, leaves or skips it. */
+export interface LibraryStamp {
+  /** The pass entered the library. */
+  readonly lastScanStartedAt?: Date;
+  /** The pass listed the library to its end. */
+  readonly lastScanAt?: Date;
+  /** Why the pass skipped it, or null once a pass has listed it. */
+  readonly lastScanError?: string | null;
+}
+
+/** Stamps a library row, in the batch of the page that entered, left or skipped it. */
+export function stampLibraryStatement(
+  db: Database,
+  libraryId: number,
+  stamp: LibraryStamp,
+): ScanStatement {
+  return db.update(library).set(stamp).where(eq(library.id, libraryId));
+}
+
+/* ---------------------------------------- the cleanup of a removed library -- */
+
+/**
+ * Up to `limit` tracks of a library, by key: the next batch the cleanup of a
+ * removed library deletes (#84, "Removing a library"). The unique index on
+ * `(library_id, r2_key)` serves it.
+ */
+export async function findLibraryTrackIds(
+  db: Database,
+  libraryId: number,
+  limit: number,
+): Promise<string[]> {
+  const rows = await db
+    .select({ id: track.id })
+    .from(track)
+    .where(eq(track.libraryId, libraryId))
+    .orderBy(asc(track.r2Key))
+    .limit(limit);
+
+  return rows.map((row) => row.id);
+}
+
+/**
+ * Deletes these tracks with everything that is theirs: the annotations
+ * (stars, ratings, play counts) and the bookmarks on them, then the tracks,
+ * whose lyrics go by cascade. Navidrome's removal leaves the first two to its
+ * GC (`cleanAnnotations`, `cleanBookmarks`); with no foreign key from either
+ * table to `track`, they go here, in the same batch.
+ */
+export function deleteTracksWithAnnotationsStatements(
+  db: Database,
+  ids: readonly string[],
+): ScanStatement[] {
+  return chunked(ids).flatMap((chunk) => [
+    db
+      .delete(annotation)
+      .where(and(eq(annotation.itemType, "track"), inArray(annotation.itemId, chunk))),
+    db.delete(bookmark).where(inArray(bookmark.trackId, chunk)),
+    db.delete(track).where(inArray(track.id, chunk)),
+  ]);
+}
+
+/** Up to `limit` albums of a library, with the cover object each owns. */
+export async function findLibraryAlbums(
+  db: Database,
+  libraryId: number,
+  limit: number,
+): Promise<{ id: string; coverKey: string | null }[]> {
+  return db
+    .select({ id: album.id, coverKey: album.coverKey })
+    .from(album)
+    .where(eq(album.libraryId, libraryId))
+    .orderBy(asc(album.id))
+    .limit(limit);
+}
+
+/** Deletes these albums and the annotations on them. */
+export function deleteAlbumsWithAnnotationsStatements(
+  db: Database,
+  ids: readonly string[],
+): ScanStatement[] {
+  return chunked(ids).flatMap((chunk) => [
+    db
+      .delete(annotation)
+      .where(and(eq(annotation.itemType, "album"), inArray(annotation.itemId, chunk))),
+    db.delete(album).where(inArray(album.id, chunk)),
+  ]);
+}
+
+/**
+ * The annotations of playlists that no longer exist: those of the playlists
+ * a library's removal deleted (ADR-0006: a row goes when its file is
+ * unreachable), as Navidrome's GC cleans them.
+ */
+export function deleteOrphanPlaylistAnnotationsStatement(db: Database): ScanStatement {
+  return db
+    .delete(annotation)
+    .where(
+      and(
+        eq(annotation.itemType, "playlist"),
+        sql`not exists (select 1 from playlist where playlist.id = annotation.item_id)`,
+      ),
+    );
+}
+
+/**
+ * Artists left with no album in any library, with their annotations: an
+ * artist only the removed library had goes with its stars, and one shared
+ * with another library keeps them.
+ */
+export function pruneEmptyArtistsWithAnnotationsStatements(db: Database): ScanStatement[] {
+  return [
+    db
+      .delete(annotation)
+      .where(
+        and(
+          eq(annotation.itemType, "artist"),
+          sql`not exists (select 1 from album where album.artist_id = annotation.item_id)`,
+        ),
+      ),
+    db
+      .delete(artist)
+      .where(sql`not exists (select 1 from album where album.artist_id = artist.id)`),
+  ];
+}
+
+/** The library row itself, last, and only while it is still being removed. */
+export function deleteRemovedLibraryStatement(db: Database, libraryId: number): ScanStatement {
+  return db.delete(library).where(and(eq(library.id, libraryId), eq(library.state, "removing")));
 }
 
 /**

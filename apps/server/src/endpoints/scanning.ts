@@ -50,8 +50,9 @@
  */
 
 import { database } from "../db";
+import { dailyWriteBudget } from "../scanner/budget";
 import { readScanReport, type ScanReport } from "../scanner/state";
-import { inFlight, pokeScanDriver, tracksOf } from "../scanner/status";
+import { inFlight, pokeScanDriver, scanPause, tracksOf } from "../scanner/status";
 import type { SubsonicNode } from "../subsonic/response";
 import type { SubsonicHandler } from "../subsonic/router";
 
@@ -60,11 +61,16 @@ import type { SubsonicHandler } from "../subsonic/router";
  * accounted for. A server that has never scanned answers `scanning="false"
  * count="0"` rather than an error: a client polls this, and the honest answer
  * to "is a scan running" on a fresh database is "no".
+ *
+ * A pass the daily write budget paused (scanner/budget.ts) keeps its cursor
+ * in D1 until the next UTC day, and is not running meanwhile, so it reads as
+ * no scan, as the console's live view says.
  */
 export const getScanStatus: SubsonicHandler = async (request) => {
   const report = await readScanReport(database(request.env));
+  const paused = scanPause(report, dailyWriteBudget(request.env), Date.now()) !== null;
 
-  return { scanStatus: scanStatusElement(report, inFlight(report)) };
+  return { scanStatus: scanStatusElement(report, inFlight(report) && !paused) };
 };
 
 /**
