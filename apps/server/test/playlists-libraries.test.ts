@@ -737,4 +737,64 @@ describe("an import step's subrequests", () => {
     expect(first.length).toBeGreaterThan(1);
     expect((await storedPlaylists()).length).toBe(50);
   });
+
+  it("stays within 42 a step with a 1,000-line and a 2,000-line file late in a step", async () => {
+    /** Relative lines naming no track: two candidate keys each, none shared. */
+    const relative = (count: number) =>
+      Array.from({ length: count }, (_, index) => `Long ${index}/Album/${index}.mp3`);
+    // Tenth in its library, sorting before `one-09.m3u`: late in a first
+    // pass's step, which imports about eleven, and in an unchanged one's.
+    const LONG = "playlists/one-09-long.m3u";
+    const LONGER = "playlists/two-09-long.m3u";
+    await putBound(LONG, m3u([L1_ONE, ...relative(1000), `${archive}/${L2_ONE}`]));
+    await putArchive(LONGER, m3u([L2_ONE, ...relative(2000), `${BOUND_PATH}/${L1_TWO}`]));
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let first: Awaited<ReturnType<typeof countedPass>>;
+    let unchanged: Awaited<ReturnType<typeof countedPass>>;
+    try {
+      first = await countedPass(later());
+      unchanged = await countedPass(later());
+    } finally {
+      warn.mockRestore();
+    }
+
+    for (const step of [...first, ...unchanged]) {
+      expect(step.total).toBeLessThanOrEqual(42);
+      expect(step.fetches).toBeLessThanOrEqual(21);
+    }
+    // Every chunk's rows came back to their lines, across both libraries.
+    expect(await entriesOf(1, LONG)).toEqual([track(1, L1_ONE), track(ARCHIVE.id, L2_ONE)]);
+    expect(await entriesOf(ARCHIVE.id, LONGER)).toEqual([
+      track(ARCHIVE.id, L2_ONE),
+      track(1, L1_TWO),
+    ]);
+    expect((await storedPlaylists()).length).toBe(52);
+  });
+
+  it("looks a long file's tracks up in one round trip, and a short one's in one statement", async () => {
+    const LONG = "playlists/one-09-long.m3u";
+    await putBound(
+      LONG,
+      m3u([L1_ONE, ...Array.from({ length: 1000 }, (_, index) => `Long ${index}/${index}.mp3`)]),
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let counted: Awaited<ReturnType<typeof importCountingWrites>>;
+    try {
+      counted = await importCountingWrites(later(), { importsPerRun: 100, subrequestsPerRun: 500 });
+    } finally {
+      warn.mockRestore();
+    }
+
+    const lookups = counted.statementsAgainst("track");
+    // 25 short files of library 1 and 25 of library 2: a statement each,
+    // sent alone. The long file: 2,002 keys, 23 statements in one batch.
+    const alone = lookups.filter((statement) => statement.batch === null);
+    const batched = lookups.filter((statement) => statement.batch !== null);
+    expect(alone).toHaveLength(50);
+    expect(batched).toHaveLength(23);
+    expect(new Set(batched.map((statement) => statement.batch)).size).toBe(1);
+    expect(Math.max(...lookups.map((statement) => statement.bound))).toBeLessThanOrEqual(91);
+    expect(await entriesOf(1, LONG)).toEqual([track(1, L1_ONE)]);
+  });
 });

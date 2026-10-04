@@ -56,9 +56,10 @@ export interface EntryTrack {
 }
 
 /**
- * The D1 statements a caller has run, which the import counts against its
- * step's subrequest budget (`PlaylistImportLimits.subrequestsPerRun`). Each
- * lookup below adds the statements it sent.
+ * The D1 round trips a caller has made, which the import counts against its
+ * step's subrequest budget (`PlaylistImportLimits.subrequestsPerRun`): a
+ * statement sent alone, or a `db.batch` of any length, is one. Each lookup
+ * below adds the round trips it made.
  */
 export interface StatementTally {
   statements: number;
@@ -108,6 +109,13 @@ export type TracksByKey = ReadonlyMap<number, ReadonlyMap<string, EntryTrack>>;
  * `(library_id = ? and r2_key in (...))` group per library, chunked as
  * `keyStatements` says. A file naming one library is v0.5.0's lookup with
  * its library named, chunked as it was.
+ *
+ * **One round trip per file, whatever its length.** A long file needs a
+ * statement per ninety candidate keys, and a relative line has two, so a
+ * thousand-line file is two dozen statements: they go in one `db.batch`,
+ * one subrequest, as every other write here goes (`countedBatch`), so a
+ * file costs the import's step what `IMPORT_SUBREQUESTS` says. A file of one
+ * statement sends it alone, as v0.5.0 did.
  */
 export async function findTracksByKeys(
   db: Database,
@@ -115,9 +123,8 @@ export async function findTracksByKeys(
   tally: StatementTally = { statements: 0 },
 ): Promise<TracksByKey> {
   const found = new Map<number, Map<string, EntryTrack>>();
-
-  for (const groups of keyStatements(wanted)) {
-    const rows = await db
+  const [first, ...rest] = keyStatements(wanted).map((groups) =>
+    db
       .select({
         id: track.id,
         r2Key: track.r2Key,
@@ -131,9 +138,15 @@ export async function findTracksByKeys(
             and(eq(track.libraryId, group.libraryId), inArray(track.r2Key, [...group.keys])),
           ),
         ),
-      );
-    tally.statements++;
+      ),
+  );
+  if (first === undefined) {
+    return found;
+  }
 
+  tally.statements++;
+  const results = rest.length === 0 ? [await first] : await db.batch([first, ...rest]);
+  for (const rows of results) {
     for (const row of rows) {
       const inLibrary = found.get(row.libraryId) ?? new Map<string, EntryTrack>();
       found.set(row.libraryId, inLibrary);
@@ -731,10 +744,17 @@ export async function sweepMissingPlaylists(
   const stillThere = new Set(listed);
   const gone = inRange.filter((row) => !stillThere.has(row.r2Key));
 
-  for (const chunk of chunked(gone.map((row) => row.id))) {
-    // The entries go with them: `playlist_track` cascades on the playlist.
+  // The entries go with them: `playlist_track` cascades on the playlist.
+  // However many chunks the deletions take, they are one round trip, so a
+  // stretch with many playlists gone costs the step one subrequest.
+  const [first, ...rest] = chunked(gone.map((row) => row.id)).map((chunk) =>
+    db.delete(playlist).where(inArray(playlist.id, chunk)),
+  );
+  if (first !== undefined) {
     tally.statements++;
-    written.rows += rowsWrittenBy([await db.delete(playlist).where(inArray(playlist.id, chunk))]);
+    written.rows += rowsWrittenBy(
+      rest.length === 0 ? [await first] : await db.batch([first, ...rest]),
+    );
   }
 
   return gone;

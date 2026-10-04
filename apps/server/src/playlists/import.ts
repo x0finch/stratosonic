@@ -150,17 +150,23 @@ export const DEFAULT_PLAYLIST_IMPORT_LIMITS: PlaylistImportLimits = {
 };
 
 /**
- * What the rest of a page may still cost once its playlists are imported:
- * the sweep's read, the progress batch (or the end of the pass's) and the
- * tally the end of a run may flush. A sweep that deletes adds a statement
- * per ninety playlists gone, which the headroom to 50 covers.
+ * The most the rest of a page may still cost once its playlists are
+ * imported: the sweep's read, its deletions (one batch however many
+ * playlists are gone), the progress batch (or the end of the pass's) and
+ * the tally the end of a run may flush.
+ *
+ * Every cost here is a bound, not an estimate, so a step never passes the
+ * 42 it is given. The headroom from 42 to the free plan's 50 is left for
+ * what the step does not control: the stored-playlist lookup, two
+ * statements for the at most `importsPerRun` keys a page asks about, grows
+ * by one per ninety more only if `importsPerRun` is tuned past ninety.
  */
-const PAGE_TAIL_SUBREQUESTS = 3;
+const PAGE_TAIL_SUBREQUESTS = 4;
 
 /**
- * The most one playlist costs: its read, the lookup of the tracks it names
- * (one statement for up to ninety candidate keys; a longer file adds one per
- * ninety more, as #84's "one statement per file" chunks it), and its batch.
+ * The most one playlist costs, whatever its length: its read, the lookup of
+ * the tracks it names (one batch, however many statements of ninety keys
+ * the file takes: `findTracksByKeys`), and its write batch.
  */
 const IMPORT_SUBREQUESTS = 3;
 
