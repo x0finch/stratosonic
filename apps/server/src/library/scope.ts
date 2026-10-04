@@ -47,15 +47,18 @@ import type { AuthenticatedUser } from "../auth/authenticate";
  */
 export const MAX_LISTED_LIBRARIES = 20;
 
-/** Whose scope rule a long scope repeats as a subquery. */
-export interface ScopeViewer {
-  readonly id: string;
-  readonly isAdmin: boolean;
-}
+/**
+ * The rule a long scope repeats as a subquery: a user's (their grants, or
+ * every active library for an admin), or the bare active-library rule, for a
+ * reader with no user (`activeLibrariesScope`).
+ */
+export type ScopeRule =
+  | { readonly kind: "user"; readonly id: string; readonly isAdmin: boolean }
+  | { readonly kind: "active" };
 
 /**
  * The libraries a read may see: all of them, with no predicate (the fast
- * path), or these ids. `viewer` is the user whose rule a scope of more than
+ * path), or these ids. `rule` is what a scope of more than
  * `MAX_LISTED_LIBRARIES` ids is read through; a scope without one (narrowed
  * by `musicFolderId`, or the console's one library) is always listed.
  */
@@ -64,27 +67,31 @@ export type LibraryScope =
   | {
       readonly all: false;
       readonly ids: readonly number[];
-      readonly viewer: ScopeViewer | null;
+      readonly rule: ScopeRule | null;
     };
+
+/** A scope that names its libraries, as every one but the fast path does. */
+type ListedScope = Exclude<LibraryScope, { all: true }>;
 
 /** The fast path: every library, and no predicate. */
 export const ALL_LIBRARIES: LibraryScope = { all: true };
 
 /** A scope of exactly these libraries, listed. */
 export function librariesScope(ids: readonly number[]): LibraryScope {
-  return { all: false, ids: [...new Set(ids)].sort((a, b) => a - b), viewer: null };
+  return { all: false, ids: [...new Set(ids)].sort((a, b) => a - b), rule: null };
 }
 
 /**
  * Every active library, for a reader with no user (the console's Overview)
  * while some library is `removing`: these ids, which a long list reads as
- * the rule an admin's scope repeats, `library.state = 'active'`.
+ * the active-library rule, `library.state = 'active'`. That is also what an
+ * admin's long scope repeats, but no user is borrowed for it.
  */
 export function activeLibrariesScope(ids: readonly number[]): LibraryScope {
   return {
     all: false,
     ids: [...new Set(ids)].sort((a, b) => a - b),
-    viewer: { id: "", isAdmin: true },
+    rule: { kind: "active" },
   };
 }
 
@@ -98,21 +105,41 @@ export function scopeOf(user: AuthenticatedUser): LibraryScope {
     return ALL_LIBRARIES;
   }
 
-  return { all: false, ids: user.libraryIds, viewer: { id: user.id, isAdmin: user.isAdmin } };
+  return {
+    all: false,
+    ids: user.libraryIds,
+    rule: { kind: "user", id: user.id, isAdmin: user.isAdmin },
+  };
+}
+
+/**
+ * Whether a row of this library is in scope, for a caller holding rows it
+ * read unscoped that must tell the visible ones apart (`updatePlaylist`'s
+ * `songIndexToRemove`). A long scope still carries its ids, so this asks
+ * nothing of D1.
+ */
+export function inScope(scope: LibraryScope, libraryId: number): boolean {
+  return scope.all || scope.ids.includes(libraryId);
+}
+
+/** The rule a long scope is read through, or null when it is listed. */
+function longScopeRule(scope: ListedScope): ScopeRule | null {
+  return scope.ids.length > MAX_LISTED_LIBRARIES ? scope.rule : null;
 }
 
 /**
  * The ids a scope is read through: a list of bound parameters, or for a long
- * user scope the subquery that repeats its rule. An empty scope is a list of
+ * scope the subquery that repeats its rule. An empty scope is a list of
  * nothing, which SQLite reads as false.
  */
-function scopeIds(scope: Exclude<LibraryScope, { all: true }>): SQL {
-  if (scope.ids.length > MAX_LISTED_LIBRARIES && scope.viewer !== null) {
-    return scope.viewer.isAdmin
+function scopeIds(scope: ListedScope): SQL {
+  const rule = longScopeRule(scope);
+  if (rule !== null) {
+    return rule.kind === "active" || rule.isAdmin
       ? sql`(select l.id from library l where l.state = 'active')`
       : sql`(select l.id from library l where l.state = 'active'
           and exists (select 1 from user_library ul
-            where ul.user_id = ${scope.viewer.id} and ul.library_id = l.id))`;
+            where ul.user_id = ${rule.id} and ul.library_id = l.id))`;
   }
 
   return sql`(${sql.join(
@@ -159,8 +186,9 @@ export function scopeParameters(scope: LibraryScope): number {
   if (scope.all) {
     return 0;
   }
-  if (scope.ids.length > MAX_LISTED_LIBRARIES && scope.viewer !== null) {
-    return scope.viewer.isAdmin ? 0 : 1;
+  const rule = longScopeRule(scope);
+  if (rule !== null) {
+    return rule.kind === "user" && !rule.isAdmin ? 1 : 0;
   }
 
   return scope.ids.length;

@@ -17,6 +17,7 @@
 
 import { playStatements } from "../annotations/repository";
 import type { Database } from "../db";
+import type { LibraryScope } from "../library/scope";
 import {
   endSessionStatement,
   findPlaybackContext,
@@ -43,18 +44,20 @@ export interface PlaybackReport {
   readonly ignoreScrobble: boolean;
   /** The client's `c`, which the now-playing feed shows. */
   readonly playerName: string;
+  /** The libraries the caller sees: a track out of them is not found. */
+  readonly scope: LibraryScope;
 }
 
 /**
  * Applies a report to the caller's session. Answers `false`, having written
- * nothing, when the track is not in the library.
+ * nothing, when the track is not in the caller's libraries.
  */
 export async function reportPlayback(
   db: Database,
   report: PlaybackReport,
   now: Date = new Date(),
 ): Promise<boolean> {
-  const context = await findPlaybackContext(db, report.userId, report.trackId);
+  const context = await findPlaybackContext(db, report.userId, report.trackId, report.scope);
   if (context === null) {
     return false;
   }

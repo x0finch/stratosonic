@@ -2,7 +2,7 @@ import type { EntityId } from "@stratosonic/db";
 import type { Database } from "../db";
 import { NO_USER } from "../library/annotations";
 import { findAlbum, findArtist, findTrack } from "../library/repository";
-import { ALL_LIBRARIES } from "../library/scope";
+import { ALL_LIBRARIES, type LibraryScope } from "../library/scope";
 
 /**
  * Which stored object a client-facing id asks for.
@@ -26,24 +26,32 @@ import { ALL_LIBRARIES } from "../library/scope";
  *
  * Nothing here answers a caller with an element, so every read is made as
  * `NO_USER`: the cover does not depend on who is asking, and the annotation
- * join is left to match nothing rather than cost a lookup. Every library is
- * read: the public image URL has no caller, and `getCoverArt` is kept to the
- * caller's libraries by #148, with the other id endpoints.
+ * join is left to match nothing rather than cost a lookup. What is found
+ * depends on the scope, though: `getCoverArt` passes the caller's, so an
+ * album, track or artist out of it has no cover (#84), and an artist's cover
+ * is one of its albums in scope, the one `getArtist` names. The public image
+ * URL has no caller and passes every library, as Navidrome skips its filter
+ * for `invalidUserId`.
  */
-export async function findCoverKey(db: Database, entity: EntityId): Promise<string | null> {
+export async function findCoverKey(
+  db: Database,
+  entity: EntityId,
+  scope: LibraryScope,
+): Promise<string | null> {
   switch (entity.type) {
     case "album":
-      return (await findAlbum(db, entity.id, NO_USER, ALL_LIBRARIES))?.coverKey ?? null;
+      return (await findAlbum(db, entity.id, NO_USER, scope))?.coverKey ?? null;
 
     case "track":
       // A track is read with its album's cover already joined in, so this is
       // one query rather than two.
-      return (await findTrack(db, entity.id, NO_USER, ALL_LIBRARIES))?.albumCoverKey ?? null;
+      return (await findTrack(db, entity.id, NO_USER, scope))?.albumCoverKey ?? null;
 
     case "artist": {
-      const coverAlbumId =
-        (await findArtist(db, entity.id, NO_USER, ALL_LIBRARIES))?.coverAlbumId ?? null;
+      const coverAlbumId = (await findArtist(db, entity.id, NO_USER, scope))?.coverAlbumId ?? null;
 
+      // The cover album is one of the artist's albums in scope already
+      // (`coverAlbumOf`), so it is read by its id alone.
       return coverAlbumId === null
         ? null
         : ((await findAlbum(db, coverAlbumId, NO_USER, ALL_LIBRARIES))?.coverKey ?? null);

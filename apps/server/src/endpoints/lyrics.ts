@@ -7,7 +7,10 @@
  * (`lyrics/sidecar.ts`), and last the lyric the track's own tags carry, which
  * the scan stored (`lyrics/embedded.ts`) and the track lookup joins in. All
  * three go through the one LRC parser. An answer costs one track lookup and
- * at most two R2 reads per track it looks at, and writes nothing.
+ * at most two reads of the bucket per track it looks at, and writes nothing.
+ *
+ * Only the caller's libraries are looked in (#84), and a sidecar is read from
+ * its track's own library (storage/track-storage.ts).
  *
  * A track without lyrics is an empty answer, never an error: every track a
  * client plays is asked about, and most have none.
@@ -15,6 +18,7 @@
 
 import { parseIdOfType } from "@stratosonic/db";
 import { database } from "../db";
+import { scopeOf } from "../library/scope";
 import { type ParsedLyrics, parseLrc } from "../lyrics/lrc";
 import { findLyricsCandidates, findLyricsTrack, type LyricsTrack } from "../lyrics/repository";
 import {
@@ -22,7 +26,7 @@ import {
   readSidecarLyricsWithSuffix,
   SIDECAR_SUFFIXES,
 } from "../lyrics/sidecar";
-import { bindingStorage } from "../storage/binding";
+import { joinsLibraryRow, storageOfTrack } from "../storage/track-storage";
 import { requiredParameter } from "../subsonic/params";
 import { SubsonicError, SubsonicErrorCode, type SubsonicNode } from "../subsonic/response";
 import type { SubsonicHandler } from "../subsonic/router";
@@ -62,14 +66,27 @@ export const getLyrics: SubsonicHandler = async (request) => {
     return NO_LYRICS;
   }
 
-  const candidates = await findLyricsCandidates(database(request.env), artist, title);
+  const { user } = request;
+  const candidates = await findLyricsCandidates(
+    database(request.env),
+    artist,
+    title,
+    scopeOf(user),
+    joinsLibraryRow(user.libraryIds),
+  );
+
+  // Each candidate's storage is built once: an S3 library's opens its
+  // sealed token on first use, which should not happen once per suffix.
+  const sources = candidates.map((candidate) => ({
+    candidate,
+    storage: storageOfTrack(request.env, candidate, candidate.library),
+  }));
 
   // Source first, then candidate, as Navidrome's `getLyricsForCandidates`
   // nests them: an older take's `.lrc` beats the newest take's `.txt`, and
   // any sidecar beats a lyric in the tags.
-  const storage = bindingStorage(request.env);
   for (const suffix of SIDECAR_SUFFIXES) {
-    for (const candidate of candidates) {
+    for (const { candidate, storage } of sources) {
       const lyrics = await readSidecarLyricsWithSuffix(storage, candidate.r2Key, suffix);
 
       if (lyrics !== null) {
@@ -103,13 +120,20 @@ export const getLyricsBySongId: SubsonicHandler = async (request) => {
     throw new SubsonicError(SubsonicErrorCode.NotFound, TRACK_NOT_FOUND);
   }
 
-  const song = await findLyricsTrack(database(request.env), id);
+  const { user } = request;
+  const song = await findLyricsTrack(
+    database(request.env),
+    id,
+    scopeOf(user),
+    joinsLibraryRow(user.libraryIds),
+  );
   if (song === null) {
     throw new SubsonicError(SubsonicErrorCode.NotFound, TRACK_NOT_FOUND);
   }
 
   const lyrics =
-    (await readSidecarLyrics(bindingStorage(request.env), song.r2Key)) ?? embeddedLyrics(song);
+    (await readSidecarLyrics(storageOfTrack(request.env, song, song.library), song.r2Key)) ??
+    embeddedLyrics(song);
 
   return {
     lyricsList:

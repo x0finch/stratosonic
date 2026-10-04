@@ -18,17 +18,24 @@
  * is. On the fast path the scope adds nothing, and the SQL is v0.5.0's.
  */
 
-import { type Album, album, annotation, artist, type Track, track } from "@stratosonic/db";
+import { type Album, album, annotation, artist, library, type Track, track } from "@stratosonic/db";
 import { and, asc, desc, eq, inArray, isNotNull, type SQL, sql } from "drizzle-orm";
 import type { Database } from "../db";
-import { chunked } from "../scanner/repository";
+import { chunked, KEYS_PER_STATEMENT } from "../scanner/repository";
+import { type StorageRow, storageRowColumns } from "../storage/track-storage";
 import {
   type AnnotationRow,
   annotationColumns,
   annotationJoin,
   toCallerAnnotation,
 } from "./annotations";
-import { albumOfArtistInScope, artistInScope, type LibraryScope, libraryFilter } from "./scope";
+import {
+  albumOfArtistInScope,
+  artistInScope,
+  type LibraryScope,
+  libraryFilter,
+  scopeParameters,
+} from "./scope";
 import type { AlbumView, ArtistView, GenreView, SongView } from "./serializers";
 
 /**
@@ -237,6 +244,19 @@ export async function listTracksOfAlbum(
   return rows.map((row) => toSongView({ ...row, albumName: of.name, albumCoverKey: of.coverKey }));
 }
 
+/** What `findTrack` selects: the track, its album's name and cover, and the annotation. */
+const trackColumns = {
+  track,
+  albumName: album.name,
+  albumCoverKey: album.coverKey,
+  ...annotationColumns,
+};
+
+/** The track with this id, if it is in scope. */
+function trackInScope(id: string, scope: LibraryScope): SQL | undefined {
+  return and(eq(track.id, id), libraryFilter(scope, track.libraryId));
+}
+
 /**
  * One track with its album's name and cover, or null when no track has this
  * id. The album is joined in rather than fetched after, so `getSong` is one
@@ -251,14 +271,53 @@ export async function findTrack(
   scope: LibraryScope,
 ): Promise<SongView | null> {
   const rows = await db
-    .select({ track, albumName: album.name, albumCoverKey: album.coverKey, ...annotationColumns })
+    .select(trackColumns)
     .from(track)
     .leftJoin(album, eq(album.id, track.albumId))
     .leftJoin(annotation, annotationJoin(userId, "track", track.id))
-    .where(and(eq(track.id, id), libraryFilter(scope, track.libraryId)))
+    .where(trackInScope(id, scope))
     .limit(1);
 
   return rows[0] ? toSongView(rows[0]) : null;
+}
+
+/** A track to serve the bytes of, and its library's row when it was joined. */
+export interface TrackToServe {
+  readonly song: SongView;
+  /** Null when the lookup did not join it (`joinsLibraryRow`). */
+  readonly library: StorageRow | null;
+}
+
+/**
+ * `findTrack` for the reads that serve the track's bytes (`stream`,
+ * `download`): with `joinLibrary`, its library's row is joined in the same
+ * statement, inner, since a track whose library is gone has no bucket to be
+ * read from. Without it the statement is `findTrack`'s exactly (#84, "storage
+ * per track's library"; storage/track-storage.ts).
+ */
+export async function findTrackToServe(
+  db: Database,
+  id: string,
+  userId: string,
+  scope: LibraryScope,
+  joinLibrary: boolean,
+): Promise<TrackToServe | null> {
+  if (!joinLibrary) {
+    const song = await findTrack(db, id, userId, scope);
+    return song === null ? null : { song, library: null };
+  }
+
+  const rows = await db
+    .select({ ...trackColumns, library: storageRowColumns })
+    .from(track)
+    .leftJoin(album, eq(album.id, track.albumId))
+    .leftJoin(annotation, annotationJoin(userId, "track", track.id))
+    .innerJoin(library, eq(library.id, track.libraryId))
+    .where(trackInScope(id, scope))
+    .limit(1);
+
+  const row = rows[0];
+  return row ? { song: toSongView(row), library: row.library } : null;
 }
 
 /**
@@ -350,25 +409,30 @@ function genreName(name: string | null): string {
  * rather than failing. Duplicates cost nothing, since the caller looks each
  * position up by id.
  *
- * This is one `in (...)` per `KEYS_PER_STATEMENT` ids — D1 allows a hundred
- * bound parameters per query (`scanner/repository.ts`) — and not one query per
- * id, so even a very long queue stays well inside the request's subrequest
- * budget. Order is the caller's to restore; SQL gives none back.
+ * This is one `in (...)` per `KEYS_PER_STATEMENT` ids, less what the scope
+ * binds — D1 allows a hundred bound parameters per query
+ * (`scanner/repository.ts`) — and not one query per id, so even a very long
+ * queue stays well inside the request's subrequest budget. Order is the
+ * caller's to restore; SQL gives none back.
+ *
+ * A track out of scope is absent too (#84), as `getPlayQueue` leaves out a
+ * track that has gone.
  */
 export async function findSongsByIds(
   db: Database,
   ids: readonly string[],
   userId: string,
+  scope: LibraryScope,
 ): Promise<Map<string, SongView>> {
   const found = new Map<string, SongView>();
 
-  for (const chunk of chunked([...new Set(ids)])) {
+  for (const chunk of chunked([...new Set(ids)], KEYS_PER_STATEMENT - scopeParameters(scope))) {
     const rows = await db
-      .select({ track, albumName: album.name, albumCoverKey: album.coverKey, ...annotationColumns })
+      .select(trackColumns)
       .from(track)
       .leftJoin(album, eq(album.id, track.albumId))
       .leftJoin(annotation, annotationJoin(userId, "track", track.id))
-      .where(inArray(track.id, chunk));
+      .where(and(inArray(track.id, chunk), libraryFilter(scope, track.libraryId)));
 
     for (const row of rows) {
       found.set(row.track.id, toSongView(row));
