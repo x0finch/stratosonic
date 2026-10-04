@@ -34,6 +34,9 @@ export const PINNED_ENV = {
   // empty, uploads are not configured, and nothing is ever signed with a
   // real key.
   R2_BUCKET_NAME: "navidrome",
+  // As wrangler.jsonc sets it. A test of the budget injects a small one
+  // through the driver's tuning instead.
+  SCAN_DAILY_WRITE_BUDGET: "50000",
   R2_ACCESS_KEY_ID: "",
   R2_SECRET_ACCESS_KEY: "",
 } as const satisfies Record<StringEnvKey, string>;

@@ -67,4 +67,12 @@ export interface Env extends Cloudflare.Env {
    * other value means writes are on.
    */
   readonly FILE_WRITES?: string;
+  /**
+   * How many D1 rows the scan may write in a UTC day (#84, "Daily D1 write
+   * budget"; scanner/budget.ts): a whole number, default 50,000, where `0`
+   * means no cap. A plain var, set in wrangler.jsonc. At the budget a pass
+   * pauses, as a give-up does, and the first cron poke after 00:00 UTC
+   * resumes it. Anything that is not a whole number is the default.
+   */
+  readonly SCAN_DAILY_WRITE_BUDGET: string;
 }

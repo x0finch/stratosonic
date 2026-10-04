@@ -86,8 +86,10 @@ import {
   DEFAULT_PLAYLIST_IMPORT_LIMITS,
   importPlaylists,
   type PlaylistImportLimits,
+  skipPlaylistLibrary,
 } from "../playlists/import";
-import { DEFAULT_SCAN_LIMITS, runScan, type ScanLimits } from "./scan";
+import { LibraryListingError, skipsAtOnce } from "./listing-failure";
+import { DEFAULT_SCAN_LIMITS, runScan, type ScanLimits, skipLibrary } from "./scan";
 
 /** The one instance: a library has one scan, so it has one driver. */
 export const SCAN_DRIVER_INSTANCE = "library";
@@ -134,6 +136,11 @@ export interface ScanDriverTuning {
   readonly maxFailures?: number;
   readonly scanLimits?: Partial<ScanLimits>;
   readonly playlistLimits?: Partial<PlaylistImportLimits>;
+  /**
+   * The daily D1 write budget, `0` for no cap, in place of
+   * `SCAN_DAILY_WRITE_BUDGET` (`scanner/budget.ts`).
+   */
+  readonly writeBudget?: number;
 }
 
 /** The same, with every question answered, as the state carries it. */
@@ -145,13 +152,21 @@ interface Tuning {
   readonly maxFailures: number;
   readonly scanLimits: ScanLimits;
   readonly playlistLimits: PlaylistImportLimits;
+  /** The budget the tuning gave, or null for `SCAN_DAILY_WRITE_BUDGET`. */
+  readonly writeBudget: number | null;
 }
 
-/** Which half of a pass the next step belongs to. */
+/**
+ * Which half of a pass the next step belongs to. The scan's half also runs
+ * the cleanup of removed libraries first, and the prune last (`scan.ts`).
+ */
 type Phase = "scan" | "playlists";
 
-/** What a step leaves for the one after it: a phase, or the end of the pass. */
-type Next = Phase | "done";
+/**
+ * What a step leaves for the one after it: a phase, the end of the pass, or
+ * a pause at the daily write budget, which ends the pass as a give-up does.
+ */
+type Next = Phase | "done" | "paused";
 
 /**
  * How early a debounce alarm may fire and still start the pass. An alarm is
@@ -366,6 +381,15 @@ export class ScanDriver extends DurableObject<Env> {
 
         return;
       }
+      if (next === "paused") {
+        console.warn(
+          "scan driver: the daily write budget is spent; the pass resumes from its cursor " +
+            "on the first cron poke after 00:00 UTC",
+        );
+        await this.giveUp();
+
+        return;
+      }
 
       await this.arm({ ...stepped, phase: next, failures: 0 }, state.tuning.stepDelayMs);
     } catch (error) {
@@ -432,8 +456,14 @@ export class ScanDriver extends DurableObject<Env> {
   private async step(state: DriverState): Promise<{ next: Next; startedAt: number }> {
     const now = new Date(state.startedAt);
 
+    const budget =
+      state.tuning.writeBudget === null ? {} : { writeBudget: state.tuning.writeBudget };
+
     if (state.phase === "scan") {
-      const run = await runScan(this.env, now, state.tuning.scanLimits);
+      const run = await runScan(this.env, now, state.tuning.scanLimits, budget);
+      if (run.paused) {
+        return { next: "paused", startedAt: run.startedAt };
+      }
       console.log(
         run.completed
           ? `scan: pass complete, ${JSON.stringify(run.totals)}`
@@ -446,7 +476,10 @@ export class ScanDriver extends DurableObject<Env> {
       return { next: run.completed ? "playlists" : "scan", startedAt: run.startedAt };
     }
 
-    const imported = await importPlaylists(this.env, now, state.tuning.playlistLimits);
+    const imported = await importPlaylists(this.env, now, state.tuning.playlistLimits, budget);
+    if (imported.paused) {
+      return { next: "paused", startedAt: imported.startedAt };
+    }
     console.log(
       imported.completed
         ? `playlists: pass complete, ${JSON.stringify(imported.totals)}`
@@ -456,7 +489,32 @@ export class ScanDriver extends DurableObject<Env> {
     return { next: imported.completed ? "done" : "playlists", startedAt: imported.startedAt };
   }
 
-  /** Logs a failed step and schedules the retry, or gives the pass up. */
+  /**
+   * Skips the library whose listing kept failing (#84, "Skipping a
+   * library"), in the phase it failed in, and carries the pass on: the scan
+   * moves to the next library, and the import, which reads library 1 alone
+   * until #84's ticket F, ends its pass. Giving the pass up instead would
+   * park every later library and the playlists on the one that does not
+   * answer.
+   */
+  private async skip(state: DriverState, failed: LibraryListingError): Promise<void> {
+    const reason = skipsAtOnce(failed.reason) ? failed.reason : "unavailable";
+    if (state.phase === "scan") {
+      await skipLibrary(this.env, new Date(state.startedAt), failed.libraryId, reason);
+      await this.arm({ ...state, failures: 0 }, state.tuning.stepDelayMs);
+
+      return;
+    }
+
+    await skipPlaylistLibrary(this.env, failed.libraryId, reason);
+    await this.finish(state);
+  }
+
+  /**
+   * Logs a failed step and schedules the retry, or gives the pass up. A
+   * library whose listing failed is skipped instead of giving up, once it
+   * has failed `maxFailures` times in a row (#84, "Skipping a library").
+   */
   private async retry(state: DriverState, error: unknown): Promise<void> {
     const failures = state.failures + 1;
     console.error(
@@ -464,6 +522,21 @@ export class ScanDriver extends DurableObject<Env> {
         "the pass resumes from its cursor",
       error,
     );
+
+    if (
+      error instanceof LibraryListingError &&
+      (skipsAtOnce(error.reason) || failures >= state.tuning.maxFailures)
+    ) {
+      try {
+        await this.skip(state, error);
+      } catch (skipError) {
+        // The skip could not be written (D1): a failure like any other,
+        // which gives the pass up once the failures reach the bound.
+        await this.retry({ ...state, failures }, skipError);
+      }
+
+      return;
+    }
 
     if (failures >= state.tuning.maxFailures) {
       console.error(
@@ -591,6 +664,13 @@ function resolved(tuning: ScanDriverTuning): Tuning {
         DEFAULT_PLAYLIST_IMPORT_LIMITS.objectsPerRun,
       ),
     },
+    // Zero is a budget too: no cap.
+    writeBudget:
+      typeof tuning.writeBudget === "number" &&
+      Number.isSafeInteger(tuning.writeBudget) &&
+      tuning.writeBudget >= 0
+        ? tuning.writeBudget
+        : null,
   };
 }
 

@@ -33,16 +33,31 @@ function report(overrides: Partial<ScanReport> = {}): ScanReport {
     importStartedAt: null,
     lastCompleted: null,
     lastChangedAt: null,
+    rowsWritten: null,
     ...overrides,
   };
 }
 
 function inFlightSince(startedAt: number): Partial<ScanReport> {
-  return { progress: { startedAt, cursor: "", skip: 0, sweptTo: "", counts: noCounts() } };
+  return {
+    progress: {
+      startedAt,
+      libraryId: 1,
+      cursor: "",
+      skip: 0,
+      sweptTo: "",
+      restarted: false,
+      counts: noCounts(),
+      libraries: {},
+      untallied: null,
+    },
+  };
 }
 
 function completedAt(startedAt: number): Partial<ScanReport> {
-  return { lastCompleted: { startedAt, finishedAt: startedAt + 60_000, counts: noCounts() } };
+  return {
+    lastCompleted: { startedAt, finishedAt: startedAt + 60_000, counts: noCounts(), libraries: {} },
+  };
 }
 
 const scheduledFor = (changedAt: number) => ({

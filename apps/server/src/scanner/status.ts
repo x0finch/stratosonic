@@ -8,6 +8,7 @@
 
 import { database } from "../db";
 import type { Env } from "../env";
+import { budgetReached, nextUtcMidnight, rowsWrittenOn, utcDay } from "./budget";
 import {
   type PokeOutcome,
   RESCAN_QUIET_MS,
@@ -126,6 +127,27 @@ export function scanSchedule(
         scheduledAt: new Date(lastChangedAt + RESCAN_QUIET_MS).toISOString(),
         afterCurrentPass: false,
       };
+}
+
+/** Why the scan is not running though a pass may be due: the daily write budget. */
+export interface ScanPause {
+  readonly reason: "daily_write_budget";
+  /** When the pause ends: the next 00:00 UTC, an ISO 8601 instant. */
+  readonly until: string;
+}
+
+/**
+ * Whether the scan is paused at the daily write budget (`scanner/budget.ts`),
+ * read from D1 alone: the day's tally has reached `budget`. Every cron poke
+ * stops at its first step until the next UTC day, which this says. Null with
+ * no cap (`budget` 0) or while the day's rows are under it.
+ */
+export function scanPause(report: ScanReport, budget: number, now: number): ScanPause | null {
+  if (!budgetReached(rowsWrittenOn(report.rowsWritten, utcDay(now)), budget)) {
+    return null;
+  }
+
+  return { reason: "daily_write_budget", until: new Date(nextUtcMidnight(now)).toISOString() };
 }
 
 /** The stamp of the pass in flight, or else of the last completed one. */
