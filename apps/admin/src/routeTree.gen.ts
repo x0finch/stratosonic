@@ -15,6 +15,7 @@ import { Route as ShellIndexRouteImport } from './routes/_shell/index'
 import { Route as ShellSplatRouteImport } from './routes/_shell/$'
 import { Route as ShellAccountRouteImport } from './routes/_shell/account'
 import { Route as ShellFilesRouteImport } from './routes/_shell/files'
+import { Route as ShellLibrariesRouteImport } from './routes/_shell/libraries'
 import { Route as ShellUsersRouteImport } from './routes/_shell/users'
 import { Route as SetupIndexRouteImport } from './routes/setup/index'
 
@@ -47,6 +48,11 @@ const ShellFilesRoute = ShellFilesRouteImport.update({
   path: '/files',
   getParentRoute: () => ShellRoute,
 } as any)
+const ShellLibrariesRoute = ShellLibrariesRouteImport.update({
+  id: '/libraries',
+  path: '/libraries',
+  getParentRoute: () => ShellRoute,
+} as any)
 const ShellUsersRoute = ShellUsersRouteImport.update({
   id: '/users',
   path: '/users',
@@ -64,6 +70,7 @@ export interface FileRoutesByFullPath {
   '/$': typeof ShellSplatRoute
   '/account': typeof ShellAccountRoute
   '/files': typeof ShellFilesRoute
+  '/libraries': typeof ShellLibrariesRoute
   '/users': typeof ShellUsersRoute
   '/setup/': typeof SetupIndexRoute
 }
@@ -72,6 +79,7 @@ export interface FileRoutesByTo {
   '/$': typeof ShellSplatRoute
   '/account': typeof ShellAccountRoute
   '/files': typeof ShellFilesRoute
+  '/libraries': typeof ShellLibrariesRoute
   '/users': typeof ShellUsersRoute
   '/': typeof ShellIndexRoute
   '/setup': typeof SetupIndexRoute
@@ -83,6 +91,7 @@ export interface FileRoutesById {
   '/_shell/$': typeof ShellSplatRoute
   '/_shell/account': typeof ShellAccountRoute
   '/_shell/files': typeof ShellFilesRoute
+  '/_shell/libraries': typeof ShellLibrariesRoute
   '/_shell/users': typeof ShellUsersRoute
   '/_shell/': typeof ShellIndexRoute
   '/setup/': typeof SetupIndexRoute
@@ -90,9 +99,24 @@ export interface FileRoutesById {
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/login' | '/$' | '/account' | '/files' | '/users' | '/setup/'
+    | '/'
+    | '/login'
+    | '/$'
+    | '/account'
+    | '/files'
+    | '/libraries'
+    | '/users'
+    | '/setup/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/login' | '/$' | '/account' | '/files' | '/users' | '/' | '/setup'
+  to:
+    | '/login'
+    | '/$'
+    | '/account'
+    | '/files'
+    | '/libraries'
+    | '/users'
+    | '/'
+    | '/setup'
   id:
     | '__root__'
     | '/_shell'
@@ -100,6 +124,7 @@ export interface FileRouteTypes {
     | '/_shell/$'
     | '/_shell/account'
     | '/_shell/files'
+    | '/_shell/libraries'
     | '/_shell/users'
     | '/_shell/'
     | '/setup/'
@@ -155,6 +180,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellFilesRouteImport
       parentRoute: typeof ShellRoute
     }
+    '/_shell/libraries': {
+      id: '/_shell/libraries'
+      path: '/libraries'
+      fullPath: '/libraries'
+      preLoaderRoute: typeof ShellLibrariesRouteImport
+      parentRoute: typeof ShellRoute
+    }
     '/_shell/users': {
       id: '/_shell/users'
       path: '/users'
@@ -176,6 +208,7 @@ interface ShellRouteChildren {
   ShellSplatRoute: typeof ShellSplatRoute
   ShellAccountRoute: typeof ShellAccountRoute
   ShellFilesRoute: typeof ShellFilesRoute
+  ShellLibrariesRoute: typeof ShellLibrariesRoute
   ShellUsersRoute: typeof ShellUsersRoute
   ShellIndexRoute: typeof ShellIndexRoute
 }
@@ -184,6 +217,7 @@ const ShellRouteChildren: ShellRouteChildren = {
   ShellSplatRoute: ShellSplatRoute,
   ShellAccountRoute: ShellAccountRoute,
   ShellFilesRoute: ShellFilesRoute,
+  ShellLibrariesRoute: ShellLibrariesRoute,
   ShellUsersRoute: ShellUsersRoute,
   ShellIndexRoute: ShellIndexRoute,
 }

@@ -1,5 +1,11 @@
 import { Link } from "@tanstack/react-router";
-import { AudioWaveformIcon, FolderIcon, LayoutDashboardIcon, UsersIcon } from "lucide-react";
+import {
+  AudioWaveformIcon,
+  FolderIcon,
+  LayoutDashboardIcon,
+  LibraryIcon,
+  UsersIcon,
+} from "lucide-react";
 import type { ComponentProps } from "react";
 
 import { type NavItem, NavMain } from "@/components/nav-main";
@@ -22,6 +28,7 @@ const navMain: NavItem[] = [
   { title: "Overview", to: "/", icon: <LayoutDashboardIcon /> },
   { title: "Users", to: "/users", icon: <UsersIcon />, permission: "subsonic-users:read" },
   { title: "Files", to: "/files", icon: <FolderIcon />, permission: "files:read" },
+  { title: "Libraries", to: "/libraries", icon: <LibraryIcon />, permission: "libraries:read" },
 ];
 
 /** Whether the signed-in console user's role grants what an entry's page needs. */

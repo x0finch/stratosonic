@@ -136,6 +136,35 @@ const MESSAGES: Record<string, ErrorMessage> = {
     title: "The path is too long",
     description: "A path is at most 1,024 bytes, and each name in it at most 255.",
   },
+  // The Libraries API's (#84). A library's name is what Subsonic clients show
+  // in their folder picker, unique in any mix of case, as Navidrome's is.
+  name_taken: {
+    title: "The name is taken",
+    description: "Another library has it, in some mix of upper and lower case.",
+  },
+  already_connected: {
+    title: "The bucket is already connected",
+    description: "It is a library already, or the bucket the Worker is bound to.",
+  },
+  invalid_account_id: {
+    title: "The account ID is not valid",
+    description:
+      "It is 32 characters of 0-9 and a-f, as the Cloudflare dashboard shows it beside R2.",
+  },
+  invalid_bucket: {
+    title: "The bucket name is not valid",
+    description:
+      "An R2 bucket name is 3 to 63 lowercase letters, digits and hyphens, and starts and ends with a letter or digit.",
+  },
+  default_library: {
+    title: "Library 1 cannot be changed that way",
+    description:
+      "It is the bucket the Worker is bound to: it cannot be removed, and only its name and its default for new users change.",
+  },
+  removing: {
+    title: "The library is being removed",
+    description: "The scan is deleting its tracks and albums, so it cannot be changed any more.",
+  },
   forbidden: {
     title: "Your role does not allow that",
     description: "Sign in with a console account whose role allows it.",
@@ -175,6 +204,45 @@ const ANALYTICS_REASONS: Record<"unauthorized" | "rate_limited" | "upstream", Er
   },
 };
 
+/**
+ * Why a bucket could not be reached (#84): a connect or a connection test
+ * that failed (`connection_failed {reason}`), or a library the last scan
+ * skipped (`lastScanError`). The titles are the Libraries page's "Scan
+ * failed" tooltips.
+ */
+const CONNECTION_FAILURES: Record<
+  "auth" | "bucket_not_found" | "throttled" | "unavailable",
+  ErrorMessage
+> = {
+  auth: {
+    title: "The key was refused",
+    description:
+      "Check the Access Key ID and the Secret Access Key, and that the token has Object Read & Write on this bucket.",
+  },
+  bucket_not_found: {
+    title: "The bucket was not found",
+    description: "Check the bucket's name, and that the account ID is the account that owns it.",
+  },
+  throttled: {
+    title: "The bucket is busy",
+    description: "R2 asked for fewer requests. Try again in a moment.",
+  },
+  unavailable: {
+    title: "The bucket did not answer",
+    description: "R2 could not be reached, or answered with an error. Try again in a moment.",
+  },
+};
+
+/**
+ * Why a bucket could not be reached, in words. A reason this console does
+ * not know yet reads as a bucket that did not answer.
+ */
+export function describeConnectionFailure(reason: string | null | undefined): ErrorMessage {
+  return reason && Object.hasOwn(CONNECTION_FAILURES, reason)
+    ? CONNECTION_FAILURES[reason as keyof typeof CONNECTION_FAILURES]
+    : CONNECTION_FAILURES.unavailable;
+}
+
 /** What to tell the user about a failed call. */
 export function describeError(error: unknown): ErrorMessage {
   if (!(error instanceof ApiError)) {
@@ -198,6 +266,10 @@ export function describeError(error: unknown): ErrorMessage {
     return Object.hasOwn(ANALYTICS_REASONS, reason)
       ? ANALYTICS_REASONS[reason as keyof typeof ANALYTICS_REASONS]
       : ANALYTICS_REASONS.upstream;
+  }
+
+  if (error.code === "connection_failed") {
+    return describeConnectionFailure(error.reason);
   }
 
   const known = MESSAGES[error.code];
