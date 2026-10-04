@@ -28,7 +28,12 @@ import {
   updateSubsonicUser,
 } from "@/lib/api";
 import { MAX_USERNAME_LENGTH } from "@/lib/errors";
-import { librariesError, librariesLabel, userChanges, userNamesMatch } from "@/lib/subsonic-users";
+import {
+  editLibrariesError,
+  librariesLabel,
+  userChanges,
+  userNamesMatch,
+} from "@/lib/subsonic-users";
 
 /**
  * Renames a Subsonic user, turns **Subsonic admin** on or off, or, where
@@ -100,7 +105,7 @@ function EditUserForm({
     const target = event.currentTarget;
     const form = new FormData(target);
     clear();
-    if (choosesLibraries && librariesError(isAdmin, libraryIds) !== null) {
+    if (choosesLibraries && editLibrariesError(user, { isAdmin, libraryIds }) !== null) {
       // "Choose at least one library." shows beside the boxes already.
       return;
     }
@@ -172,7 +177,11 @@ function EditUserForm({
               setLibraryIds(next);
               drop("libraries");
             }}
-            error={fieldErrors.libraries ?? librariesError(isAdmin, libraryIds) ?? undefined}
+            error={
+              fieldErrors.libraries ??
+              editLibrariesError(user, { isAdmin, libraryIds }) ??
+              undefined
+            }
           />
         ) : null}
       </FieldGroup>

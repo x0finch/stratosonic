@@ -131,6 +131,35 @@ export function librariesError(isAdmin: boolean, libraryIds: readonly number[]):
 }
 
 /**
+ * The edit dialog's Libraries error: as `librariesError`, but only when the
+ * edit would send the list (`userChanges`), so a user whose only library
+ * was removed, and who so has none, can still be renamed with the boxes as
+ * they were.
+ */
+export function editLibrariesError(
+  user: SubsonicUser,
+  edited: { isAdmin: boolean; libraryIds: readonly number[] },
+): string | null {
+  const changes = userChanges(user, { username: user.username, ...edited });
+  return changes?.libraryIds === undefined
+    ? null
+    : librariesError(edited.isAdmin, edited.libraryIds);
+}
+
+/**
+ * The add dialog's checked libraries: the owner's choice once they have
+ * touched a box (`chosen`), and until then the defaults as they are now,
+ * so defaults that arrive after the dialog opened (the Libraries page's
+ * list still loading) are checked too.
+ */
+export function checkedLibraries(
+  chosen: readonly number[] | null,
+  defaults: readonly number[],
+): readonly number[] {
+  return chosen ?? defaults;
+}
+
+/**
  * The users table's Libraries cell (#84): "All" for a Subsonic admin,
  * otherwise the names of up to two, in id order, or "3 libraries" past two.
  * A user with none reads as the table's missing value.

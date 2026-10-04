@@ -22,7 +22,7 @@ import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { createSubsonicUser, type LibraryName } from "@/lib/api";
 import { MAX_USERNAME_LENGTH } from "@/lib/errors";
-import { librariesError } from "@/lib/subsonic-users";
+import { checkedLibraries, librariesError } from "@/lib/subsonic-users";
 
 /**
  * Creates a Subsonic user: a username, a password and the **Subsonic admin**
@@ -74,7 +74,10 @@ function CreateUserForm({
   onDone: () => void;
 }) {
   const [isAdmin, setIsAdmin] = useState(adminRequired);
-  const [libraryIds, setLibraryIds] = useState<readonly number[]>(defaultLibraryIds);
+  // Null until a box is touched: the defaults show, even ones that arrive
+  // after the dialog opened.
+  const [chosen, setChosen] = useState<readonly number[] | null>(null);
+  const libraryIds = checkedLibraries(chosen, defaultLibraryIds);
   const { fieldErrors, clear, report, onChange, drop } = useUserFieldErrors();
   const admin = adminRequired || isAdmin;
   const choosesLibraries = libraries.length > 0 && !admin;
@@ -166,7 +169,7 @@ function CreateUserForm({
             isAdmin={admin}
             checked={libraryIds}
             onCheckedChange={(next) => {
-              setLibraryIds(next);
+              setChosen(next);
               drop("libraries");
             }}
             error={fieldErrors.libraries ?? librariesError(admin, libraryIds) ?? undefined}

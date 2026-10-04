@@ -19,8 +19,10 @@ import {
   ADMIN_LIBRARIES,
   adminRequired,
   afterUserWrite,
+  checkedLibraries,
   defaultLibraryIds,
   deleteConsequences,
+  editLibrariesError,
   formatDay,
   LIBRARIES_REQUIRED,
   librariesError,
@@ -296,6 +298,33 @@ describe("the Libraries field (#84)", () => {
     // An admin sees every library: nothing to choose.
     expect(librariesError(true, [])).toBeNull();
     expect(ADMIN_LIBRARIES).toBe("Admins see every library.");
+  });
+
+  it("checks the defaults until a box is touched, even defaults that arrive late", () => {
+    // The dialog opened before the Libraries page's list arrived: no defaults yet.
+    expect(checkedLibraries(null, [])).toEqual([]);
+    // They arrive: the untouched field checks them.
+    expect(checkedLibraries(null, [1, 3])).toEqual([1, 3]);
+    // Once the owner has chosen, later defaults change nothing.
+    expect(checkedLibraries([2], [1, 3])).toEqual([2]);
+    expect(checkedLibraries([], [1, 3])).toEqual([]);
+  });
+
+  it("lets an edit rename a user with no libraries while the boxes are unchanged", () => {
+    // Their only library was removed: they have none, and none is checked.
+    const orphan = user({ libraryIds: [] });
+    expect(editLibrariesError(orphan, { isAdmin: false, libraryIds: [] })).toBeNull();
+    expect(userChanges(orphan, { username: "alicia", isAdmin: false, libraryIds: [] })).toEqual({
+      username: "alicia",
+    });
+    // Unchecking every box of a user who has some is still refused.
+    expect(editLibrariesError(user({ libraryIds: [1] }), { isAdmin: false, libraryIds: [] })).toBe(
+      LIBRARIES_REQUIRED,
+    );
+    // A promotion sends no list, so nothing is required.
+    expect(
+      editLibrariesError(user({ libraryIds: [1] }), { isAdmin: true, libraryIds: [] }),
+    ).toBeNull();
   });
 
   it("sends a list only for a non-admin whose libraries change", () => {
