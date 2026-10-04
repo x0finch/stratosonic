@@ -149,9 +149,23 @@ export const savePlayQueue: SubsonicHandler = async (request) => {
   }
 
   const requested = raw.map(queueTrackId);
+
+  // A save naming no track clears the queue whatever `current` says, before
+  // it is read, as v0.5.0 cleared it; Navidrome ignores a `current` it does
+  // not recognise.
+  if (requested.length === 0) {
+    await clearPlayQueue(db, request.user.id);
+
+    return {};
+  }
+
   const requestedCurrent = params.get("current");
   const asked = requestedCurrent === null ? null : queueTrackId(requestedCurrent);
 
+  // An all-access caller's `current` is stored as sent, even when it is not
+  // one of the ids, as v0.5.0 stored it; a scoped caller's is dropped unless
+  // it is one of the ids kept. Either way `getPlayQueue` answers no
+  // `current` that names no entry, and Navidrome then resumes at the first.
   const scope = scopeOf(request.user);
   const trackIds = scope.all ? requested : await visibleTracks(db, requested, scope);
   const current = scope.all || asked === null || trackIds.includes(asked) ? asked : null;

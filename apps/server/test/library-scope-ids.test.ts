@@ -475,6 +475,19 @@ describe("savePlayQueue for a caller who does not see every library", () => {
     expect(await storedQueue(users.oneId)).toBeNull();
   });
 
+  it.each([
+    ["an empty current", ""],
+    ["a current that is not a track id", "al-nonsense"],
+  ])("clears the queue for a save of no track and %s", async (_label, current) => {
+    expect((await call(LISTENER_TWO, "savePlayQueue", [["id", tr(ids.calmTrack)]])).status).toBe(
+      "ok",
+    );
+    expect(await storedQueue(users.twoId)).not.toBeNull();
+
+    expect((await call(LISTENER_TWO, "savePlayQueue", [["current", current]])).status).toBe("ok");
+    expect(await storedQueue(users.twoId)).toBeNull();
+  });
+
   it("keeps what a caller who sees every library sends, as v0.5.0 did", async () => {
     expect(
       (
