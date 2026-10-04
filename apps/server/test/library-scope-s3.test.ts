@@ -1,8 +1,9 @@
-import { library } from "@stratosonic/db";
+import { library, trackLyrics } from "@stratosonic/db";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { database } from "../src/db";
 import { sealCredentials } from "../src/storage/credentials";
+import { StorageError } from "../src/storage/storage";
 import { FakeS3, installFakeS3, libraryTestBucket } from "./fake-s3";
 import {
   ADMIN,
@@ -13,6 +14,7 @@ import {
   LISTENER_BOTH,
   LISTENER_TWO,
   SHARED_KEY,
+  type SubsonicJson,
   seedTwoLibraries,
 } from "./library-scope-support";
 import { encryptionKey, testEnv } from "./support";
@@ -23,6 +25,10 @@ import { encryptionKey, testEnv } from "./support";
  * and `getLyrics` read a library-2 track through `storageFor`, from the fake
  * S3 (test/fake-s3.ts), and answer exactly as they answer for library 1;
  * covers stay in the bound bucket.
+ *
+ * A bucket that refuses the token, or a library with none stored, fails a
+ * stream with error 0 and a logged `StorageError`, leaves lyrics to the
+ * embedded ones, and costs the covers nothing.
  *
  * D1's fixtures, with library 2's row pointed at the fake and given a sealed
  * token. The shared key holds the same bytes in both buckets, so a library-1
@@ -175,4 +181,90 @@ describe("a library-2 album's cover", () => {
     );
     expect(fake.calls).toEqual([]);
   });
+});
+
+describe("an unreachable library-2 bucket", () => {
+  const db = () => database(testEnv);
+  let sealed: string | null = null;
+
+  beforeAll(async () => {
+    // Library 2's calm track also carries a lyric in its tags, which is what
+    // lyrics fall back to when its bucket cannot be read.
+    await db()
+      .insert(trackLyrics)
+      .values({ trackId: ids.calmTrack, text: "[00:02.00]an embedded calm line", lang: "eng" });
+    const [row] = await db()
+      .select({ credentials: library.credentials })
+      .from(library)
+      .where(eq(library.id, ARCHIVE.id));
+    sealed = row?.credentials ?? null;
+  });
+
+  afterEach(async () => {
+    fake.fail(null);
+    await db().update(library).set({ credentials: sealed }).where(eq(library.id, ARCHIVE.id));
+  });
+
+  /** Makes the bucket unreachable: a refused token, or none stored at all. */
+  const UNREACHABLE: readonly (readonly [string, () => Promise<void>])[] = [
+    ["a bucket answering 403", async () => fake.fail("access_denied")],
+    [
+      "no stored credentials",
+      async () => {
+        await db().update(library).set({ credentials: null }).where(eq(library.id, ARCHIVE.id));
+      },
+    ],
+  ];
+
+  it.each(UNREACHABLE)("fails stream with error 0 and logs why, for %s", async (_label, cut) => {
+    await cut();
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      for (const endpoint of ["stream", "download"]) {
+        logged.mockClear();
+        const response = await fetch(LISTENER_TWO, endpoint, [["id", tr(ids.calmTrack)]]);
+        const body = (await response.json()) as { "subsonic-response": SubsonicJson };
+
+        expect(body["subsonic-response"].error?.code, endpoint).toBe(0);
+        const errors = logged.mock.calls.flat().filter((value) => value instanceof StorageError);
+        expect(
+          errors.map((error) => (error as StorageError).reason),
+          endpoint,
+        ).toEqual(["auth"]);
+      }
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it.each(UNREACHABLE)(
+    "answers getLyricsBySongId with the embedded lyric, for %s",
+    async (_label, cut) => {
+      await cut();
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const body = await call(LISTENER_TWO, "getLyricsBySongId", [["id", tr(ids.calmTrack)]]);
+
+        expect(body.status).toBe("ok");
+        expect(body.lyricsList.structuredLyrics[0].line[0].value).toBe("an embedded calm line");
+      } finally {
+        warned.mockRestore();
+      }
+    },
+  );
+
+  it.each(UNREACHABLE)(
+    "still serves the covers, with no S3 request, for %s",
+    async (_label, cut) => {
+      await cut();
+      fake.calls.length = 0;
+      const response = await fetch(LISTENER_TWO, "getCoverArt", [["id", `al-${ids.secondOnly}`]]);
+
+      expect(response.status).toBe(200);
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(
+        new Uint8Array([0xff, 0xd8, 0xff, 0xe0]),
+      );
+      expect(fake.calls).toEqual([]);
+    },
+  );
 });

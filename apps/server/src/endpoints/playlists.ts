@@ -135,6 +135,10 @@ export const createPlaylist: SubsonicHandler = async (request) => {
   }
 
   const tracks = await requestedTracks(db, scopeOf(request.user), request.params.getAll("songId"));
+  // Replacing an existing playlist's songs writes exactly these tracks, so a
+  // scoped owner doing it drops the entries in libraries they cannot see, as
+  // Navidrome's `Put` replaces every entry. Only `updatePlaylist` keeps them
+  // (#84, "Playlists for a scoped caller").
   const held = requestedId === "" ? null : await writable(db, request, requestedId);
 
   const id = await writePlaylist(request.env, db, {

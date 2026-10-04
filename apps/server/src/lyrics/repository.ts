@@ -15,8 +15,9 @@
  * Both lookups keep to the caller's libraries (#84), and both say which
  * library a track is in, since its sidecar is read from that library's
  * storage: the library's row is joined in the same statement, unless the
- * caller sees library 1 alone (storage/track-storage.ts), when the statement
- * is v0.5.0's.
+ * caller sees library 1 alone (storage/track-storage.ts). Either way a
+ * lookup is one statement, as in v0.5.0; it selects `library_id` beside
+ * v0.5.0's columns, and only a scoped caller's adds a predicate.
  */
 
 import { library, track, trackLyrics } from "@stratosonic/db";

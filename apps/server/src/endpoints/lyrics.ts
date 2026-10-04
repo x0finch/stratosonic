@@ -75,16 +75,19 @@ export const getLyrics: SubsonicHandler = async (request) => {
     joinsLibraryRow(user.libraryIds),
   );
 
+  // Each candidate's storage is built once: an S3 library's opens its
+  // sealed token on first use, which should not happen once per suffix.
+  const sources = candidates.map((candidate) => ({
+    candidate,
+    storage: storageOfTrack(request.env, candidate, candidate.library),
+  }));
+
   // Source first, then candidate, as Navidrome's `getLyricsForCandidates`
   // nests them: an older take's `.lrc` beats the newest take's `.txt`, and
   // any sidecar beats a lyric in the tags.
   for (const suffix of SIDECAR_SUFFIXES) {
-    for (const candidate of candidates) {
-      const lyrics = await readSidecarLyricsWithSuffix(
-        storageOfTrack(request.env, candidate, candidate.library),
-        candidate.r2Key,
-        suffix,
-      );
+    for (const { candidate, storage } of sources) {
+      const lyrics = await readSidecarLyricsWithSuffix(storage, candidate.r2Key, suffix);
 
       if (lyrics !== null) {
         return plainLyricsElement(artist, title, lyrics);
