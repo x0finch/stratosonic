@@ -143,6 +143,26 @@ describe("a key the bucket refuses (403)", () => {
   });
 });
 
+describe("a refused key, inside one step", () => {
+  it("skips library 2 within the step that met it: no failure for the driver to retry", async () => {
+    await putFixtureInBound(UNTAGGED, "untagged.mp3");
+    await putFixtureInArchive(SILENT, "silent-track.mp3");
+    fake.fail("access_denied");
+
+    const run = await runScan(testEnv, T, {
+      pageSize: 90,
+      pagesPerRun: 3,
+      extractionsPerRun: 6,
+      deletionsPerPage: 90,
+    });
+
+    // Library 1 listed, library 2 skipped, the prune run: all in one step.
+    expect(run.completed).toBe(true);
+    expect((await libraryRow(ARCHIVE.id))?.lastScanError).toBe("auth");
+    expect(await trackAt(1, UNTAGGED)).toBeDefined();
+  });
+});
+
 describe("a bucket that is gone (NoSuchBucket)", () => {
   it("is skipped at once with bucket_not_found, its tracks kept", async () => {
     const archived = await indexedLibraries();
@@ -346,6 +366,25 @@ describe("a library set removing while the pass is in it", () => {
     expect(summary?.counts.removed).toBe(0);
     expect(summary?.libraries["2"]?.removed ?? 0).toBe(0);
     expect(await trackAt(1, UNTAGGED)).toBeDefined();
+  });
+});
+
+describe("a library in a state this version does not know", () => {
+  it("is neither scanned nor cleaned up: only active libraries are listed", async () => {
+    const archived = await indexedLibraries();
+    // `state` carries no CHECK (packages/db): a later release may add one.
+    await database(testEnv)
+      .update(library)
+      .set({ state: "suspended" as never })
+      .where(eq(library.id, ARCHIVE.id));
+    const before = fake.calls.length;
+    await poke(LATER);
+    await driveUntilIdle();
+
+    expect(fake.calls.length).toBe(before);
+    expect((await tracksIn(ARCHIVE.id)).map((row) => row.id)).toEqual(archived);
+    expect((await libraryRow(ARCHIVE.id))?.state).toBe("suspended");
+    expect((await readLastScanSummary(database(testEnv)))?.startedAt).toBe(LATER.getTime());
   });
 });
 

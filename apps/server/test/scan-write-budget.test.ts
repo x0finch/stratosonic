@@ -166,6 +166,19 @@ describe("a pass that reaches the budget", () => {
     expect(await readLastScanSummary(database(testEnv))).toBeNull();
   });
 
+  it("stops a step that reaches the budget before its next page", async () => {
+    // Ten pages a step would finish both libraries in one step; the budget
+    // stops it after library 1's page and library 2's first.
+    await poke(T, { ...slowTuning, scanLimits: { pageSize: 1, pagesPerRun: 10 }, writeBudget: 4 });
+    await runNextAlarm();
+
+    expect(await driverIsIdle()).toBe(true);
+    const progress = await progressNow();
+    expect(progress?.libraryId).toBe(ARCHIVE.id);
+    expect(progress?.counts.examined).toBe(1);
+    expect(await readLastScanSummary(database(testEnv))).toBeNull();
+  });
+
   it("ends like a give-up: no alarm, the driver's storage empty, the D1 cursor kept", async () => {
     await pausedPass();
 
