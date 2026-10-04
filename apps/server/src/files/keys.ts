@@ -22,10 +22,11 @@
  * format the scanner learns becomes uploadable with no change here.
  */
 
+import { DEFAULT_LIBRARY_ID } from "@stratosonic/db";
 import { AUDIO_CONTENT_TYPES, AUDIO_SUFFIXES, suffixOf } from "../library/audio-formats";
 import { MAX_SIDECAR_BYTES, SIDECAR_SUFFIXES } from "../lyrics/sidecar";
 import { PLAYLIST_SUFFIXES } from "../playlists/m3u";
-import { COVER_PREFIX, IMAGE_SUFFIXES, isCoverKey } from "../scanner/covers";
+import { COVER_PREFIX, IMAGE_SUFFIXES } from "../scanner/covers";
 
 /** R2's longest key, in bytes of UTF-8 (R2 limits). */
 export const MAX_KEY_BYTES = 1024;
@@ -43,6 +44,26 @@ export const MAX_SEGMENT_BYTES = 255;
  * an album pointing at nothing until its track's bytes change.
  */
 export const RESERVED_PREFIX = COVER_PREFIX;
+
+/**
+ * The prefixes reserved in the bound bucket, library 1: `_covers/`, where
+ * the scan writes every library's covers (#84, "Covers"). It is the default
+ * of every rule below that takes reserved prefixes, so a caller that names
+ * no library gets library 1's rules.
+ */
+export const BOUND_RESERVED_PREFIXES: readonly string[] = [RESERVED_PREFIX];
+
+/** A connected library's reserved prefixes: none, since no cover is written to its bucket. */
+const NO_RESERVED_PREFIXES: readonly string[] = [];
+
+/**
+ * The prefixes a library reserves: `_covers/` in library 1 only (#84,
+ * "Covers"). A connected library's bucket holds the owner's files and
+ * nothing of the scanner's, so all of it can be browsed and written.
+ */
+export function reservedPrefixesOf(libraryId: number): readonly string[] {
+  return libraryId === DEFAULT_LIBRARY_ID ? BOUND_RESERVED_PREFIXES : NO_RESERVED_PREFIXES;
+}
 
 /** The kinds of file the server reads, and so the kinds an upload may be. */
 export type FileKind = "audio" | "lyrics" | "playlist" | "image";
@@ -166,12 +187,14 @@ function isAcceptableSegment(segment: string): boolean {
  *   character or a backslash;
  * - `path_too_long`: over `MAX_KEY_BYTES`, or a segment over
  *   `MAX_SEGMENT_BYTES`, in bytes of UTF-8;
- * - `reserved_path`: under `_covers/`;
+ * - `reserved_path`: under one of `reserved`, the library's reserved
+ *   prefixes (`reservedPrefixesOf`), library 1's unless given;
  * - `type_not_allowed`: a suffix outside the allow-list.
  */
 export function checkUploadKey(
   raw: string,
   prefix = "",
+  reserved: readonly string[] = BOUND_RESERVED_PREFIXES,
 ): UploadKey | { readonly error: PathRefusal } {
   if (!isWellFormed(raw) || !raw.startsWith(prefix)) {
     return { error: "invalid_path" };
@@ -187,7 +210,7 @@ export function checkUploadKey(
   ) {
     return { error: "path_too_long" };
   }
-  if (isReservedKey(key)) {
+  if (isReservedKey(key, reserved)) {
     return { error: "reserved_path" };
   }
 
@@ -213,11 +236,14 @@ export function newKeySpelling(raw: string, prefix = ""): string {
 /**
  * Checks the folder prefix an upload request names, as a listing gave it:
  * as browse takes a prefix (`""` for the root, or ending in `/`, at most
- * `MAX_KEY_BYTES`, not under `_covers/`), and well-formed. It is never
- * normalised.
+ * `MAX_KEY_BYTES`, not under one of `reserved`), and well-formed. It is
+ * never normalised.
  */
-export function checkUploadPrefix(prefix: string): "invalid_path" | "reserved_path" | null {
-  return isWellFormed(prefix) ? checkBrowsePrefix(prefix) : "invalid_path";
+export function checkUploadPrefix(
+  prefix: string,
+  reserved: readonly string[] = BOUND_RESERVED_PREFIXES,
+): "invalid_path" | "reserved_path" | null {
+  return isWellFormed(prefix) ? checkBrowsePrefix(prefix, reserved) : "invalid_path";
 }
 
 /**
@@ -293,32 +319,46 @@ export function checkUploadSize(kind: FileKind, size: number): "empty_file" | "t
   return size > ALLOWED[kind].maxBytes ? "too_large" : null;
 }
 
-/** Whether a key, listed or new, is under the scanner's reserved prefix. */
-export function isReservedKey(key: string): boolean {
-  return isCoverKey(key);
+/**
+ * Whether a key, listed or new, is under one of a library's reserved
+ * prefixes: library 1's, the scanner's `_covers/`, unless `reserved` is
+ * given.
+ */
+export function isReservedKey(
+  key: string,
+  reserved: readonly string[] = BOUND_RESERVED_PREFIXES,
+): boolean {
+  return reserved.some((prefix) => key.startsWith(prefix));
 }
 
 /**
  * Checks a folder's prefix as browse takes it (`GET /api/files?prefix=`):
- * `""` for the root, or a prefix ending in `/`, at most `MAX_KEY_BYTES`.
- * It comes from a listing, so it is taken as given, never normalised.
+ * `""` for the root, or a prefix ending in `/`, at most `MAX_KEY_BYTES`, not
+ * under one of `reserved`. It comes from a listing, so it is taken as given,
+ * never normalised.
  */
-export function checkBrowsePrefix(prefix: string): "invalid_path" | "reserved_path" | null {
+export function checkBrowsePrefix(
+  prefix: string,
+  reserved: readonly string[] = BOUND_RESERVED_PREFIXES,
+): "invalid_path" | "reserved_path" | null {
   if (prefix === "") {
     return null;
   }
 
-  return checkFolderPrefix(prefix);
+  return checkFolderPrefix(prefix, reserved);
 }
 
 /**
  * Checks a folder's prefix as delete-folder takes it: as browse does, except
  * that the root is refused, since it cannot be deleted.
  */
-export function checkFolderPrefix(prefix: string): "invalid_path" | "reserved_path" | null {
+export function checkFolderPrefix(
+  prefix: string,
+  reserved: readonly string[] = BOUND_RESERVED_PREFIXES,
+): "invalid_path" | "reserved_path" | null {
   if (!prefix.endsWith("/") || utf8Length(prefix) > MAX_KEY_BYTES) {
     return "invalid_path";
   }
 
-  return isReservedKey(prefix) ? "reserved_path" : null;
+  return isReservedKey(prefix, reserved) ? "reserved_path" : null;
 }

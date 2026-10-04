@@ -132,6 +132,19 @@ describe("GET /api/files/config", () => {
         configured: false,
         missing: ["R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "CF_ACCOUNT_ID"],
       },
+      // The one library of the pinned database, the bound bucket (#84).
+      libraries: [
+        {
+          id: 1,
+          name: "Music Library",
+          writable: true,
+          uploads: {
+            configured: false,
+            missing: ["R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "CF_ACCOUNT_ID"],
+          },
+          reservedPrefixes: ["_covers/"],
+        },
+      ],
       allowed: {
         audio: { suffixes: ["mp3", "m4a", "flac"], maxBytes: 5_363_466_240 },
         lyrics: { suffixes: ["lrc", "txt"], maxBytes: 1_048_576 },

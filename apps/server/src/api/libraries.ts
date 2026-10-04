@@ -111,7 +111,7 @@ export function registerLibraryRoutes(api: ApiApp): void {
   api.get("/libraries", requireSession, requirePermission("libraries:read"), async (c) => {
     const { libraries, counts } = await listLibraries(database(c.env));
     const views = await Promise.all(
-      libraries.map((row) => viewOf(c.env, row, counts.get(row.id) ?? NO_COUNTS)),
+      libraries.map((row) => viewOf(c.env, c.var.passphrase, row, counts.get(row.id) ?? NO_COUNTS)),
     );
 
     return c.json({ libraries: views, defaultAccountId: setting(c.env.CF_ACCOUNT_ID) });
@@ -194,7 +194,7 @@ export function registerLibraryRoutes(api: ApiApp): void {
 
     return c.json(
       {
-        library: await viewOf(c.env, created, NO_COUNTS, credentials),
+        library: await viewOf(c.env, c.var.passphrase, created, NO_COUNTS, credentials),
         scan: await poke(c.env),
       },
       201,
@@ -296,7 +296,7 @@ export function registerLibraryRoutes(api: ApiApp): void {
     }
 
     return c.json({
-      library: await viewOf(c.env, updated.library, updated.counts),
+      library: await viewOf(c.env, c.var.passphrase, updated.library, updated.counts),
       scan: pathChanged ? await poke(c.env) : null,
     });
   });
@@ -557,10 +557,13 @@ function openStored(passphrase: string, row: Library): Promise<StorageCredential
 /**
  * A library as the console sees it. A connected library's Access Key ID hint
  * comes from its stored token, opened here (one AES-GCM decrypt), or from the
- * token just given; the secret is never read into the answer.
+ * token just given; the secret is never read into the answer. `passphrase`
+ * is the request's (`c.var.passphrase`), which `loadConsoleAuth` checked is
+ * set.
  */
 async function viewOf(
   env: Env,
+  passphrase: string,
   row: Library,
   counts: LibraryCounts,
   given?: StorageCredentials,
@@ -568,8 +571,7 @@ async function viewOf(
   const bound = row.kind === "r2-binding";
   let accessKeyIdHint: string | null = null;
   if (!bound) {
-    const credentials =
-      given ?? (await openStored(env.PASSWORD_ENCRYPTION_KEY ?? "", row).catch(() => null));
+    const credentials = given ?? (await openStored(passphrase, row).catch(() => null));
     accessKeyIdHint = credentials === null ? null : `…${credentials.accessKeyId.slice(-4)}`;
   }
 

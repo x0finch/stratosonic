@@ -30,7 +30,9 @@ import { oracleSignature } from "./sigv4-oracle";
  *   report a key `DeleteObjects` did not delete, to answer a ranged read
  *   with another range than asked, or to answer a listing without its
  *   `<EncodingType>` echo; and a failure can be kept to some operations, or
- *   to some keys;
+ *   to some keys, or to one call of an operation (`failCall`);
+ * - can give a listing a smaller page than asked for (`pageLimit`), as the
+ *   Files harness caps the binding's (test/files-support.ts);
  * - records every call (`calls`), signature verdict included.
  *
  * `encoding-type=url` is answered as S3 encodes it, a form encoding: a
@@ -114,6 +116,11 @@ export class FakeS3 {
   readonly secretAccessKey: string;
   /** Every request received, in order. */
   readonly calls: FakeS3Call[] = [];
+  /**
+   * Caps every listing's page below the `max-keys` asked for, as a smaller
+   * page would be answered (S3 may answer fewer keys than asked), or null.
+   */
+  pageLimit: number | null = null;
 
   #failure: {
     failure: FakeS3Failure;
@@ -122,6 +129,7 @@ export class FakeS3 {
   } | null = null;
   #tokens = new Map<string, string>();
   #issued = 0;
+  #failedCall: { operation: S3Operation; nth: number; failure: FakeS3Failure } | null = null;
 
   constructor(options: FakeS3Options = {}) {
     this.accountId = options.accountId ?? "fedcba9876543210fedcba9876543210";
@@ -145,7 +153,7 @@ export class FakeS3 {
   /**
    * Answers every request (or only those of `operations`, and of those only
    * the requests for one of `keys`) with `failure` from now on, or, with
-   * null, as S3 again.
+   * null, as S3 again (a pending `failCall` included).
    */
   fail(
     failure: FakeS3Failure | null,
@@ -160,6 +168,18 @@ export class FakeS3 {
             operations: operations === undefined ? null : new Set(operations),
             keys: keys === undefined ? null : new Set(keys),
           };
+    if (failure === null) {
+      this.#failedCall = null;
+    }
+  }
+
+  /**
+   * Answers the `nth` request (from 1, counted from now) of `operation` with
+   * `failure`, once, and every other as S3 would.
+   */
+  failCall(operation: S3Operation, nth: number, failure: FakeS3Failure): void {
+    const before = this.calls.filter((call) => call.operation === operation).length;
+    this.#failedCall = { operation, nth: before + nth, failure };
   }
 
   /** How many keys each `DeleteObjects` carried, in order. */
@@ -192,6 +212,16 @@ export class FakeS3 {
 
     if (signature !== "valid") {
       return answer(errorResponse(403, signature));
+    }
+
+    const once = this.#failedCall;
+    if (
+      once !== null &&
+      once.operation === operation &&
+      this.calls.filter((made) => made.operation === operation).length === once.nth
+    ) {
+      this.#failedCall = null;
+      return answer(failureResponse(once.failure, this.endpoint));
     }
 
     const failure = this.#failure;
@@ -350,7 +380,8 @@ export class FakeS3 {
       }
     }
 
-    const listing = await storage.list({ prefix, delimiter, cursor, limit: maxKeys });
+    const limit = this.pageLimit === null ? maxKeys : Math.min(maxKeys, this.pageLimit);
+    const listing = await storage.list({ prefix, delimiter, cursor, limit });
     let next = "";
     if (listing.truncated) {
       // Characters an XML body must escape, so the client's unescaping of

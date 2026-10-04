@@ -105,3 +105,33 @@ describe("the libraries a user is given", () => {
     expect(await librariesOf("no-such-user")).toEqual([]);
   });
 });
+
+describe("a refused list of libraries", () => {
+  /**
+   * A user already stamped at the very millisecond the update writes with,
+   * as another write in the same millisecond would leave them: the stamp
+   * alone cannot tell whether this update wrote.
+   */
+  async function stampedUser(userName: string, isAdmin: boolean, at: Date): Promise<string> {
+    const created = await createUser(db, { userName, password: "c", isAdmin });
+    if (typeof created === "string") throw new Error("refused");
+    await db.update(subsonicUser).set({ updatedAt: at }).where(eq(subsonicUser.id, created.id));
+    return created.id;
+  }
+
+  it("changes no row of an admin, whose list the update refuses", async () => {
+    const at = new Date(1_800_000_000_000);
+    const id = await stampedUser("stamped-admin", true, at);
+
+    expect(await updateUser(db, id, { libraryIds: [2] }, at)).toBeNull();
+    expect(await librariesOf(id)).toEqual(ALL);
+  });
+
+  it("changes no row when a library listed is not active", async () => {
+    const at = new Date(1_800_000_000_001);
+    const id = await stampedUser("stamped-listener", false, at);
+
+    expect(await updateUser(db, id, { libraryIds: [2, 99] }, at)).toBeNull();
+    expect(await librariesOf(id)).toEqual(DEFAULTS);
+  });
+});

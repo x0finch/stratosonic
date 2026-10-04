@@ -1,7 +1,7 @@
 import { suffixOf } from "../library/audio-formats";
 import { PLAYLIST_SUFFIXES } from "../playlists/m3u";
 import type { StoredObject } from "../storage/storage";
-import { kindOf, type ListedKind, RESERVED_PREFIX } from "./keys";
+import { BOUND_RESERVED_PREFIXES, kindOf, type ListedKind } from "./keys";
 
 /**
  * The CPU work of the Files routes, apart from the routes, so it can be read,
@@ -43,16 +43,21 @@ export interface DelimitedListing {
 
 /**
  * A delimited listing of `prefix` as the console sees it: folders and
- * files, each in the bucket's order (lexicographic by key). `_covers/`, the
- * scanner's, is dropped from the root's folders, and an object named like
- * the folder itself, a "folder marker" some S3 tools write, is not a file
- * in it.
+ * files, each in the bucket's order (lexicographic by key). The library's
+ * reserved prefixes (`reservedPrefixesOf`: `_covers/`, the scanner's, in
+ * library 1 only) are dropped from the root's folders, and an object named
+ * like the folder itself, a "folder marker" some S3 tools write, is not a
+ * file in it.
  */
-export function folderListing(prefix: string, listing: DelimitedListing): FolderListing {
+export function folderListing(
+  prefix: string,
+  listing: DelimitedListing,
+  reserved: readonly string[] = BOUND_RESERVED_PREFIXES,
+): FolderListing {
   return {
     prefix,
     folders: listing.prefixes
-      .filter((folder) => folder !== RESERVED_PREFIX)
+      .filter((folder) => !reserved.includes(folder))
       .map((folder) => ({ name: folder.slice(prefix.length, -1), prefix: folder })),
     files: listing.objects
       .filter((object) => object.key !== prefix)
