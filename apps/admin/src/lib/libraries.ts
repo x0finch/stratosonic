@@ -9,12 +9,13 @@ import {
   type LibraryList,
   type LibraryScan,
   type RemovedLibrary,
+  subsonicUsersQuery,
 } from "@/lib/api";
 import { describeConnectionFailure, describeError } from "@/lib/errors";
 import type { FieldErrors } from "@/lib/field-errors";
 import { filesConfigQuery } from "@/lib/files";
 import { formatCount } from "@/lib/format";
-import { libraryQuery } from "@/lib/overview";
+import { LIBRARIES_KEY, LIBRARY_KEY } from "@/lib/overview";
 
 /**
  * The rules of the Libraries page (`/libraries`, #84 "Console") that need no
@@ -68,7 +69,7 @@ export function librariesRefetchInterval(list: LibraryList | undefined): number 
  * reads nothing (`refetchIntervalInBackground: false`).
  */
 export const librariesQuery = queryOptions({
-  queryKey: ["libraries"],
+  queryKey: LIBRARIES_KEY,
   queryFn: fetchLibraries,
   staleTime: LIBRARIES_POLL_MS,
   refetchInterval: (query) => librariesRefetchInterval(query.state.data),
@@ -376,15 +377,17 @@ export function removedNotice(library: Library, removed: RemovedLibrary): Librar
 /**
  * After every library write, whether it went through or not: the list is
  * read again, so a refusal over a stale list shows the list as it is; the
- * Files page's configuration, which names the libraries, and the
- * Overview's library, whose totals a removal changes, are marked stale and
- * read again when they are on screen.
+ * Files page's configuration, the Overview's library and the Subsonic
+ * users, which each name the libraries (and a removal changes the
+ * Overview's totals), are marked stale and read again when they are on
+ * screen.
  */
 export function afterLibraryWrite(queryClient: QueryClient): Promise<void> {
   return Promise.all([
     queryClient.invalidateQueries({ queryKey: librariesQuery.queryKey }),
     queryClient.invalidateQueries({ queryKey: filesConfigQuery.queryKey }),
-    queryClient.invalidateQueries({ queryKey: libraryQuery.queryKey }),
+    queryClient.invalidateQueries({ queryKey: LIBRARY_KEY }),
+    queryClient.invalidateQueries({ queryKey: subsonicUsersQuery.queryKey }),
   ]).then(() => undefined);
 }
 
@@ -417,6 +420,9 @@ export function libraryWriteOptions<TData, TVariables>(
       const { title, description, failed } = write.succeeded(data, variables);
       (failed ? notices.failure : notices.success)(title, description);
     },
+    // A connect or an edit carries a secret key: the mutation cache drops it
+    // as soon as nothing shows the write, not five minutes later.
+    gcTime: 0,
     onSettled: async (_data, error) => {
       await afterLibraryWrite(queryClient);
       if (error && !write.fieldShown?.(error)) {

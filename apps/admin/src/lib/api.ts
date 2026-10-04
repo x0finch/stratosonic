@@ -231,26 +231,52 @@ export interface SubsonicUser {
   lastAccessAt: string | null;
   /** How many playlists they own, which a delete would take with them. */
   playlistCount: number;
+  /** The active libraries they see, by id: every one for a Subsonic admin (#84). */
+  libraryIds: number[];
 }
 
-export async function fetchSubsonicUsers(): Promise<SubsonicUser[]> {
-  const { users } = await call<{ users: SubsonicUser[] }>("GET", "/api/subsonic-users");
-  return users;
+/** A library as a list of libraries names it: an active one, by id. */
+export interface LibraryName {
+  id: number;
+  name: string;
 }
 
+/** `GET /api/subsonic-users`: the users, and the libraries a user may be given (#84). */
+export interface SubsonicUserList {
+  users: SubsonicUser[];
+  libraries: LibraryName[];
+}
+
+export function fetchSubsonicUsers(): Promise<SubsonicUserList> {
+  return call<SubsonicUserList>("GET", "/api/subsonic-users");
+}
+
+/**
+ * Creates a Subsonic user. A non-admin gets the libraries `libraryIds`
+ * lists, or, without it, the ones marked for new users (#84).
+ */
 export async function createSubsonicUser(request: {
   username: string;
   password: string;
   isAdmin: boolean;
+  libraryIds?: number[];
 }): Promise<SubsonicUser> {
   const { user } = await call<{ user: SubsonicUser }>("POST", "/api/subsonic-users", request);
   return user;
 }
 
-/** Renames a Subsonic user, turns **Subsonic admin** on or off, or both. */
+/** What a PATCH of a Subsonic user changes: any of these, at least one. */
+export interface SubsonicUserChanges {
+  username?: string;
+  isAdmin?: boolean;
+  /** A non-admin's libraries, replacing the ones they have (#84). */
+  libraryIds?: number[];
+}
+
+/** Renames a Subsonic user, turns **Subsonic admin** on or off, sets their libraries, or several. */
 export async function updateSubsonicUser(
   id: string,
-  changes: { username?: string; isAdmin?: boolean },
+  changes: SubsonicUserChanges,
 ): Promise<SubsonicUser> {
   const { user } = await call<{ user: SubsonicUser }>(
     "PATCH",
@@ -340,12 +366,18 @@ export interface PlaylistSummary {
   changedAt: string;
 }
 
-/** `GET /api/overview/library`: read on page load and when a pass ends, never polled. */
+/**
+ * `GET /api/overview/library?library=`: read on page load and when a pass
+ * ends, never polled. With `library`, the counts, genres and albums are that
+ * library's; the playlists never are. `libraries` lists the active ones, by
+ * id, for the Overview's library filter (#84).
+ */
 export interface LibraryOverview {
   counts: LibraryCounts;
   genres: GenreCount[];
   recentAlbums: RecentAlbum[];
   playlists: PlaylistSummary[];
+  libraries: LibraryName[];
 }
 
 /** What a completed pass did, as its `LastScanSummary` holds it. */
@@ -389,6 +421,28 @@ export interface ScanStatus {
   } | null;
   /** What the server will do about recent file changes; `null` when none is pending. */
   scheduled: ScanSchedule | null;
+  /**
+   * The library the scan phase is in, among the active libraries (#84):
+   * "Scanning Archive (2 of 3).". Null while no pass is in one, or while
+   * paused.
+   */
+  library?: ScanLibraryPosition | null;
+  /** Set while the daily D1 write budget stops every pass, until `until` (00:00 UTC). */
+  paused?: ScanPause | null;
+}
+
+/** Which library a pass is in: its place among the active libraries, from 1. */
+export interface ScanLibraryPosition {
+  id: number;
+  name: string;
+  index: number;
+  of: number;
+}
+
+/** Why every pass is stopped, and until when (an ISO 8601 instant, the next 00:00 UTC). */
+export interface ScanPause {
+  reason: "daily_write_budget";
+  until: string;
 }
 
 /**
@@ -477,8 +531,10 @@ export interface ConfiguredUsage {
 /** `GET /api/usage`: the account's free-tier usage, or no token to read it with. */
 export type Usage = { configured: false } | ConfiguredUsage;
 
-export function fetchLibraryOverview(): Promise<LibraryOverview> {
-  return call<LibraryOverview>("GET", "/api/overview/library");
+/** The Overview's library, narrowed to one library, or every active one for `null`. */
+export function fetchLibraryOverview(library: number | null = null): Promise<LibraryOverview> {
+  const query = library === null ? "" : `?${new URLSearchParams({ library: String(library) })}`;
+  return call<LibraryOverview>("GET", `/api/overview/library${query}`);
 }
 
 export function fetchLiveOverview(): Promise<LiveOverview> {
@@ -547,6 +603,23 @@ export interface FilesConfig {
   rescanQuietSeconds: number;
   /** False where `FILE_WRITES` is `"off"` (the preview): the page is read-only. */
   writes: { enabled: boolean };
+  /** The active libraries, by id, and what the Files page may do in each (#84). */
+  libraries: FilesLibrary[];
+}
+
+/**
+ * A library as the Files page sees it (#84, "Files across libraries"):
+ * whether it takes writes (a connected library whose last test found it
+ * read-only does not), whether its uploads can be signed (library 1's as
+ * `uploads` above; a connected library's always), and the prefixes no
+ * write may touch (library 1's `_covers/`).
+ */
+export interface FilesLibrary {
+  id: number;
+  name: string;
+  writable: boolean;
+  uploads: { configured: true } | { configured: false; missing: string[] };
+  reservedPrefixes: string[];
 }
 
 /** A folder of the folder browsed: a common prefix, ending in `/`. */
@@ -597,9 +670,16 @@ export function fetchFilesConfig(): Promise<FilesConfig> {
   return call<FilesConfig>("GET", "/api/files/config");
 }
 
-/** One page of the folder `prefix` (`""` for the root), from R2's `cursor` when given. */
-export function fetchFiles(prefix: string, cursor?: string | null): Promise<FolderListing> {
-  const query = new URLSearchParams({ prefix });
+/**
+ * One page of the folder `prefix` (`""` for the root) of `library`'s bucket,
+ * from its `cursor` when given.
+ */
+export function fetchFiles(
+  library: number,
+  prefix: string,
+  cursor?: string | null,
+): Promise<FolderListing> {
+  const query = new URLSearchParams({ library: String(library), prefix });
   if (cursor) {
     query.set("cursor", cursor);
   }
@@ -607,9 +687,15 @@ export function fetchFiles(prefix: string, cursor?: string | null): Promise<Fold
 }
 
 /** Deletes 1–250 keys, exactly as browse listed them. Permanent: there is no undo. */
-export async function deleteFiles(keys: readonly string[]): Promise<DeleteFilesResult> {
+export async function deleteFiles(
+  library: number,
+  keys: readonly string[],
+): Promise<DeleteFilesResult> {
   return withClock(
-    await exchange<Omit<DeleteFilesResult, "clock">>("POST", "/api/files/delete", { keys }),
+    await exchange<Omit<DeleteFilesResult, "clock">>("POST", "/api/files/delete", {
+      library,
+      keys,
+    }),
   );
 }
 
@@ -617,9 +703,13 @@ export async function deleteFiles(keys: readonly string[]): Promise<DeleteFilesR
  * One round of a folder delete: up to 2,000 keys under `prefix`, at any
  * depth. Permanent: there is no undo.
  */
-export async function deleteFolderRound(prefix: string): Promise<DeleteFolderResult> {
+export async function deleteFolderRound(
+  library: number,
+  prefix: string,
+): Promise<DeleteFolderResult> {
   return withClock(
     await exchange<Omit<DeleteFolderResult, "clock">>("POST", "/api/files/delete-folder", {
+      library,
       prefix,
     }),
   );
@@ -677,11 +767,13 @@ export interface SignUploadsResult {
  * part of each key after it, so a folder stored in NFD gets no NFC twin.
  */
 export async function signUploads(
+  library: number,
   prefix: string,
   files: readonly UploadToSign[],
 ): Promise<SignUploadsResult> {
   return withClock(
     await exchange<Omit<SignUploadsResult, "clock">>("POST", "/api/files/uploads", {
+      library,
       prefix,
       files,
     }),
@@ -712,8 +804,12 @@ export interface UploadCheckResult {
  * already exist, before any is signed (#141). A key the upload rules refuse
  * is in neither list.
  */
-export function checkUploads(prefix: string, keys: readonly string[]): Promise<UploadCheckResult> {
-  return call<UploadCheckResult>("POST", "/api/files/uploads/check", { prefix, keys });
+export function checkUploads(
+  library: number,
+  prefix: string,
+  keys: readonly string[],
+): Promise<UploadCheckResult> {
+  return call<UploadCheckResult>("POST", "/api/files/uploads/check", { library, prefix, keys });
 }
 
 /** What `POST /api/files/uploads/complete` said the scan will do. */
@@ -727,12 +823,15 @@ export interface CompleteUploadsResult {
  * schedules its debounced scan. It goes with `keepalive`, so a tab closed
  * right after the last upload still reports it.
  */
-export async function completeUploads(keys: readonly string[]): Promise<CompleteUploadsResult> {
+export async function completeUploads(
+  library: number,
+  keys: readonly string[],
+): Promise<CompleteUploadsResult> {
   return withClock(
     await exchange<Omit<CompleteUploadsResult, "clock">>(
       "POST",
       "/api/files/uploads/complete",
-      { keys },
+      { library, keys },
       { keepalive: true },
     ),
   );

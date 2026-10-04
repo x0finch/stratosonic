@@ -9,6 +9,7 @@ import {
   type DeleteFilesResult,
   type DeleteFolderResult,
   type FilesConfig,
+  type FilesLibrary,
   type FolderListing,
   fetchFiles,
   fetchFilesConfig,
@@ -16,7 +17,7 @@ import {
   type ServerClock,
 } from "@/lib/api";
 import { formatCount } from "@/lib/format";
-import { aboutMinutes, type LiveRead, scheduleState } from "@/lib/overview";
+import { aboutMinutes, type LiveRead, libraryParam, scheduleState } from "@/lib/overview";
 
 /**
  * The Files page's rules that need no screen (#83, "Console"): how it reads
@@ -27,8 +28,8 @@ import { aboutMinutes, type LiveRead, scheduleState } from "@/lib/overview";
  *
  * | Query | `staleTime` | Read again |
  * |---|---|---|
- * | `/api/files/config` | `Infinity` | never: once a session |
- * | `/api/files?prefix=` | 30 s | on open once stale, on Load more, and after every delete (open and delete read the first page only) |
+ * | `/api/files/config` | `Infinity` | once a session, and after a library write |
+ * | `/api/files?library=&prefix=` | 30 s | on open once stale, on Load more, and after every delete (open and delete read the first page only) |
  * | `/api/overview/live` | 0, as the Overview's | only while a scan is scheduled or running, with `library:read` |
  *
  * Nothing is polled while no scan is scheduled or running, and a hidden tab
@@ -41,6 +42,55 @@ export const FOLDER_STALE_MS = 30_000;
 /** The bucket's name when the server does not know it (`R2_BUCKET_NAME` unset). */
 export const BUCKET_FALLBACK = "Bucket";
 
+/** Library 1, the bucket the Worker is bound to: the Files page's library by default (#84). */
+export const BOUND_LIBRARY = 1;
+
+/** Library 1's reserved prefix, as the server names it, for a configuration that names none. */
+const BOUND_RESERVED = ["_covers/"];
+
+/**
+ * A library as the Files page sees it, from `GET /api/files/config`, or
+ * `undefined` for one the server does not list (removed, or never there).
+ */
+export function filesLibrary(
+  config: Pick<FilesConfig, "libraries"> | undefined,
+  library: number,
+): FilesLibrary | undefined {
+  return config?.libraries.find((entry) => entry.id === library);
+}
+
+/**
+ * What the Files page may do in a library (#84): write (delete, New
+ * folder) where the server takes file writes and the library is not
+ * read-only, and upload where its uploads can be signed too. A library the
+ * configuration does not list takes nothing.
+ */
+export function libraryWrites(
+  config: Pick<FilesConfig, "writes" | "libraries"> | undefined,
+  library: number,
+): { writable: boolean; uploads: boolean; readOnly: boolean; uploadsMissing: boolean } {
+  const entry = filesLibrary(config, library);
+  const enabled = config?.writes.enabled === true && entry !== undefined;
+  const writable = enabled && entry.writable;
+  return {
+    writable,
+    uploads: writable && entry.uploads.configured,
+    readOnly: enabled && !entry.writable,
+    uploadsMissing: writable && !entry.uploads.configured,
+  };
+}
+
+/** The prefixes no write may touch in a library: library 1's `_covers/` (#84, "Covers"). */
+export function reservedPrefixesOf(
+  config: Pick<FilesConfig, "libraries"> | undefined,
+  library: number,
+): readonly string[] {
+  return (
+    filesLibrary(config, library)?.reservedPrefixes ??
+    (library === BOUND_LIBRARY ? BOUND_RESERVED : [])
+  );
+}
+
 export const filesConfigQuery = queryOptions({
   queryKey: ["files", "config"],
   queryFn: fetchFilesConfig,
@@ -50,14 +100,20 @@ export const filesConfigQuery = queryOptions({
 /** Every folder listing in the cache, whatever its prefix. */
 const FOLDERS_KEY = ["files", "folder"] as const;
 
+/** Every folder listing of one library in the cache. */
+function libraryFoldersKey(library: number) {
+  return [...FOLDERS_KEY, library] as const;
+}
+
 /**
- * One folder, a page of 1,000 entries at a time: Load more reads the next
- * page with R2's cursor while there is one. R2 gives no total.
+ * One folder of a library's bucket, a page of 1,000 entries at a time: Load
+ * more reads the next page with the bucket's cursor while there is one. R2
+ * gives no total.
  */
-export function folderQuery(prefix: string) {
+export function folderQuery(library: number, prefix: string) {
   return infiniteQueryOptions({
-    queryKey: [...FOLDERS_KEY, prefix],
-    queryFn: ({ pageParam }) => fetchFiles(prefix, pageParam),
+    queryKey: [...libraryFoldersKey(library), prefix],
+    queryFn: ({ pageParam }) => fetchFiles(library, prefix, pageParam),
     initialPageParam: null as string | null,
     getNextPageParam: (last: FolderListing) => last.cursor,
     staleTime: FOLDER_STALE_MS,
@@ -77,35 +133,45 @@ function firstPage<TPageParam>(
 }
 
 /**
- * After a delete: every folder read so far is out of date (a folder deleted
- * from its parent took its subfolders with it), so each is cut back to its
- * first page and marked stale, and the folder on screen is read again at
- * once, in one request whatever pages were loaded.
+ * After a delete in a library: every folder of it read so far is out of
+ * date (a folder deleted from its parent took its subfolders with it), so
+ * each is cut back to its first page and marked stale, and the folder on
+ * screen is read again at once, in one request whatever pages were loaded.
+ * Other libraries' folders keep theirs.
  */
-export function afterFilesChange(queryClient: QueryClient): Promise<void> {
-  queryClient.setQueriesData<InfiniteData<FolderListing, string | null>>(
-    { queryKey: FOLDERS_KEY },
-    firstPage,
-  );
-  return queryClient.invalidateQueries({ queryKey: FOLDERS_KEY });
+export function afterFilesChange(queryClient: QueryClient, library: number): Promise<void> {
+  const queryKey = libraryFoldersKey(library);
+  queryClient.setQueriesData<InfiniteData<FolderListing, string | null>>({ queryKey }, firstPage);
+  return queryClient.invalidateQueries({ queryKey });
+}
+
+/** A key of one library's bucket. */
+export interface LibraryKey {
+  library: number;
+  key: string;
 }
 
 /**
  * After uploads landed (lib/uploads.ts, at most once every 5 s): only the
- * folders the keys change are read again, each cut back to its first page.
- * A folder is changed by a key directly in it, or by one under a subfolder
- * its loaded pages do not list yet (which the upload made). Every other
- * folder, the one on screen included, keeps its pages, Load more and all.
+ * folders the keys change, in the keys' own libraries, are read again, each
+ * cut back to its first page. A folder is changed by a key directly in it,
+ * or by one under a subfolder its loaded pages do not list yet (which the
+ * upload made). Every other folder, the one on screen included, keeps its
+ * pages, Load more and all.
  */
 export function afterUploadsLanded(
   queryClient: QueryClient,
-  keys: readonly string[],
+  landed: readonly LibraryKey[],
 ): Promise<void> {
   const changed = queryClient
     .getQueriesData<InfiniteData<FolderListing, string | null>>({ queryKey: FOLDERS_KEY })
     .filter(([queryKey, data]) => {
-      const prefix = queryKey[FOLDERS_KEY.length];
-      return typeof prefix === "string" && keys.some((key) => changesFolder(prefix, key, data));
+      const library = queryKey[FOLDERS_KEY.length];
+      const prefix = queryKey[FOLDERS_KEY.length + 1];
+      return (
+        typeof prefix === "string" &&
+        landed.some((entry) => entry.library === library && changesFolder(prefix, entry.key, data))
+      );
     });
   return Promise.all(
     changed.map(([queryKey]) => {
@@ -137,8 +203,12 @@ function changesFolder(
  * A cursor R2 refused (`invalid_cursor`): the folder is opened again from its
  * first page.
  */
-export function reopenFolder(queryClient: QueryClient, prefix: string): Promise<void> {
-  const { queryKey } = folderQuery(prefix);
+export function reopenFolder(
+  queryClient: QueryClient,
+  library: number,
+  prefix: string,
+): Promise<void> {
+  const { queryKey } = folderQuery(library, prefix);
   queryClient.setQueryData(queryKey, firstPage);
   return queryClient.refetchQueries({ queryKey, exact: true });
 }
@@ -150,8 +220,8 @@ export function reopenFolder(queryClient: QueryClient, prefix: string): Promise<
  * page, not every page Load more had added. A return within 30 s shows the
  * first page from the cache, and Load more reads on from there.
  */
-export function leaveFolder(queryClient: QueryClient, prefix: string): void {
-  queryClient.setQueryData(folderQuery(prefix).queryKey, firstPage);
+export function leaveFolder(queryClient: QueryClient, library: number, prefix: string): void {
+  queryClient.setQueryData(folderQuery(library, prefix).queryKey, firstPage);
 }
 
 /** The ids of every row a folder's loaded pages show (`targetId`). */
@@ -221,19 +291,44 @@ export function selectedIn(
     : NO_SELECTION.targets;
 }
 
+/** The Files page's search parameters: the library (absent for library 1) and the folder. */
+export interface FilesSearch {
+  library?: number;
+  prefix?: string;
+}
+
 /**
- * The `?prefix=` search parameter of `/files`: a folder's prefix, ending in
- * `/`, or absent for the root. A deep link that names a folder without its
- * final slash gets it. The router parses each search value as JSON first,
- * so `?prefix=2024` arrives as the number 2024, and `?prefix=true` as a
- * boolean: both are taken back as folder names. A hand-typed number that
- * JSON writes another way does not survive that parse (`?prefix=1.50`
- * opens `1.5/`); the page's own links always end in `/`, which no JSON
- * parse accepts, so they arrive as typed. Anything else that is not a
- * string opens the root.
+ * The search parameters of `/files`:
+ *
+ * - `?library=`: the library browsed (#84), a positive integer, or absent
+ *   for library 1, so a single-library console's links are as they were.
+ *   Anything else opens library 1.
+ * - `?prefix=`: a folder's prefix, ending in `/`, or absent for the root.
+ *   A deep link that names a folder without its final slash gets it. The
+ *   router parses each search value as JSON first, so `?prefix=2024`
+ *   arrives as the number 2024, and `?prefix=true` as a boolean: both are
+ *   taken back as folder names. A hand-typed number that JSON writes
+ *   another way does not survive that parse (`?prefix=1.50` opens `1.5/`);
+ *   the page's own links always end in `/`, which no JSON parse accepts, so
+ *   they arrive as typed. Anything else that is not a string opens the root.
  */
-export function validateFilesSearch(search: Record<string, unknown>): { prefix?: string } {
-  const raw = search.prefix;
+export function validateFilesSearch(search: Record<string, unknown>): FilesSearch {
+  const library = libraryParam(search.library);
+  return {
+    ...(library === undefined || library === BOUND_LIBRARY ? {} : { library }),
+    ...folderParam(search.prefix),
+  };
+}
+
+/** A folder's search parameters, in a library: none for library 1's root. */
+export function filesSearch(library: number, prefix: string): FilesSearch {
+  return {
+    ...(library === BOUND_LIBRARY ? {} : { library }),
+    ...(prefix === "" ? {} : { prefix }),
+  };
+}
+
+function folderParam(raw: unknown): { prefix?: string } {
   const prefix =
     typeof raw === "string"
       ? raw
@@ -294,12 +389,14 @@ export function utf8Length(value: string): number {
  * console's own choice, not a server rule: the server keeps spaces at either
  * end of a segment, but a folder name typed with one is almost always a slip.
  * Nothing is written: R2 has no folders, so the folder exists once a file
- * lands in it.
+ * lands in it. `reserved` is the library's reserved prefixes: library 1's
+ * `_covers/` (#84), and none in a connected bucket.
  */
 export function checkFolderName(
   raw: string,
   prefix: string,
   limits: Pick<FilesConfig["limits"], "maxKeyBytes" | "maxSegmentBytes">,
+  reserved: readonly string[] = BOUND_RESERVED,
 ): { prefix: string } | { error: string } {
   const name = raw.trim().normalize("NFC");
   if (name === "") {
@@ -325,8 +422,9 @@ export function checkFolderName(
       error: `The folder's path would be too long: at most ${formatCount(limits.maxKeyBytes)} bytes.`,
     };
   }
-  if (folder === "_covers/") {
-    return { error: "_covers is the scanner's own folder." };
+  const covered = reserved.find((reservedPrefix) => folder.startsWith(reservedPrefix));
+  if (covered !== undefined) {
+    return { error: `${folderPath(covered)} is the scanner's own folder.` };
   }
   return { prefix: folder };
 }

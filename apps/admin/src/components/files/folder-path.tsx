@@ -16,37 +16,46 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { folderTrail } from "@/lib/files";
-
-/** A folder's search parameters: none for the root. */
-export function folderSearch(prefix: string): { prefix?: string } {
-  return prefix === "" ? {} : { prefix };
-}
+import { filesSearch, folderTrail } from "@/lib/files";
 
 /**
- * A link into a folder. The router marks a link active, with
+ * A link into a folder of a library. The router marks a link active, with
  * `aria-current="page"`, when its search is a subset of the page's, so the
  * root's link (no search at all) would be "current" in every folder; an
  * exact match marks only a link to the folder on screen, and the path
  * shows that folder as a page, not a link.
  */
 export function FolderLink({
+  library,
   prefix,
   ...props
-}: { prefix: string } & Omit<ComponentProps<"a">, "href">) {
+}: { library: number; prefix: string } & Omit<ComponentProps<"a">, "href">) {
   return (
-    <Link to="/files" search={folderSearch(prefix)} activeOptions={{ exact: true }} {...props} />
+    <Link
+      to="/files"
+      search={filesSearch(library, prefix)}
+      activeOptions={{ exact: true }}
+      {...props}
+    />
   );
 }
 
 /**
- * Where the folder on screen is (#83, "Layout", item 1): the bucket, then
- * each folder down to this one, each a link but the last. In a narrow
- * column the folders between the bucket and this one collapse into the
- * breadcrumb's ellipsis, a menu of their links, as shadcn/ui's breadcrumb
- * example does.
+ * Where the folder on screen is (#83, "Layout", item 1): the bucket, or
+ * across libraries the library's name (#84), then each folder down to this
+ * one, each a link but the last. In a narrow column the folders between the
+ * root and this one collapse into the breadcrumb's ellipsis, a menu of
+ * their links, as shadcn/ui's breadcrumb example does.
  */
-export function FolderPath({ prefix, bucket }: { prefix: string; bucket: string }) {
+export function FolderPath({
+  library,
+  prefix,
+  root,
+}: {
+  library: number;
+  prefix: string;
+  root: string;
+}) {
   const trail = folderTrail(prefix);
   const last = trail.at(-1);
   const middle = trail.slice(0, -1);
@@ -56,9 +65,11 @@ export function FolderPath({ prefix, bucket }: { prefix: string; bucket: string 
       <BreadcrumbList>
         <BreadcrumbItem>
           {last ? (
-            <BreadcrumbLink render={<FolderLink prefix="" />}>{bucket}</BreadcrumbLink>
+            <BreadcrumbLink render={<FolderLink library={library} prefix="" />}>
+              {root}
+            </BreadcrumbLink>
           ) : (
-            <BreadcrumbPage>{bucket}</BreadcrumbPage>
+            <BreadcrumbPage>{root}</BreadcrumbPage>
           )}
         </BreadcrumbItem>
         {middle.length > 0 ? (
@@ -76,7 +87,7 @@ export function FolderPath({ prefix, bucket }: { prefix: string; bucket: string 
                   {middle.map((folder) => (
                     <DropdownMenuItem
                       key={folder.prefix}
-                      render={<FolderLink prefix={folder.prefix} />}
+                      render={<FolderLink library={library} prefix={folder.prefix} />}
                     >
                       {folder.name}
                     </DropdownMenuItem>
@@ -90,7 +101,7 @@ export function FolderPath({ prefix, bucket }: { prefix: string; bucket: string 
           <Fragment key={folder.prefix}>
             <BreadcrumbSeparator className="hidden @md:list-item" />
             <BreadcrumbItem className="hidden @md:inline-flex">
-              <BreadcrumbLink render={<FolderLink prefix={folder.prefix} />}>
+              <BreadcrumbLink render={<FolderLink library={library} prefix={folder.prefix} />}>
                 {folder.name}
               </BreadcrumbLink>
             </BreadcrumbItem>

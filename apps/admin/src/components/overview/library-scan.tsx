@@ -11,7 +11,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { requestScan, type ScanStatus } from "@/lib/api";
 import { formatCount, formatDuration } from "@/lib/format";
-import { afterScanRequest, describeSchedule, type LiveRead } from "@/lib/overview";
+import {
+  afterScanRequest,
+  describePause,
+  describeScanLibrary,
+  describeSchedule,
+  type LiveRead,
+} from "@/lib/overview";
 import { toastError, toastSuccess } from "@/lib/toasts";
 
 /**
@@ -26,18 +32,22 @@ import { toastError, toastSuccess } from "@/lib/toasts";
  * it is indeterminate, with a spinner beside its label.
  *
  * `clock` is the live read the scan came with: its `serverTime` and when it
- * arrived, from which a scheduled pass's time left is counted.
+ * arrived, from which a scheduled pass's time left is counted. `skipped`
+ * says which libraries the last pass skipped, where more than one library
+ * exists (lib/overview.ts, `describeSkipped`).
  */
 export function LibraryScan({
   scan,
   clock,
   canScan,
   now,
+  skipped = [],
 }: {
   scan: ScanStatus | undefined;
   clock: Pick<LiveRead, "serverTime" | "receivedAt"> | undefined;
   canScan: boolean;
   now: number;
+  skipped?: readonly string[];
 }) {
   return (
     <Section
@@ -52,7 +62,7 @@ export function LibraryScan({
       ) : scan.running ? (
         <ScanProgress scan={scan} />
       ) : (
-        <LastPass scan={scan} canScan={canScan} />
+        <LastPass scan={scan} canScan={canScan} skipped={skipped} />
       )}
     </Section>
   );
@@ -63,18 +73,30 @@ export function LibraryScan({
  * for recent file changes (`describeSchedule`) takes the place of the last
  * pass's finish, as a running pass does: while a pass runs it says another
  * follows, and while idle when one starts. The last pass's counts stay below.
+ *
+ * Across libraries (#84): a running pass says which library it is in
+ * ("Scanning Archive (2 of 3)."), and a pass stopped by the daily write
+ * budget says so and when it resumes.
  */
 function describeScan(
   scan: ScanStatus,
   clock: Pick<LiveRead, "serverTime" | "receivedAt">,
   now: number,
 ): ReactNode {
+  const paused = describePause(scan.paused, now);
+  if (paused !== null) {
+    return paused;
+  }
   const scheduled = describeSchedule(scan, clock, now);
   if (scan.running) {
+    const where = describeScanLibrary(scan);
     if (scheduled !== null && scan.scheduled?.afterCurrentPass) {
-      return scheduled;
+      return where === null ? scheduled : `${where} Another follows it for recent file changes.`;
     }
-    return scan.phase === "playlists" ? "Importing playlists" : "A scan is running.";
+    if (scan.phase === "playlists") {
+      return "Importing playlists";
+    }
+    return where ?? "A scan is running.";
   }
   if (scheduled !== null) {
     return scheduled;
@@ -164,17 +186,33 @@ function ScanProgress({ scan }: { scan: ScanStatus }) {
 
 /**
  * The last completed pass's counts, under the description that says when
- * it finished and how long it took. While a pass runs, its progress takes
- * their place.
+ * it finished and how long it took, and beneath them each library the pass
+ * skipped, and why (#84). While a pass runs, its progress takes their place.
  */
-function LastPass({ scan, canScan }: { scan: ScanStatus; canScan: boolean }) {
+function LastPass({
+  scan,
+  canScan,
+  skipped,
+}: {
+  scan: ScanStatus;
+  canScan: boolean;
+  skipped: readonly string[];
+}) {
   const { last } = scan;
+  const skips = skipped.map((line) => (
+    <p key={line} className="text-sm text-muted-foreground">
+      {line}
+    </p>
+  ));
   if (last === null) {
     return (
-      <p className="text-sm text-muted-foreground">
-        The library is scanned on a schedule.
-        {canScan ? " Scan now to index an upload at once." : null}
-      </p>
+      <div className="flex flex-col gap-3">
+        <p className="text-sm text-muted-foreground">
+          The library is scanned on a schedule.
+          {canScan ? " Scan now to index an upload at once." : null}
+        </p>
+        {skips}
+      </div>
     );
   }
 
@@ -191,6 +229,7 @@ function LastPass({ scan, canScan }: { scan: ScanStatus; canScan: boolean }) {
           <Badge variant="destructive">{formatCount(last.counts.broken)} unreadable</Badge>
         </div>
       ) : null}
+      {skips}
     </div>
   );
 }

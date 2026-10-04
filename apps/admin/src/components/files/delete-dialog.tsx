@@ -41,9 +41,11 @@ import { toastError, toastSuccess } from "@/lib/toasts";
  * counts the files deleted so far. The toast, the folder's new listing and
  * the scan line's schedule follow the mutation itself, so they hold even
  * if the page moves on meanwhile. The dialog stays open until the delete
- * ends, and cannot be dismissed while it runs.
+ * ends, and cannot be dismissed while it runs. Every request names
+ * `library`, the library the targets were chosen in (#84).
  */
 export function DeleteDialog({
+  library,
   targets,
   open,
   onOpenChange,
@@ -51,6 +53,7 @@ export function DeleteDialog({
   rescanQuietSeconds,
   onDeleted,
 }: {
+  library: number;
   targets: readonly DeleteTarget[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -67,7 +70,10 @@ export function DeleteDialog({
       setProgress(null);
       const outcome = await runDelete(
         planDelete(chosen, batch),
-        { deleteFiles, deleteFolderRound },
+        {
+          deleteFiles: (keys) => deleteFiles(library, keys),
+          deleteFolderRound: (prefix) => deleteFolderRound(library, prefix),
+        },
         setProgress,
       );
       // Nothing deleted: a plain failure, which signs a session that ended
@@ -91,7 +97,7 @@ export function DeleteDialog({
     },
     onError: (error) => toastError(error, "Nothing was deleted"),
     onSettled: () => {
-      void afterFilesChange(queryClient);
+      void afterFilesChange(queryClient, library);
       onOpenChange(false);
     },
   });

@@ -165,6 +165,34 @@ const MESSAGES: Record<string, ErrorMessage> = {
     title: "The library is being removed",
     description: "The scan is deleting its tracks and albums, so it cannot be changed any more.",
   },
+  // Per-user access (#84), after Navidrome's `SetUserLibraries`.
+  libraries_required: {
+    title: "Choose at least one library",
+    description: "A Subsonic user who is not a Subsonic admin sees only the libraries chosen here.",
+  },
+  invalid_library: {
+    title: "A library is no longer there",
+    description: "It was removed, or is being removed. Choose the libraries again.",
+  },
+  admin_has_all_libraries: {
+    title: "Subsonic admins see every library",
+    description: "Their libraries cannot be chosen. Turn off Subsonic admin to choose them.",
+  },
+  // The Files API across libraries (#84).
+  library_not_found: {
+    title: "The library is not there",
+    description: "It was removed, or is being removed. Choose another library.",
+  },
+  library_read_only: {
+    title: "The library is read-only",
+    description:
+      "Its key cannot write to the bucket. Give the token Object Read & Write, then test the connection on the Libraries page.",
+  },
+  too_many_keys: {
+    title: "Too many of these files at once",
+    description:
+      "Their names hold characters the bucket deletes one request at a time. Select fewer of them and delete again.",
+  },
   forbidden: {
     title: "Your role does not allow that",
     description: "Sign in with a console account whose role allows it.",

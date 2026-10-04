@@ -27,12 +27,15 @@ export function NewFolderDialog({
   onOpenChange,
   prefix,
   limits,
+  reserved,
   onCreate,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   prefix: string;
   limits: FilesConfig["limits"];
+  /** The library's reserved prefixes (library 1's `_covers/`). */
+  reserved: readonly string[];
   onCreate: (prefix: string) => void;
 }) {
   return (
@@ -42,6 +45,7 @@ export function NewFolderDialog({
         <NewFolderForm
           prefix={prefix}
           limits={limits}
+          reserved={reserved}
           onCreate={(folder) => {
             onOpenChange(false);
             onCreate(folder);
@@ -55,10 +59,12 @@ export function NewFolderDialog({
 function NewFolderForm({
   prefix,
   limits,
+  reserved,
   onCreate,
 }: {
   prefix: string;
   limits: FilesConfig["limits"];
+  reserved: readonly string[];
   onCreate: (prefix: string) => void;
 }) {
   const [error, setError] = useState<string | undefined>();
@@ -69,6 +75,7 @@ function NewFolderForm({
       String(new FormData(event.currentTarget).get("name") ?? ""),
       prefix,
       limits,
+      reserved,
     );
     if ("error" in checked) {
       setError(checked.error);

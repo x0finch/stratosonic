@@ -18,8 +18,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import type { SubsonicUser } from "@/lib/api";
-import { formatDay } from "@/lib/subsonic-users";
+import type { LibraryName, SubsonicUser } from "@/lib/api";
+import { formatDay, librariesLabel } from "@/lib/subsonic-users";
 
 /** What a row's menu can open, for one user. */
 export type UserAction = "edit" | "password" | "delete";
@@ -32,13 +32,19 @@ export type UserAction = "edit" | "password" | "delete";
  * (#128). `onAction` is absent for a role that may not change them, and so
  * is each row's menu. On a narrow screen the dates give way, and the name
  * and the role stay.
+ *
+ * `libraries`, given only where more than one library exists (#84), adds a
+ * Libraries column: "All" for a Subsonic admin, otherwise the names, or "3
+ * libraries" past two. It is secondary, and hides on a phone.
  */
 export function UsersTable({
   users,
+  libraries,
   now,
   onAction,
 }: {
   users: readonly SubsonicUser[];
+  libraries?: readonly LibraryName[];
   now: number;
   onAction?: (action: UserAction, user: SubsonicUser) => void;
 }) {
@@ -48,6 +54,7 @@ export function UsersTable({
         <TableRow>
           <TableHead>Username</TableHead>
           <TableHead>Role</TableHead>
+          {libraries ? <TableHead className="hidden sm:table-cell">Libraries</TableHead> : null}
           <TableHead className="hidden md:table-cell">Created</TableHead>
           <TableHead className="hidden sm:table-cell">Last access</TableHead>
           {onAction && (
@@ -68,6 +75,13 @@ export function UsersTable({
                 <span className="text-muted-foreground">User</span>
               )}
             </TableCell>
+            {libraries ? (
+              <TableCell className="hidden max-w-64 truncate sm:table-cell">
+                <span title={librariesLabel(user, libraries)}>
+                  {librariesLabel(user, libraries)}
+                </span>
+              </TableCell>
+            ) : null}
             <TableCell className="hidden text-muted-foreground md:table-cell">
               {formatDay(user.createdAt)}
             </TableCell>

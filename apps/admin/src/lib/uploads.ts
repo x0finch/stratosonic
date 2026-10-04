@@ -12,7 +12,14 @@ import {
   type UploadRefusalCode,
   type UploadToSign,
 } from "@/lib/api";
-import { countOf, FORBIDDEN_CHARACTERS, utf8Length, type WriteSchedule } from "@/lib/files";
+import {
+  BOUND_LIBRARY,
+  countOf,
+  FORBIDDEN_CHARACTERS,
+  type LibraryKey,
+  utf8Length,
+  type WriteSchedule,
+} from "@/lib/files";
 import { formatBytes, formatCount } from "@/lib/format";
 
 /**
@@ -67,6 +74,16 @@ import { formatBytes, formatCount } from "@/lib/format";
  *
  * Two uploads to one key never run at once (R2 takes one write per key per
  * second): a file waits while another to the same key is in flight.
+ *
+ * ## Across libraries (#84)
+ *
+ * Each file belongs to the library it was picked in, and every request it
+ * makes names that library: the check, the sign and the complete. One
+ * request is one library's (and, for a sign, one folder's), so a queue that
+ * holds two libraries' files makes each library's requests apart. Two keys
+ * are one key only in one library. A request refused for a whole library
+ * (`library_read_only`, `library_not_found`, or library 1's
+ * `uploads_not_configured`) fails that library's waiting files only.
  *
  * ## What it costs
  *
@@ -169,8 +186,18 @@ function listedFolder(
  */
 export type ClientRefusal = Exclude<UploadRefusalCode, "replace_unavailable"> | "same_name";
 
-/** The server's prefix for the covers it extracts, which no upload may write under. */
+/** The server's prefix for the covers it extracts in library 1, which no upload may write under. */
 const RESERVED_PREFIX = "_covers/";
+
+/**
+ * The rules a pick is planned by: the allow-list and limits of
+ * `GET /api/files/config`, and the library it goes to with that library's
+ * reserved prefixes (#84). Without them, library 1 and its `_covers/`.
+ */
+export type UploadRules = Pick<FilesConfig, "allowed" | "limits"> & {
+  library?: number;
+  reservedPrefixes?: readonly string[];
+};
 
 /** A lone surrogate, which no UTF-8 key can hold. */
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
@@ -195,11 +222,7 @@ export function kindOfSuffix(suffix: string, allowed: FilesConfig["allowed"]): U
  * `GET /api/files/config` gives. It answers why the file is refused, or
  * null when the server should take it. The server checks again.
  */
-export function checkUpload(
-  key: string,
-  size: number,
-  config: Pick<FilesConfig, "allowed" | "limits">,
-): ClientRefusal | null {
+export function checkUpload(key: string, size: number, config: UploadRules): ClientRefusal | null {
   const segments = key.split("/");
   if (
     LONE_SURROGATE.test(key) ||
@@ -216,7 +239,7 @@ export function checkUpload(
   ) {
     return "path_too_long";
   }
-  if (key.startsWith(RESERVED_PREFIX)) {
+  if ((config.reservedPrefixes ?? [RESERVED_PREFIX]).some((prefix) => key.startsWith(prefix))) {
     return "reserved_path";
   }
   const kind = kindOfSuffix(suffixOf(key), config.allowed);
@@ -232,6 +255,8 @@ export function checkUpload(
 /** One picked file, ready for the queue: where it goes, and why it is refused, if it is. */
 export interface PlannedUpload {
   file: PickedFile;
+  /** The library it goes to (#84). */
+  library: number;
   prefix: string;
   key: string;
   refusal: ClientRefusal | null;
@@ -250,7 +275,7 @@ export interface PlannedUpload {
 export function planUploads(
   files: readonly PickedFile[],
   current: string,
-  config: Pick<FilesConfig, "allowed" | "limits">,
+  config: UploadRules,
   lookup: FolderLookup,
 ): PlannedUpload[] {
   return inPathOrder(files.flatMap((file) => planOne(file, current, config, lookup)));
@@ -269,7 +294,7 @@ export const PLAN_SLICE = 100;
 export async function planUploadsInSlices(
   files: readonly PickedFile[],
   current: string,
-  config: Pick<FilesConfig, "allowed" | "limits">,
+  config: UploadRules,
   lookup: FolderLookup,
   yieldToPage: () => Promise<void> = () => new Promise((resolve) => setTimeout(resolve, 0)),
 ): Promise<PlannedUpload[]> {
@@ -287,7 +312,7 @@ export async function planUploadsInSlices(
 function planOne(
   file: PickedFile,
   current: string,
-  config: Pick<FilesConfig, "allowed" | "limits">,
+  config: UploadRules,
   lookup: FolderLookup,
 ): PlannedUpload[] {
   const path = file.webkitRelativePath || file.name;
@@ -295,7 +320,8 @@ function planOne(
     return [];
   }
   const { prefix, key } = uploadTarget(current, path, lookup);
-  return [{ file, prefix, key, refusal: checkUpload(key, file.size, config) }];
+  const library = config.library ?? BOUND_LIBRARY;
+  return [{ file, library, prefix, key, refusal: checkUpload(key, file.size, config) }];
 }
 
 /**
@@ -313,7 +339,7 @@ function inPathOrder(planned: readonly PlannedUpload[]): PlannedUpload[] {
       if (upload.refusal !== null) {
         return upload;
       }
-      const key = sameKey(upload.key);
+      const key = libraryKey(upload.library, upload.key);
       if (seen.has(key)) {
         return { ...upload, refusal: "same_name" as const };
       }
@@ -369,49 +395,62 @@ export const CHECK_BATCH = 500;
  */
 export const CHECK_ROUNDS = 20;
 
-/** A key to check, and the folder prefix its request names. */
+/** A key to check, with its library and the folder prefix its request names. */
 interface CheckKey {
+  library: number;
   prefix: string;
   key: string;
 }
 
-/** The check requests for these keys: by folder prefix, `CHECK_BATCH` keys at most each. */
-function batchesOf(keys: readonly CheckKey[]): { prefix: string; keys: string[] }[] {
-  const byPrefix = new Map<string, string[]>();
-  for (const { prefix, key } of keys) {
-    const same = byPrefix.get(prefix);
+/** One check request: up to `CHECK_BATCH` keys of one folder of one library. */
+export interface CheckBatch {
+  library: number;
+  prefix: string;
+  keys: string[];
+}
+
+/** The check requests for these keys: by library and folder prefix, `CHECK_BATCH` keys at most each. */
+function batchesOf(keys: readonly CheckKey[]): CheckBatch[] {
+  const byFolder = new Map<string, CheckBatch>();
+  for (const { library, prefix, key } of keys) {
+    const folder = `${library}\u0000${prefix}`;
+    const same = byFolder.get(folder);
     if (same === undefined) {
-      byPrefix.set(prefix, [key]);
+      byFolder.set(folder, { library, prefix, keys: [key] });
     } else {
-      same.push(key);
+      same.keys.push(key);
     }
   }
-  const batches: { prefix: string; keys: string[] }[] = [];
-  for (const [prefix, all] of byPrefix) {
+  const batches: CheckBatch[] = [];
+  for (const { library, prefix, keys: all } of byFolder.values()) {
     for (let start = 0; start < all.length; start += CHECK_BATCH) {
-      batches.push({ prefix, keys: all.slice(start, start + CHECK_BATCH) });
+      batches.push({ library, prefix, keys: all.slice(start, start + CHECK_BATCH) });
     }
   }
   return batches;
 }
 
-/** The distinct keys of the files the mirror took, each once, in the order picked. */
+/** The distinct keys of the files the mirror took, each once a library, in the order picked. */
 function keysToCheck(planned: readonly PlannedUpload[]): CheckKey[] {
   const seen = new Set<string>();
   const keys: CheckKey[] = [];
-  for (const { prefix, key, refusal } of planned) {
-    if (refusal === null && !seen.has(key)) {
-      seen.add(key);
-      keys.push({ prefix, key });
+  for (const { library, prefix, key, refusal } of planned) {
+    const id = checkId(library, key);
+    if (refusal === null && !seen.has(id)) {
+      seen.add(id);
+      keys.push({ library, prefix, key });
     }
   }
   return keys;
 }
 
-/** The check requests a pick makes first: its files the mirror took, by folder prefix. */
-export function checkBatches(
-  planned: readonly PlannedUpload[],
-): { prefix: string; keys: string[] }[] {
+/** A key's identity in a check: the key exactly as asked, in its library. */
+function checkId(library: number, key: string): string {
+  return `${library}\u0000${key}`;
+}
+
+/** The check requests a pick makes first: its files the mirror took, by library and folder prefix. */
+export function checkBatches(planned: readonly PlannedUpload[]): CheckBatch[] {
   return batchesOf(keysToCheck(planned));
 }
 
@@ -447,45 +486,49 @@ function folderOf(key: string): string {
  */
 export async function findConflicts(
   planned: readonly PlannedUpload[],
-  check: (prefix: string, keys: readonly string[]) => Promise<UploadCheckResult>,
+  check: (library: number, prefix: string, keys: readonly string[]) => Promise<UploadCheckResult>,
 ): Promise<CheckOutcome> {
   const found = new Map<string, ExistingUpload>();
   const unchecked = new Set<string>();
   let asking = keysToCheck(planned);
   for (let round = 0; asking.length > 0; round++) {
     if (round === CHECK_ROUNDS) {
-      for (const { key } of asking) {
-        unchecked.add(key);
+      for (const { library, key } of asking) {
+        unchecked.add(checkId(library, key));
       }
       break;
     }
     const batches = batchesOf(asking);
-    const asked = new Set(asking.map(({ key }) => key));
+    const asked = new Set(asking.map(({ library, key }) => checkId(library, key)));
     const left = new Set<string>();
-    for (const { prefix, keys } of batches) {
-      const result = await check(prefix, keys);
+    for (const { library, prefix, keys } of batches) {
+      const result = await check(library, prefix, keys);
       for (const entry of result.existing) {
-        found.set(entry.key, entry);
+        found.set(checkId(library, entry.key), entry);
       }
       for (const key of result.unchecked) {
         // Only what was asked: an answer naming another key changes nothing.
-        if (asked.has(key)) {
-          left.add(key);
+        const id = checkId(library, key);
+        if (asked.has(id)) {
+          left.add(id);
         }
       }
     }
     if (left.size === asked.size) {
       // Nothing more was checked: each request's first folder took the
       // whole budget. Those folders stay unchecked; the rest go again.
-      const stuck = new Set(batches.map(({ keys }) => folderOf(keys[0] ?? "")));
-      for (const key of left) {
-        if (stuck.has(folderOf(key))) {
-          unchecked.add(key);
-          left.delete(key);
+      const stuck = new Set(
+        batches.map(({ library, keys }) => checkId(library, folderOf(keys[0] ?? ""))),
+      );
+      for (const { library, key } of asking) {
+        const id = checkId(library, key);
+        if (left.has(id) && stuck.has(checkId(library, folderOf(key)))) {
+          unchecked.add(id);
+          left.delete(id);
         }
       }
     }
-    asking = asking.filter(({ key }) => left.has(key));
+    asking = asking.filter(({ library, key }) => left.has(checkId(library, key)));
   }
 
   const conflicts: UploadConflict[] = [];
@@ -494,10 +537,11 @@ export async function findConflicts(
     if (upload.refusal !== null) {
       continue;
     }
-    const existing = found.get(upload.key);
+    const id = checkId(upload.library, upload.key);
+    const existing = found.get(id);
     if (existing) {
       conflicts.push({ upload, existing });
-    } else if (unchecked.has(upload.key)) {
+    } else if (unchecked.has(id)) {
       notChecked.push(upload);
     }
   }
@@ -563,6 +607,8 @@ export type UploadFailure =
 /** One row of the upload list. */
 export interface UploadView {
   id: number;
+  /** The library it goes to (#84). */
+  library: number;
   /** The key: as asked for, then as the server signed it. */
   key: string;
   size: number;
@@ -590,10 +636,14 @@ export interface RunSummary {
   scanUnknown: boolean;
 }
 
-/** The calls the queue makes: lib/api.ts's and `xhrPut`, or a test's. */
+/** The calls the queue makes: lib/api.ts's and `xhrPut`, or a test's. Each names its library. */
 export interface UploadCalls {
-  sign: (prefix: string, files: readonly UploadToSign[]) => Promise<SignUploadsResult>;
-  complete: (keys: readonly string[]) => Promise<CompleteUploadsResult>;
+  sign: (
+    library: number,
+    prefix: string,
+    files: readonly UploadToSign[],
+  ) => Promise<SignUploadsResult>;
+  complete: (library: number, keys: readonly string[]) => Promise<CompleteUploadsResult>;
   /** Sends the file, and answers the HTTP status, or 0 for a network error or an abort. */
   put: (
     upload: PresignedUpload,
@@ -606,10 +656,11 @@ export interface UploadCalls {
 /** What the queue tells its page. */
 export interface UploadHooks {
   /**
-   * Files landed in the bucket (throttled): read again the folders their
-   * keys change, given the keys landed since the last call.
+   * Files landed in their buckets (throttled): read again the folders their
+   * keys change, given the keys landed since the last call, each with its
+   * library.
    */
-  onRefresh?: (keys: readonly string[]) => void;
+  onRefresh?: (landed: readonly LibraryKey[]) => void;
   /** Every file of a run has settled. */
   onDrained?: (summary: RunSummary) => void;
   /** A sign or complete request failed: a session that ended signs the console out. */
@@ -620,6 +671,7 @@ export interface UploadHooks {
 interface Entry {
   id: number;
   file: PickedFile;
+  library: number;
   prefix: string;
   key: string;
   size: number;
@@ -651,14 +703,36 @@ const ACTIVE: ReadonlySet<UploadState> = new Set(["waiting", "signing", "uploadi
 const IN_FLIGHT: ReadonlySet<UploadState> = new Set(["signing", "uploading"]);
 const FINISHED: ReadonlySet<UploadState> = new Set(["uploaded", "failed", "canceled"]);
 
-/** R2 takes NFC-equivalent keys as one object, so two such keys are one key here too. */
-function sameKey(key: string): string {
-  return key.normalize("NFC");
+/**
+ * R2 takes NFC-equivalent keys as one object, so two such keys are one key
+ * here too, within one library: another library's bucket is another
+ * object store.
+ */
+function libraryKey(library: number, key: string): string {
+  return `${library}\u0000${key.normalize("NFC")}`;
 }
 
-/** A whole sign request refused for a reason every later one would meet too. */
-function refusesEveryFile(error: unknown): boolean {
-  return error instanceof ApiError && [401, 403, 503].includes(error.status);
+/** The refusals of a whole sign request that every later one for its library would meet too. */
+const LIBRARY_REFUSALS: ReadonlySet<string> = new Set([
+  "library_read_only",
+  "library_not_found",
+  "uploads_not_configured",
+]);
+
+/**
+ * Which waiting files a whole sign request's refusal fails besides its own:
+ * those of its library for a refusal of the library (#84), every one for a
+ * refusal every request would meet (signed out, writes off), and none for
+ * anything else.
+ */
+function refusalReach(error: unknown): "library" | "all" | "batch" {
+  if (!(error instanceof ApiError)) {
+    return "batch";
+  }
+  if (LIBRARY_REFUSALS.has(error.code)) {
+    return "library";
+  }
+  return [401, 403, 503].includes(error.status) ? "all" : "batch";
 }
 
 /**
@@ -671,8 +745,8 @@ export class UploadQueue {
   readonly #now: () => number;
   #entries: Entry[] = [];
   #nextId = 1;
-  /** Keys that landed and wait to be reported, together. */
-  #unreported: string[] = [];
+  /** Keys that landed and wait to be reported, together, each with its library. */
+  #unreported: LibraryKey[] = [];
   #completeTimer: ReturnType<typeof setTimeout> | undefined;
   #completing = 0;
   /** Ended (`dispose`): an answer still on its way starts nothing more. */
@@ -683,7 +757,7 @@ export class UploadQueue {
   #lastRefresh = Number.NEGATIVE_INFINITY;
   #refreshTimer: ReturnType<typeof setTimeout> | undefined;
   /** The keys landed since the folders were last read again. */
-  #landed: string[] = [];
+  #landed: LibraryKey[] = [];
   #listeners = new Set<() => void>();
   #busyListeners = new Set<(busy: boolean) => void>();
   #busy = false;
@@ -770,10 +844,11 @@ export class UploadQueue {
       return;
     }
     this.#signBatch = Math.max(1, Math.floor(signBatch));
-    for (const { file, prefix, key, refusal, overwrite } of planned) {
+    for (const { file, library, prefix, key, refusal, overwrite } of planned) {
       const entry: Entry = {
         id: this.#nextId++,
         file,
+        library,
         prefix,
         key,
         size: file.size,
@@ -834,12 +909,14 @@ export class UploadQueue {
     this.#settle();
   }
 
-  /** Signs the next files for the free places, one request per folder prefix. */
+  /** Signs the next files for the free places, one request per library and folder prefix. */
   #pump(): void {
     let free = UPLOADS_AT_ONCE - this.#entries.filter((entry) => IN_FLIGHT.has(entry.state)).length;
     while (free > 0) {
       const busyKeys = new Set(
-        this.#entries.filter((entry) => IN_FLIGHT.has(entry.state)).map((e) => sameKey(e.key)),
+        this.#entries
+          .filter((entry) => IN_FLIGHT.has(entry.state))
+          .map((e) => libraryKey(e.library, e.key)),
       );
       const limit = Math.min(free, this.#signBatch);
       const batch: Entry[] = [];
@@ -847,11 +924,13 @@ export class UploadQueue {
         if (batch.length >= limit) {
           break;
         }
-        const key = sameKey(entry.key);
+        const key = libraryKey(entry.library, entry.key);
+        const [first] = batch;
         if (
           entry.state === "waiting" &&
           !busyKeys.has(key) &&
-          (batch.length === 0 || entry.prefix === batch[0]?.prefix)
+          (first === undefined ||
+            (entry.library === first.library && entry.prefix === first.prefix))
         ) {
           busyKeys.add(key);
           batch.push(entry);
@@ -870,9 +949,11 @@ export class UploadQueue {
 
   async #sign(batch: readonly Entry[]): Promise<void> {
     const prefix = batch[0]?.prefix ?? "";
+    const library = batch[0]?.library ?? BOUND_LIBRARY;
     let result: SignUploadsResult;
     try {
       result = await this.#calls.sign(
+        library,
         prefix,
         batch.map(({ key, size, overwrite }) => ({ key, size, overwrite })),
       );
@@ -881,11 +962,18 @@ export class UploadQueue {
         return;
       }
       this.#hooks.onError?.(error);
-      // A refusal of the whole request (signed out, writes off, uploads not
-      // configured) would meet every file waiting too.
-      const failing = refusesEveryFile(error)
-        ? this.#entries.filter((entry) => entry.state === "waiting" || batch.includes(entry))
-        : batch;
+      // A refusal of the whole request (signed out, writes off) would meet
+      // every file waiting too; one of its library (read-only, gone, its
+      // uploads not configured), every file waiting for that library.
+      const reach = refusalReach(error);
+      const failing =
+        reach === "batch"
+          ? batch
+          : this.#entries.filter(
+              (entry) =>
+                batch.includes(entry) ||
+                (entry.state === "waiting" && (reach === "all" || entry.library === library)),
+            );
       for (const entry of failing) {
         if (entry.state === "signing" || entry.state === "waiting") {
           this.#fail(entry, { code: "sign_failed", error });
@@ -991,8 +1079,8 @@ export class UploadQueue {
   #land(entry: Entry): void {
     entry.state = "uploaded";
     entry.loaded = entry.size;
-    this.#hold(entry.key);
-    this.#landed.push(entry.key);
+    this.#hold(entry);
+    this.#landed.push({ library: entry.library, key: entry.key });
     this.#refreshSoon();
   }
 
@@ -1005,7 +1093,7 @@ export class UploadQueue {
   #existsNow(entry: Entry): void {
     this.#fail(entry, { code: "exists_now" });
     if (entry.maybeLanded) {
-      this.#hold(entry.key);
+      this.#hold(entry);
     }
   }
 
@@ -1013,8 +1101,8 @@ export class UploadQueue {
    * Holds a landed key for the next report: at once when `signBatch` keys
    * wait, else once `COMPLETE_QUIET_MS` pass with nothing new landing.
    */
-  #hold(key: string): void {
-    this.#unreported.push(key);
+  #hold(entry: Pick<Entry, "library" | "key">): void {
+    this.#unreported.push({ library: entry.library, key: entry.key });
     clearTimeout(this.#completeTimer);
     this.#completeTimer = undefined;
     if (this.#unreported.length >= this.#signBatch) {
@@ -1035,34 +1123,47 @@ export class UploadQueue {
     this.#report(this.#unreported.splice(0));
   }
 
-  /** `POST /api/files/uploads/complete` for these keys, at most `signBatch` a request. */
-  #report(keys: readonly string[]): void {
+  /**
+   * `POST /api/files/uploads/complete` for these keys, one library a
+   * request, at most `signBatch` keys each.
+   */
+  #report(landed: readonly LibraryKey[]): void {
     if (this.#disposed) {
       return;
     }
-    for (let start = 0; start < keys.length; start += this.#signBatch) {
-      this.#completing++;
-      this.#calls
-        .complete(keys.slice(start, start + this.#signBatch))
-        .then(
-          ({ scan, clock }) => {
-            this.#schedule = { scan, clock };
-            this.#scanUnknown ||= scan === null;
-          },
-          (error: unknown) => {
-            // The files are in the bucket either way; the cron's next pass
-            // indexes them.
-            this.#scanUnknown = true;
-            this.#hooks.onError?.(error);
-          },
-        )
-        .finally(() => {
-          this.#completing--;
-          if (!this.#disposed) {
-            this.#settle();
-          }
-        });
+    const byLibrary = new Map<number, string[]>();
+    for (const { library, key } of landed) {
+      byLibrary.set(library, [...(byLibrary.get(library) ?? []), key]);
     }
+    for (const [library, keys] of byLibrary) {
+      for (let start = 0; start < keys.length; start += this.#signBatch) {
+        this.#complete(library, keys.slice(start, start + this.#signBatch));
+      }
+    }
+  }
+
+  #complete(library: number, keys: readonly string[]): void {
+    this.#completing++;
+    this.#calls
+      .complete(library, keys)
+      .then(
+        ({ scan, clock }) => {
+          this.#schedule = { scan, clock };
+          this.#scanUnknown ||= scan === null;
+        },
+        (error: unknown) => {
+          // The files are in the bucket either way; the cron's next pass
+          // indexes them.
+          this.#scanUnknown = true;
+          this.#hooks.onError?.(error);
+        },
+      )
+      .finally(() => {
+        this.#completing--;
+        if (!this.#disposed) {
+          this.#settle();
+        }
+      });
   }
 
   /** At most once every `REFRESH_EVERY_MS`, and once more after the last upload of a burst. */
@@ -1163,6 +1264,7 @@ function viewOf(entry: Entry): UploadView {
   }
   entry.view = {
     id: entry.id,
+    library: entry.library,
     key: entry.key,
     size: entry.size,
     loaded: entry.loaded,
@@ -1401,6 +1503,27 @@ export function uploadsStatusSuffix(items: readonly UploadView[]): string {
 }
 
 /**
+ * The library names the upload list puts before each row's folder (#84),
+ * by library id: none with one library; otherwise every library outside
+ * library 1, and library 1 too while the queue holds files of more than one
+ * library, so each row says where it goes.
+ */
+export function rowLibraries(
+  items: readonly Pick<UploadView, "library">[],
+  libraries: readonly { id: number; name: string }[] | undefined,
+): ReadonlyMap<number, string> {
+  if (libraries === undefined || libraries.length < 2) {
+    return new Map();
+  }
+  const mixed = new Set(items.map((item) => item.library)).size > 1;
+  return new Map(
+    libraries
+      .filter(({ id }) => mixed || id !== BOUND_LIBRARY)
+      .map(({ id, name }) => [id, name] as const),
+  );
+}
+
+/**
  * A row's key as its two lines: the file's name, and the folder it goes
  * to (`Artist/Album`, with no trailing slash; empty at the bucket's root).
  */
@@ -1409,8 +1532,30 @@ export function splitKey(key: string): { name: string; folder: string } {
   return { name: key.slice(slash + 1), folder: slash < 0 ? "" : key.slice(0, slash) };
 }
 
-/** Why a file failed, for its row: short, after `Failed: `. */
+/**
+ * The words a connected library's upload failure adds (#84, "CORS per
+ * bucket"): a `PUT` the browser could not make there is most often a bucket
+ * without the console's CORS rule.
+ */
+export const CORS_HINT = "Check the bucket's CORS rule on the Libraries page.";
+
+/**
+ * Why a file failed, for its row: short, after `Failed: `. A `PUT` that
+ * failed in a connected library (`library` other than 1) adds `CORS_HINT`.
+ */
 export function describeFailure(
+  failure: UploadFailure,
+  key: string,
+  config: Pick<FilesConfig, "allowed" | "limits"> | undefined,
+  library: number = BOUND_LIBRARY,
+): string {
+  const reason = failureReason(failure, key, config);
+  return failure.code === "put_failed" && library !== BOUND_LIBRARY
+    ? `${reason}. ${CORS_HINT}`
+    : reason;
+}
+
+function failureReason(
   failure: UploadFailure,
   key: string,
   config: Pick<FilesConfig, "allowed" | "limits"> | undefined,

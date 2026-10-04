@@ -16,6 +16,7 @@ import {
   CHECK_BATCH,
   CHECK_ROUNDS,
   COMPLETE_QUIET_MS,
+  CORS_HINT,
   checkBatches,
   checkUpload,
   decideConflicts,
@@ -37,6 +38,7 @@ import {
   planUploadsInSlices,
   REFRESH_EVERY_MS,
   type RunSummary,
+  rowLibraries,
   shownRows,
   splitKey,
   UploadQueue,
@@ -65,6 +67,16 @@ const CONFIG: FilesConfig = {
   limits: { maxKeyBytes: 1024, maxSegmentBytes: 255, signBatch: 10, deleteBatch: 250 },
   rescanQuietSeconds: 120,
   writes: { enabled: true },
+  libraries: [
+    {
+      id: 1,
+      name: "Music Library",
+      writable: true,
+      uploads: { configured: true },
+      reservedPrefixes: ["_covers/"],
+    },
+    { id: 2, name: "Archive", writable: true, uploads: { configured: true }, reservedPrefixes: [] },
+  ],
 };
 
 const NOW = Date.parse("2026-10-02T12:00:00Z");
@@ -86,6 +98,16 @@ function plan(prefix: string, ...names: string[]): PlannedUpload[] {
   );
 }
 
+/** Planned uploads into `prefix` of `library`, which reserves nothing but in library 1. */
+function planIn(library: number, prefix: string, ...names: string[]): PlannedUpload[] {
+  return planUploads(
+    names.map((name) => picked(name)),
+    prefix,
+    { ...CONFIG, library, reservedPrefixes: library === 1 ? ["_covers/"] : [] },
+    noFolders,
+  );
+}
+
 /** Lets every settled promise run its callbacks. */
 async function tick(): Promise<void> {
   for (let i = 0; i < 20; i++) {
@@ -94,6 +116,7 @@ async function tick(): Promise<void> {
 }
 
 interface SignCall {
+  library: number;
   prefix: string;
   files: UploadToSign[];
   resolve: (result: SignUploadsResult) => void;
@@ -109,6 +132,7 @@ interface PutCall {
 }
 
 interface CompleteCall {
+  library: number;
   keys: string[];
   resolve: (result: CompleteUploadsResult) => void;
   reject: (error: unknown) => void;
@@ -151,14 +175,16 @@ function harness(now: () => number = () => NOW) {
   const refresh = vi.fn();
   const queue = new UploadQueue(
     {
-      sign: (prefix, files) =>
+      sign: (library, prefix, files) =>
         new Promise((resolve, reject) =>
-          signs.push({ prefix, files: [...files], resolve, reject }),
+          signs.push({ library, prefix, files: [...files], resolve, reject }),
         ),
       put: (upload, body, onProgress, signal) =>
         new Promise((resolve) => puts.push({ upload, body, onProgress, signal, resolve })),
-      complete: (keys) =>
-        new Promise((resolve, reject) => completes.push({ keys: [...keys], resolve, reject })),
+      complete: (library, keys) =>
+        new Promise((resolve, reject) =>
+          completes.push({ library, keys: [...keys], resolve, reject }),
+        ),
     },
     {
       now,
@@ -831,7 +857,15 @@ describe("the upload queue", () => {
     vi.advanceTimersByTime(REFRESH_EVERY_MS * 3);
     expect(h.refresh).toHaveBeenCalledTimes(2);
     // Each read names the keys landed since the last, for the folders they change.
-    expect(h.refresh.mock.calls).toEqual([[["1.flac"]], [["2.flac", "3.flac"]]]);
+    expect(h.refresh.mock.calls).toEqual([
+      [[{ library: 1, key: "1.flac" }]],
+      [
+        [
+          { library: 1, key: "2.flac" },
+          { library: 1, key: "3.flac" },
+        ],
+      ],
+    ]);
   });
 
   it("clears the finished rows and keeps the rest", async () => {
@@ -909,7 +943,7 @@ describe("the check before anything is signed", () => {
     const { conflicts, unchecked } = await findConflicts(planned, check);
 
     expect(check).toHaveBeenCalledTimes(1);
-    expect(check).toHaveBeenCalledWith("A/", ["A/1.flac", "A/2.flac", "A/3.flac"]);
+    expect(check).toHaveBeenCalledWith(1, "A/", ["A/1.flac", "A/2.flac", "A/3.flac"]);
     expect(conflicts.map(({ upload, existing }) => [upload.key, existing.size])).toEqual([
       ["A/1.flac", 31_234_567],
       ["A/3.flac", 31_234_567],
@@ -927,7 +961,7 @@ describe("the check before anything is signed", () => {
       noFolders,
     );
     const asked: number[] = [];
-    const check = vi.fn(async (_prefix: string, keys: readonly string[]) => {
+    const check = vi.fn(async (_library: number, _prefix: string, keys: readonly string[]) => {
       asked.push(keys.length);
       return {
         // CD44 exists, in a folder past the first request's budget.
@@ -950,7 +984,7 @@ describe("the check before anything is signed", () => {
     const planned = plan("A/", "1.flac", "2.flac", "3.flac");
     // A/1.flac's folder is too large: whenever asked first, it takes the
     // whole budget, so the server checks nothing else in that request.
-    const check = vi.fn(async (_prefix: string, keys: readonly string[]) =>
+    const check = vi.fn(async (_library: number, _prefix: string, keys: readonly string[]) =>
       keys[0] === "A/1.flac"
         ? { existing: [], unchecked: [...keys] }
         : { existing: keys.includes("A/3.flac") ? [existing("A/3.flac")] : [], unchecked: [] },
@@ -971,7 +1005,7 @@ describe("the check before anything is signed", () => {
       CONFIG,
       noFolders,
     );
-    const check = vi.fn(async (_prefix: string, keys: readonly string[]) =>
+    const check = vi.fn(async (_library: number, _prefix: string, keys: readonly string[]) =>
       keys[0]?.includes("/Big/")
         ? { existing: [], unchecked: [...keys] }
         : { existing: keys.map((key) => existing(key)), unchecked: [] },
@@ -992,7 +1026,7 @@ describe("the check before anything is signed", () => {
       throw new Error("nothing planned");
     }
     const planned = [first, { ...first }];
-    const check = vi.fn(async (_prefix: string, keys: readonly string[]) => ({
+    const check = vi.fn(async (_library: number, _prefix: string, keys: readonly string[]) => ({
       existing: [],
       unchecked: [...keys],
     }));
@@ -1000,7 +1034,7 @@ describe("the check before anything is signed", () => {
     const { conflicts, unchecked } = await findConflicts(planned, check);
 
     expect(check).toHaveBeenCalledTimes(1);
-    expect(check).toHaveBeenCalledWith("Big/", ["Big/Café.flac"]);
+    expect(check).toHaveBeenCalledWith(1, "Big/", ["Big/Café.flac"]);
     expect(conflicts).toEqual([]);
     // Both files of the key may exist, so both are asked about.
     expect(unchecked).toHaveLength(2);
@@ -1009,7 +1043,7 @@ describe("the check before anything is signed", () => {
   it(`stops after ${CHECK_ROUNDS} rounds whatever the server answers`, async () => {
     const planned = plan("A/", ...Array.from({ length: 30 }, (_, i) => `${i}.flac`));
     // One key checked a round: progress, but slow.
-    const check = vi.fn(async (_prefix: string, keys: readonly string[]) => ({
+    const check = vi.fn(async (_library: number, _prefix: string, keys: readonly string[]) => ({
       existing: [],
       unchecked: keys.slice(1),
     }));
@@ -1079,6 +1113,7 @@ describe("the check before anything is signed", () => {
 describe("the words", () => {
   const view = (state: UploadView["state"]): UploadView => ({
     id: 1,
+    library: 1,
     key: "a.flac",
     size: 1,
     loaded: 0,
@@ -1242,6 +1277,7 @@ describe("a large queue", () => {
   it("draws the rows that matter, and counts the rest", () => {
     const view = (id: number, state: UploadView["state"]): UploadView => ({
       id,
+      library: 1,
       key: `${id}.flac`,
       size: 1,
       loaded: 0,
@@ -1284,6 +1320,7 @@ describe("a large queue", () => {
       { length: 300 },
       (_, i): UploadView => ({
         id: i,
+        library: 1,
         key: `${i}.flac`,
         size: 1,
         loaded: 0,
@@ -1514,5 +1551,153 @@ describe("xhrPut", () => {
     controller.abort();
     expect(xhr.aborted).toBe(true);
     expect(await answer).toBe(0);
+  });
+});
+
+/* ------------------------------------------------------- across libraries -- */
+
+describe("uploads across libraries (#84)", () => {
+  it("plans each file into the library picked in, with that library's reserved prefixes", () => {
+    expect(plan("", "a.flac").map((upload) => upload.library)).toEqual([1]);
+    const [archive] = planIn(2, "_covers/", "a.jpg");
+    expect(archive).toMatchObject({ library: 2, key: "_covers/a.jpg", refusal: null });
+    const [bound] = planIn(1, "_covers/", "a.jpg");
+    expect(bound).toMatchObject({ library: 1, refusal: "reserved_path" });
+    expect(checkUpload("_covers/a.jpg", 10, { ...CONFIG, reservedPrefixes: [] })).toBeNull();
+  });
+
+  it("refuses a twin only within one library", () => {
+    const planned = [...planIn(1, "A/", "1.flac"), ...planIn(2, "A/", "1.flac")];
+    // Planned apart, each pick is its own: the same key in two buckets is two objects.
+    expect(planned.map((upload) => upload.refusal)).toEqual([null, null]);
+  });
+
+  const existing = (key: string) => ({
+    key,
+    storedKey: key,
+    size: 10,
+    uploadedAt: "2026-10-01T12:00:00.000Z",
+  });
+
+  it("checks each library's keys in its own requests", async () => {
+    const planned = [...planIn(1, "A/", "1.flac", "2.flac"), ...planIn(2, "A/", "1.flac")];
+    expect(
+      checkBatches(planned).map(({ library, prefix, keys }) => [library, prefix, keys]),
+    ).toEqual([
+      [1, "A/", ["A/1.flac", "A/2.flac"]],
+      [2, "A/", ["A/1.flac"]],
+    ]);
+    const check = vi.fn(async (library: number, _prefix: string, keys: readonly string[]) => ({
+      // A/1.flac exists in library 2 only.
+      existing: library === 2 ? keys.map((key) => existing(key)) : [],
+      unchecked: [],
+    }));
+
+    const { conflicts, unchecked } = await findConflicts(planned, check);
+
+    expect(check.mock.calls).toEqual([
+      [1, "A/", ["A/1.flac", "A/2.flac"]],
+      [2, "A/", ["A/1.flac"]],
+    ]);
+    expect(conflicts.map(({ upload }) => [upload.library, upload.key])).toEqual([[2, "A/1.flac"]]);
+    expect(unchecked).toEqual([]);
+  });
+
+  it("sets aside a too-large folder of one library only", async () => {
+    const planned = [...planIn(1, "Big/", "1.flac"), ...planIn(2, "Big/", "1.flac")];
+    const check = vi.fn(async (library: number, _prefix: string, keys: readonly string[]) =>
+      library === 1 ? { existing: [], unchecked: [...keys] } : { existing: [], unchecked: [] },
+    );
+
+    const { unchecked } = await findConflicts(planned, check);
+
+    expect(unchecked.map((upload) => [upload.library, upload.key])).toEqual([[1, "Big/1.flac"]]);
+  });
+
+  it("carries a mixed queue's library through sign, PUT and complete", async () => {
+    const h = harness();
+    h.queue.add([...planIn(1, "A/", "1.flac"), ...planIn(2, "A/", "1.flac", "2.flac")], 10);
+
+    // One sign request per library: three places, two requests.
+    expect(h.signs.map(({ library, prefix, files }) => [library, prefix, files.length])).toEqual([
+      [1, "A/", 1],
+      [2, "A/", 2],
+    ]);
+    expect(h.queue.getSnapshot().items.map((item) => item.library)).toEqual([1, 2, 2]);
+    await h.signAll(0);
+    await h.signAll(1);
+    expect(h.puts).toHaveLength(3);
+    await h.putDone(0);
+    await h.putDone(1);
+    await h.putDone(2);
+    await h.quiet();
+
+    // The held keys go in one complete request per library.
+    expect(h.completes.map(({ library, keys }) => [library, keys])).toEqual([
+      [1, ["A/1.flac"]],
+      [2, ["A/1.flac", "A/2.flac"]],
+    ]);
+    // The same key in two libraries never waits on itself.
+    expect(h.states()).toEqual(["uploaded", "uploaded", "uploaded"]);
+    await h.completeDone(0);
+    await h.completeDone(1);
+    expect(h.drained).toEqual([{ uploaded: 3, notUploaded: 0, scanUnknown: false }]);
+    // The folders read again are the libraries' own.
+    vi.advanceTimersByTime(REFRESH_EVERY_MS);
+    expect(h.refresh.mock.calls.flat(2)).toEqual([
+      { library: 1, key: "A/1.flac" },
+      { library: 2, key: "A/1.flac" },
+      { library: 2, key: "A/2.flac" },
+    ]);
+  });
+
+  it("fails one library's waiting files when that library refuses, and goes on with the other", async () => {
+    const h = harness();
+    h.queue.add(planIn(2, "A/", "1.flac", "2.flac", "3.flac", "4.flac"), 1);
+    h.queue.add(planIn(1, "B/", "1.flac"), 1);
+    // Three places: library 2's first three files, one request each.
+    expect(h.signs.map(({ library }) => library)).toEqual([2, 2, 2]);
+
+    h.signs[0]?.reject(new ApiError(403, "library_read_only", ""));
+    await tick();
+
+    // Library 2's waiting file fails with it (the two still being signed
+    // hear their own answers); library 1's file is signed in the place that
+    // freed.
+    expect(h.states()).toEqual(["failed", "signing", "signing", "failed", "signing"]);
+    expect(h.signs.at(-1)).toMatchObject({ library: 1, prefix: "B/" });
+    const [first] = h.queue.getSnapshot().items;
+    expect(describeFailure(first?.failure ?? { code: "same_name" }, "A/1.flac", CONFIG, 2)).toBe(
+      "the server refused it (library_read_only)",
+    );
+  });
+
+  it("points a connected library's failed PUT at the bucket's CORS rule", () => {
+    const failure = { code: "put_failed" as const, status: 0 };
+    expect(describeFailure(failure, "a.flac", CONFIG)).toBe("the upload did not reach the bucket");
+    expect(describeFailure(failure, "a.flac", CONFIG, 2)).toBe(
+      `the upload did not reach the bucket. ${CORS_HINT}`,
+    );
+    expect(CORS_HINT).toBe("Check the bucket's CORS rule on the Libraries page.");
+    // Other failures say what they say anywhere.
+    expect(describeFailure({ code: "empty_file" }, "a.flac", CONFIG, 2)).toBe("the file is empty");
+  });
+
+  it("names the library on a row outside library 1, and on every row of a mixed queue", () => {
+    const libraries = CONFIG.libraries;
+    // Library 1's rows read as before while the queue holds only its files.
+    expect(rowLibraries([{ library: 1 }], libraries).get(1)).toBeUndefined();
+    expect(rowLibraries([{ library: 2 }], libraries)).toEqual(new Map([[2, "Archive"]]));
+    expect(rowLibraries([{ library: 1 }, { library: 2 }], libraries)).toEqual(
+      new Map([
+        [1, "Music Library"],
+        [2, "Archive"],
+      ]),
+    );
+    // With one library, or before the configuration is read, no row names one.
+    expect(rowLibraries([{ library: 2 }], [libraries[0] as (typeof libraries)[0]])).toEqual(
+      new Map(),
+    );
+    expect(rowLibraries([{ library: 2 }], undefined)).toEqual(new Map());
   });
 });

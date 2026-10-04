@@ -3,6 +3,7 @@ import { type FormEvent, useState } from "react";
 import { PasswordInput } from "@/components/subsonic-users/password-input";
 import {
   AdminSwitchField,
+  LibrariesField,
   UserFieldError,
   useUserFieldErrors,
   useUserWrite,
@@ -19,36 +20,64 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { createSubsonicUser } from "@/lib/api";
+import { createSubsonicUser, type LibraryName } from "@/lib/api";
 import { MAX_USERNAME_LENGTH } from "@/lib/errors";
+import { librariesError } from "@/lib/subsonic-users";
 
 /**
  * Creates a Subsonic user: a username, a password and the **Subsonic admin**
  * switch. While no Subsonic admin exists the switch is locked on, since the
  * server would refuse any other user (`admin_required`, #82).
+ *
+ * Where more than one library exists, `libraries` lists them, and a user who
+ * is not an admin gets the ones checked, starting from `defaultLibraryIds`
+ * (#84). With one library it is empty: no field shows, and the server gives
+ * the new user its default, as before.
  */
 export function CreateUserDialog({
   open,
   onOpenChange,
   adminRequired,
+  libraries,
+  defaultLibraryIds,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   adminRequired: boolean;
+  libraries: readonly LibraryName[];
+  defaultLibraryIds: readonly number[];
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         {/* The popup unmounts once closed: each opening starts from empty fields. */}
-        <CreateUserForm adminRequired={adminRequired} onDone={() => onOpenChange(false)} />
+        <CreateUserForm
+          adminRequired={adminRequired}
+          libraries={libraries}
+          defaultLibraryIds={defaultLibraryIds}
+          onDone={() => onOpenChange(false)}
+        />
       </DialogContent>
     </Dialog>
   );
 }
 
-function CreateUserForm({ adminRequired, onDone }: { adminRequired: boolean; onDone: () => void }) {
+function CreateUserForm({
+  adminRequired,
+  libraries,
+  defaultLibraryIds,
+  onDone,
+}: {
+  adminRequired: boolean;
+  libraries: readonly LibraryName[];
+  defaultLibraryIds: readonly number[];
+  onDone: () => void;
+}) {
   const [isAdmin, setIsAdmin] = useState(adminRequired);
-  const { fieldErrors, clear, report, onChange } = useUserFieldErrors();
+  const [libraryIds, setLibraryIds] = useState<readonly number[]>(defaultLibraryIds);
+  const { fieldErrors, clear, report, onChange, drop } = useUserFieldErrors();
+  const admin = adminRequired || isAdmin;
+  const choosesLibraries = libraries.length > 0 && !admin;
 
   const mutation = useUserWrite({
     mutationFn: createSubsonicUser,
@@ -64,11 +93,16 @@ function CreateUserForm({ adminRequired, onDone }: { adminRequired: boolean; onD
     const target = event.currentTarget;
     const form = new FormData(target);
     clear();
+    if (choosesLibraries && librariesError(admin, libraryIds) !== null) {
+      // "Choose at least one library." shows beside the boxes already.
+      return;
+    }
     mutation.mutate(
       {
         username: String(form.get("username") ?? ""),
         password: String(form.get("password") ?? ""),
-        isAdmin: adminRequired || isAdmin,
+        isAdmin: admin,
+        ...(choosesLibraries ? { libraryIds: [...libraryIds] } : {}),
       },
       {
         // The toast is the mutation's (useUserWrite); this is only the dialog's part.
@@ -118,7 +152,7 @@ function CreateUserForm({ adminRequired, onDone }: { adminRequired: boolean; onD
           <UserFieldError message={fieldErrors.password} />
         </Field>
         <AdminSwitchField
-          checked={adminRequired || isAdmin}
+          checked={admin}
           onCheckedChange={setIsAdmin}
           locked={
             adminRequired
@@ -126,6 +160,18 @@ function CreateUserForm({ adminRequired, onDone }: { adminRequired: boolean; onD
               : undefined
           }
         />
+        {libraries.length > 0 ? (
+          <LibrariesField
+            libraries={libraries}
+            isAdmin={admin}
+            checked={libraryIds}
+            onCheckedChange={(next) => {
+              setLibraryIds(next);
+              drop("libraries");
+            }}
+            error={fieldErrors.libraries ?? librariesError(admin, libraryIds) ?? undefined}
+          />
+        ) : null}
       </FieldGroup>
       <DialogFooter>
         <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>

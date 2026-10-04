@@ -1,7 +1,13 @@
 import type { MutationOptions, QueryClient } from "@tanstack/react-query";
 
-import { type SubsonicUser, subsonicUsersQuery } from "@/lib/api";
-import { libraryQuery } from "@/lib/overview";
+import {
+  type Library,
+  type LibraryName,
+  type SubsonicUser,
+  type SubsonicUserChanges,
+  subsonicUsersQuery,
+} from "@/lib/api";
+import { LIBRARY_KEY } from "@/lib/overview";
 
 /**
  * The rules of the Subsonic users page (`/users`, #82) that need no screen:
@@ -22,6 +28,8 @@ export const USER_FIELDS_BY_CODE: Readonly<Record<string, string>> = {
   invalid_username: "username",
   username_taken: "username",
   invalid_password: "password",
+  libraries_required: "libraries",
+  invalid_library: "libraries",
 };
 
 /**
@@ -37,12 +45,18 @@ export function adminRequired(users: readonly SubsonicUser[]): boolean {
  * What a PATCH sends: only what the edit dialog changed, or `null` when it
  * changed nothing and there is nothing to send. A rename to the same name in
  * another case is a change; the server allows it.
+ *
+ * `libraryIds`, where the dialog shows the Libraries field, goes only for a
+ * user who is not, and does not become, a Subsonic admin, and only when it
+ * differs from the libraries they have: an admin has every library, and the
+ * server refuses a list for one (`admin_has_all_libraries`). A demoted
+ * admin who keeps every box checked keeps their rows, as on the server.
  */
 export function userChanges(
   user: SubsonicUser,
-  edited: { username: string; isAdmin: boolean },
-): { username?: string; isAdmin?: boolean } | null {
-  const changes: { username?: string; isAdmin?: boolean } = {};
+  edited: { username: string; isAdmin: boolean; libraryIds?: readonly number[] },
+): SubsonicUserChanges | null {
+  const changes: SubsonicUserChanges = {};
   // The server trims a name, so spaces around it change nothing.
   const username = edited.username.trim();
   if (username !== user.username) {
@@ -51,7 +65,89 @@ export function userChanges(
   if (edited.isAdmin !== user.isAdmin) {
     changes.isAdmin = edited.isAdmin;
   }
+  if (
+    edited.libraryIds !== undefined &&
+    !edited.isAdmin &&
+    !sameIds(edited.libraryIds, user.libraryIds)
+  ) {
+    changes.libraryIds = sortedIds(edited.libraryIds);
+  }
   return Object.keys(changes).length > 0 ? changes : null;
+}
+
+/* ----------------------------------------------------------- libraries -- */
+
+/**
+ * Whether the page shows libraries at all (#84, "Console"): only where more
+ * than one exists, so a single-library server's page looks as it did, and
+ * its writes send no `libraryIds`.
+ */
+export function showsLibraries(libraries: readonly LibraryName[]): boolean {
+  return libraries.length > 1;
+}
+
+/** Ids in ascending order, each once, as the server keeps them. */
+function sortedIds(ids: readonly number[]): number[] {
+  return [...new Set(ids)].sort((a, b) => a - b);
+}
+
+function sameIds(left: readonly number[], right: readonly number[]): boolean {
+  const a = sortedIds(left);
+  const b = sortedIds(right);
+  return a.length === b.length && a.every((id, index) => id === b[index]);
+}
+
+/**
+ * The libraries a new user's field starts with: the assignable ones marked
+ * "Give new Subsonic users access" (`defaultNewUsers`), as the server gives
+ * a new user who names none. `known` is the Libraries page's list, which
+ * only a role with `libraries:read` reads; without it the defaults are not
+ * known here, and no box starts checked.
+ */
+export function defaultLibraryIds(
+  assignable: readonly LibraryName[],
+  known: readonly Pick<Library, "id" | "defaultNewUsers">[] | undefined,
+): number[] {
+  if (known === undefined) {
+    return [];
+  }
+  const defaults = new Set(known.filter((entry) => entry.defaultNewUsers).map(({ id }) => id));
+  return assignable.filter(({ id }) => defaults.has(id)).map(({ id }) => id);
+}
+
+/** The Libraries field's line for a Subsonic admin, in place of the boxes (#84). */
+export const ADMIN_LIBRARIES = "Admins see every library.";
+
+/** The Libraries field's error with no box checked (#84). */
+export const LIBRARIES_REQUIRED = "Choose at least one library.";
+
+/**
+ * Why the Libraries field cannot be sent as it is, or `null` when it can:
+ * a user who is not a Subsonic admin needs at least one library
+ * (`libraries_required`). An admin's boxes are not shown, and not sent.
+ */
+export function librariesError(isAdmin: boolean, libraryIds: readonly number[]): string | null {
+  return !isAdmin && libraryIds.length === 0 ? LIBRARIES_REQUIRED : null;
+}
+
+/**
+ * The users table's Libraries cell (#84): "All" for a Subsonic admin,
+ * otherwise the names of up to two, in id order, or "3 libraries" past two.
+ * A user with none reads as the table's missing value.
+ */
+export function librariesLabel(
+  user: Pick<SubsonicUser, "isAdmin" | "libraryIds">,
+  libraries: readonly LibraryName[],
+): string {
+  if (user.isAdmin) {
+    return "All";
+  }
+  const ids = new Set(user.libraryIds);
+  const names = libraries.filter(({ id }) => ids.has(id)).map(({ name }) => name);
+  if (names.length === 0) {
+    return "—";
+  }
+  return names.length > 2 ? `${names.length.toLocaleString("en")} libraries` : names.join(", ");
 }
 
 /**
@@ -89,7 +185,7 @@ export function deleteConsequences(playlists: number): string {
 export function afterUserWrite(queryClient: QueryClient): Promise<void> {
   return Promise.all([
     queryClient.invalidateQueries({ queryKey: subsonicUsersQuery.queryKey }),
-    queryClient.invalidateQueries({ queryKey: libraryQuery.queryKey }),
+    queryClient.invalidateQueries({ queryKey: LIBRARY_KEY }),
   ]).then(() => undefined);
 }
 
@@ -124,6 +220,9 @@ export function userWriteOptions<TData, TVariables>(
 ): MutationOptions<TData, unknown, TVariables> {
   return {
     mutationFn: write.mutationFn,
+    // A create or a new password carries the password: the mutation cache
+    // drops it as soon as nothing shows the write, not five minutes later.
+    gcTime: 0,
     onSuccess: (data, variables) => {
       const { title, description } = write.succeeded(data, variables);
       notices.success(title, description);

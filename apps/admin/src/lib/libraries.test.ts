@@ -7,6 +7,7 @@ import {
   fetchLibraries,
   type Library,
   removeLibrary,
+  subsonicUsersQuery,
   testLibrary,
   updateLibrary,
 } from "@/lib/api";
@@ -35,7 +36,7 @@ import {
   scanPending,
   testNotice,
 } from "@/lib/libraries";
-import { libraryQuery } from "@/lib/overview";
+import { LIBRARY_KEY } from "@/lib/overview";
 
 // Phase 2's rule, which every bucket's CORS rule repeats (apps/server README, "File uploads").
 import example from "../../../server/r2-cors.example.json?raw";
@@ -567,7 +568,15 @@ describe("libraryWriteOptions", () => {
     expect(write.notices).toEqual([["error", "removing"]]);
   });
 
-  it("reads the libraries, the files configuration and the Overview's library again", async () => {
+  it("keeps no secret key in the mutation cache once nothing shows the write", async () => {
+    const write = harness({});
+    expect(write.queryClient.getMutationCache().getAll()[0]?.options.gcTime).toBe(0);
+    await write.started;
+    write.settle()?.resolve("Archive");
+    await write.done;
+  });
+
+  it("reads the libraries, the files configuration, the Overview's library and the users again", async () => {
     const write = harness({});
     const invalidate = vi.spyOn(write.queryClient, "invalidateQueries");
     write.queryClient.setQueryData(librariesQuery.queryKey, {
@@ -582,7 +591,8 @@ describe("libraryWriteOptions", () => {
     expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
       librariesQuery.queryKey,
       filesConfigQuery.queryKey,
-      libraryQuery.queryKey,
+      LIBRARY_KEY,
+      subsonicUsersQuery.queryKey,
     ]);
   });
 });
