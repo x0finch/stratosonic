@@ -294,7 +294,7 @@ describe("the playlist import at the budget", () => {
     await db.batch([tallyStatement(db, utcDay(DAY), 999)]);
     const d1 = countingD1(testEnv.DB);
     const env = { ...testEnv, DB: d1.binding };
-    const limits = { pageSize: 1, importsPerRun: 20, objectsPerRun: 5000 };
+    const limits = { pageSize: 1, importsPerRun: 20, objectsPerRun: 5000, subrequestsPerRun: 42 };
     const clock = () => DAY;
 
     const run = await importPlaylists(env, T, limits, { writeBudget: 1000, clock });

@@ -235,7 +235,10 @@ describe("the pass it starts", () => {
     // carries its count. The tally counts what D1 reports each batch wrote,
     // so the import's last batch's own rows go on it after the batch, in a
     // round trip of their own: the pass's one write nothing would carry.
-    expect(debounced.d1).toEqual({ statements: 20, roundTrips: 8, rowsRead: 59, rowsWritten: 8 });
+    // The import's state read also reads the library rows, as the scan's
+    // does (#150): one more statement and one more row, in the same round
+    // trip.
+    expect(debounced.d1).toEqual({ statements: 21, roundTrips: 8, rowsRead: 60, rowsWritten: 8 });
   });
 });
 

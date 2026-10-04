@@ -1,3 +1,4 @@
+import { DEFAULT_LIBRARY_ID } from "@stratosonic/db";
 import type { Context } from "hono";
 import { requireFreshSession, requirePermission, requireSession } from "../console-auth/middleware";
 import { database } from "../db";
@@ -786,7 +787,10 @@ function isCompletedKeyList(keys: unknown): keys is string[] {
  * the deleted tracks out of the library.
  */
 async function afterDelete(env: Env, keys: readonly string[]): Promise<ScanSchedule | null> {
-  await deletePlaylistRowsByKeys(database(env), playlistKeysOf(keys));
+  // The Files routes reach library 1 until they take a library (#84, ticket H).
+  await deletePlaylistRowsByKeys(database(env), [
+    { libraryId: DEFAULT_LIBRARY_ID, keys: playlistKeysOf(keys) },
+  ]);
 
   return recordLibraryChange(env, Date.now());
 }

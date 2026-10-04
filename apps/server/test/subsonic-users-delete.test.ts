@@ -13,6 +13,7 @@ import { MAX_JSON_BODY_BYTES } from "../src/api/json-body";
 import { database } from "../src/db";
 import type { Env } from "../src/env";
 import { erasePlaylistFiles } from "../src/playlists/writes";
+import { bindingStorage } from "../src/storage/binding";
 import { DELETE_KEYS_PER_CALL } from "../src/storage/storage";
 import {
   type CookieJar,
@@ -403,7 +404,7 @@ describe("erasePlaylistFiles", () => {
     );
     const { env, calls } = recordingBucket();
 
-    await erasePlaylistFiles(env, keys);
+    await erasePlaylistFiles(bindingStorage(env), keys);
 
     expect(calls.map((call) => call.length)).toEqual([DELETE_KEYS_PER_CALL, 1]);
     expect(calls.flat()).toEqual(keys);
@@ -412,7 +413,7 @@ describe("erasePlaylistFiles", () => {
   it("makes no call for no key", async () => {
     const { env, calls } = recordingBucket();
 
-    await erasePlaylistFiles(env, []);
+    await erasePlaylistFiles(bindingStorage(env), []);
 
     expect(calls).toEqual([]);
   });

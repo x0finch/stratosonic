@@ -1,4 +1,6 @@
 import {
+  DEFAULT_LIBRARY_ID,
+  type Library,
   library,
   type NewSubsonicUser,
   newRandomId,
@@ -7,7 +9,7 @@ import {
   subsonicUser,
   userLibrary,
 } from "@stratosonic/db";
-import { and, asc, eq, getTableColumns, type SQL, sql } from "drizzle-orm";
+import { and, asc, eq, getTableColumns, inArray, type SQL, sql } from "drizzle-orm";
 import type { Database } from "../db";
 
 /**
@@ -421,18 +423,32 @@ export async function whyRefused(db: Database, id: string): Promise<UserRefusal>
   return rows.length === 0 ? "not_found" : "last_admin";
 }
 
+/** A library row as a user's deletion reads it: how to reach its bucket, and whether to. */
+export type PlaylistFilesLibrary = Pick<
+  Library,
+  "id" | "kind" | "path" | "endpoint" | "bucket" | "credentials" | "writable" | "state"
+>;
+
 /** What deleting a user would do, read before anything is deleted. */
 export interface UserDeletionCheck {
   /** `null` when the user may be deleted. */
   readonly refusal: UserRefusal | null;
-  /** The user's playlists, by the `.m3u` each one is. */
-  readonly playlistKeys: readonly string[];
+  /** The user's playlists, by the library and the `.m3u` each one is. */
+  readonly playlistFiles: readonly { readonly libraryId: number; readonly r2Key: string }[];
+  /**
+   * The rows of the libraries other than library 1 those files are in, by
+   * id: what reaching their buckets takes (#84). Library 1 is the binding.
+   */
+  readonly libraries: ReadonlyMap<number, PlaylistFilesLibrary>;
 }
 
 /**
  * Whether a user may be deleted, by the same guard the delete itself is
- * written with, and the files of the playlists that would go with them, in
- * one round trip. The playlists are found through `playlist_owner_id_idx`.
+ * written with, and the files of the playlists that would go with them, with
+ * their libraries, in one round trip. The playlists are found through
+ * `playlist_owner_id_idx`. When some of those files are in a library other
+ * than library 1 and the delete may go ahead, a second round trip reads
+ * those libraries' rows, which reaching their buckets takes (#84).
  */
 export async function checkUserDeletion(db: Database, id: string): Promise<UserDeletionCheck> {
   const [users, playlists] = await db.batch([
@@ -440,13 +456,43 @@ export async function checkUserDeletion(db: Database, id: string): Promise<UserD
       .select({ mayLoseAdmin: sql<number>`${mayLoseAdmin(id)}` })
       .from(subsonicUser)
       .where(eq(subsonicUser.id, id)),
-    db.select({ r2Key: playlist.r2Key }).from(playlist).where(eq(playlist.ownerId, id)),
+    db
+      .select({ libraryId: playlist.libraryId, r2Key: playlist.r2Key })
+      .from(playlist)
+      .where(eq(playlist.ownerId, id)),
   ]);
 
   const user = users[0];
   const refusal = user === undefined ? "not_found" : user.mayLoseAdmin ? null : "last_admin";
+  // Another library's row is read only when a file is there, and the
+  // delete will go ahead: a user of library 1 alone costs what it did.
+  const others = [
+    ...new Set(
+      playlists.map((row) => row.libraryId).filter((libraryId) => libraryId !== DEFAULT_LIBRARY_ID),
+    ),
+  ];
+  const libraries =
+    refusal !== null || others.length === 0
+      ? []
+      : await db
+          .select({
+            id: library.id,
+            kind: library.kind,
+            path: library.path,
+            endpoint: library.endpoint,
+            bucket: library.bucket,
+            credentials: library.credentials,
+            writable: library.writable,
+            state: library.state,
+          })
+          .from(library)
+          .where(inArray(library.id, others));
 
-  return { refusal, playlistKeys: playlists.map((row) => row.r2Key) };
+  return {
+    refusal,
+    playlistFiles: playlists,
+    libraries: new Map(libraries.map((row) => [row.id, row])),
+  };
 }
 
 /**

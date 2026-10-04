@@ -528,10 +528,9 @@ export class ScanDriver extends DurableObject<Env> {
   /**
    * Skips the library whose listing kept failing (#84, "Skipping a
    * library"), in the phase it failed in, and carries the pass on: the scan
-   * moves to the next library, and the import, which reads library 1 alone
-   * until #84's ticket F, ends its pass. Giving the pass up instead would
-   * park every later library and the playlists on the one that does not
-   * answer.
+   * and the import each move to their next library, and the import ends
+   * the pass after its last. Giving the pass up instead would park every
+   * later library and the playlists on the one that does not answer.
    */
   private async skip(state: DriverState, failed: LibraryListingError): Promise<void> {
     const reason = skipsAtOnce(failed.reason) ? failed.reason : "unavailable";
@@ -545,8 +544,19 @@ export class ScanDriver extends DurableObject<Env> {
       return;
     }
 
-    await skipPlaylistLibrary(this.env, failed.libraryId, reason, { ledger });
-    await this.finish({ ...state, unreported: ledger.rows });
+    const { completed } = await skipPlaylistLibrary(
+      this.env,
+      new Date(state.startedAt),
+      failed.libraryId,
+      reason,
+      { ledger },
+    );
+    if (completed) {
+      await this.finish({ ...state, unreported: ledger.rows });
+
+      return;
+    }
+    await this.arm({ ...state, failures: 0, unreported: ledger.rows }, state.tuning.stepDelayMs);
   }
 
   /**
@@ -722,6 +732,10 @@ function resolved(tuning: ScanDriverTuning): Tuning {
       objectsPerRun: positive(
         playlists.objectsPerRun,
         DEFAULT_PLAYLIST_IMPORT_LIMITS.objectsPerRun,
+      ),
+      subrequestsPerRun: positive(
+        playlists.subrequestsPerRun,
+        DEFAULT_PLAYLIST_IMPORT_LIMITS.subrequestsPerRun,
       ),
     },
     // Zero is a budget too: no cap.

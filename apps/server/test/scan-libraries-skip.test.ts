@@ -107,8 +107,9 @@ describe("a key the bucket refuses (403)", () => {
     await driveUntilIdle();
   });
 
-  it("skips library 2 at once, with auth, and no retry", async () => {
-    expect(operationsSince(fake, before)).toEqual(["ListObjectsV2"]);
+  it("skips library 2 at once, with auth, and no retry, in the scan and the import", async () => {
+    // One listing each: the scan's, and the playlist import's (#150).
+    expect(operationsSince(fake, before)).toEqual(["ListObjectsV2", "ListObjectsV2"]);
     const row = await libraryRow(ARCHIVE.id);
     expect(row?.lastScanError).toBe("auth");
     // Entered by this pass, left by the last good one.
@@ -171,7 +172,8 @@ describe("a bucket that is gone (NoSuchBucket)", () => {
     await poke(LATER, RETRYING);
     await driveUntilIdle();
 
-    expect(operationsSince(fake, before)).toEqual(["ListObjectsV2"]);
+    // The scan's listing, then the playlist import's.
+    expect(operationsSince(fake, before)).toEqual(["ListObjectsV2", "ListObjectsV2"]);
     expect((await libraryRow(ARCHIVE.id))?.lastScanError).toBe("bucket_not_found");
     expect((await tracksIn(ARCHIVE.id)).map((row) => row.id)).toEqual(archived);
   });
@@ -194,12 +196,9 @@ describe.each<[string, FakeS3Failure]>([
     await driveUntilIdle();
   });
 
-  it("is retried, then library 2 is skipped as unavailable", async () => {
-    expect(operationsSince(fake, before)).toEqual([
-      "ListObjectsV2",
-      "ListObjectsV2",
-      "ListObjectsV2",
-    ]);
+  it("is retried, then library 2 is skipped as unavailable, by the scan and the import", async () => {
+    // Three tries in the scan, then three in the playlist import (#150).
+    expect(operationsSince(fake, before)).toEqual(Array(6).fill("ListObjectsV2"));
     expect((await libraryRow(ARCHIVE.id))?.lastScanError).toBe("unavailable");
   });
 
@@ -441,9 +440,28 @@ describe("the playlist import's listing", () => {
     expect(await readPlaylistImportProgress(database(testEnv))).toBeNull();
   });
 
-  it("skips with one batch: the error, and the import's progress cleared", async () => {
-    await skipPlaylistLibrary(testEnv, 1, "unavailable");
+  it("skips with one batch: the error, and the import moved to the next library", async () => {
+    expect(await skipPlaylistLibrary(testEnv, T, 1, "unavailable")).toEqual({ completed: false });
     expect((await libraryRow(1))?.lastScanError).toBe("unavailable");
+    expect(await readPlaylistImportProgress(database(testEnv))).toMatchObject({
+      libraryId: ARCHIVE.id,
+      cursor: "",
+      startedAt: T.getTime(),
+    });
+  });
+
+  it("ends the import's pass when it skips the last library", async () => {
+    await skipPlaylistLibrary(testEnv, T, 1, "unavailable");
+    expect(await skipPlaylistLibrary(testEnv, T, ARCHIVE.id, "throttled")).toEqual({
+      completed: true,
+    });
+    expect((await libraryRow(ARCHIVE.id))?.lastScanError).toBe("throttled");
     expect(await readPlaylistImportProgress(database(testEnv))).toBeNull();
+  });
+
+  it("leaves a pass that has already left the library alone", async () => {
+    await skipPlaylistLibrary(testEnv, T, 1, "unavailable");
+    expect(await skipPlaylistLibrary(testEnv, T, 1, "unavailable")).toEqual({ completed: false });
+    expect((await readPlaylistImportProgress(database(testEnv)))?.libraryId).toBe(ARCHIVE.id);
   });
 });
