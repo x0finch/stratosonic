@@ -24,7 +24,8 @@
 import {
   album,
   annotation,
-  DEFAULT_LIBRARY_ID,
+  type Library,
+  library,
   playlist,
   playlistTrack,
   track,
@@ -50,6 +51,18 @@ export interface EntryTrack {
   readonly id: string;
   readonly r2Key: string;
   readonly duration: number;
+  /** Its library, which says how a written `.m3u` spells it (`playlistLine`). */
+  readonly libraryId: number;
+}
+
+/**
+ * The D1 round trips a caller has made, which the import counts against its
+ * step's subrequest budget (`PlaylistImportLimits.subrequestsPerRun`): a
+ * statement sent alone, or a `db.batch` of any length, is one. Each lookup
+ * below adds the round trips it made.
+ */
+export interface StatementTally {
+  statements: number;
 }
 
 /** What the importer keeps from a playlist it has imported before. */
@@ -76,29 +89,68 @@ export interface IndexedPlaylist extends StoredPlaylist {
   readonly trackIds: readonly string[];
 }
 
-/**
- * Keys are unique per library (migration 0009), so every lookup by key names
- * its library, which is also what lets `(library_id, r2_key)` serve it. The
- * import and the Files routes read library 1, the bound bucket, until they
- * take a library (#84, tickets F and H).
- */
-const KEYED_LIBRARY = DEFAULT_LIBRARY_ID;
+/** Some keys of one library, as a lookup or a deletion names them. */
+export interface LibraryKeys {
+  readonly libraryId: number;
+  readonly keys: readonly string[];
+}
 
-/** The tracks these R2 keys name, by key; keys with no track are absent. */
+/** The tracks found by key, by library and then by key. */
+export type TracksByKey = ReadonlyMap<number, ReadonlyMap<string, EntryTrack>>;
+
+/**
+ * The tracks these keys name, by library and key; keys with no track are
+ * absent.
+ *
+ * Keys are unique per library (migration 0009), so every key is looked up
+ * with its library, which is also what lets `(library_id, r2_key)` serve it.
+ * A playlist's entries may name several libraries (#84, "Playlists across
+ * libraries"), and they are still **one statement per file**: one OR'd
+ * `(library_id = ? and r2_key in (...))` group per library, chunked as
+ * `keyStatements` says. A file naming one library is v0.5.0's lookup with
+ * its library named, chunked as it was.
+ *
+ * **One round trip per file, whatever its length.** A long file needs a
+ * statement per ninety candidate keys, and a relative line has two, so a
+ * thousand-line file is two dozen statements: they go in one `db.batch`,
+ * one subrequest, as every other write here goes (`countedBatch`), so a
+ * file costs the import's step what `IMPORT_SUBREQUESTS` says. A file of one
+ * statement sends it alone, as v0.5.0 did.
+ */
 export async function findTracksByKeys(
   db: Database,
-  keys: readonly string[],
-): Promise<Map<string, EntryTrack>> {
-  const found = new Map<string, EntryTrack>();
-
-  for (const chunk of chunked(keys)) {
-    const rows = await db
-      .select({ id: track.id, r2Key: track.r2Key, duration: track.duration })
+  wanted: readonly LibraryKeys[],
+  tally: StatementTally = { statements: 0 },
+): Promise<TracksByKey> {
+  const found = new Map<number, Map<string, EntryTrack>>();
+  const [first, ...rest] = keyStatements(wanted).map((groups) =>
+    db
+      .select({
+        id: track.id,
+        r2Key: track.r2Key,
+        duration: track.duration,
+        libraryId: track.libraryId,
+      })
       .from(track)
-      .where(and(eq(track.libraryId, KEYED_LIBRARY), inArray(track.r2Key, chunk)));
+      .where(
+        or(
+          ...groups.map((group) =>
+            and(eq(track.libraryId, group.libraryId), inArray(track.r2Key, [...group.keys])),
+          ),
+        ),
+      ),
+  );
+  if (first === undefined) {
+    return found;
+  }
 
+  tally.statements++;
+  const results = rest.length === 0 ? [await first] : await db.batch([first, ...rest]);
+  for (const rows of results) {
     for (const row of rows) {
-      found.set(row.r2Key, row);
+      const inLibrary = found.get(row.libraryId) ?? new Map<string, EntryTrack>();
+      found.set(row.libraryId, inLibrary);
+      inLibrary.set(row.r2Key, row);
     }
   }
 
@@ -106,8 +158,56 @@ export async function findTracksByKeys(
 }
 
 /**
- * The playlists already imported from these `.m3u` keys, by key, each with
- * the entries it holds.
+ * The statements a lookup by key sends, each as the library groups it ORs.
+ * A statement binds at most `KEYS_PER_STATEMENT` keys plus one, each group's
+ * library id counting as one of them, so one library's keys chunk exactly
+ * as they did before any other library existed (`KEYS_PER_STATEMENT` keys
+ * and the id), well below D1's hundred. A library with no key is left out.
+ */
+export function keyStatements(wanted: readonly LibraryKeys[]): LibraryKeys[][] {
+  const most = KEYS_PER_STATEMENT + 1;
+  const statements: LibraryKeys[][] = [];
+  let current: LibraryKeys[] = [];
+  let bound = 0;
+
+  for (const { libraryId, keys } of wanted) {
+    let start = 0;
+    while (start < keys.length) {
+      // A group binds its library id and at least one key.
+      if (bound + 2 > most) {
+        statements.push(current);
+        current = [];
+        bound = 0;
+      }
+      const taken = keys.slice(start, start + most - bound - 1);
+      current.push({ libraryId, keys: taken });
+      bound += taken.length + 1;
+      start += taken.length;
+    }
+  }
+  if (current.length > 0) {
+    statements.push(current);
+  }
+
+  return statements;
+}
+
+/** The playlists already imported from some keys of one library, and the ids another library holds. */
+export interface PlaylistsByKey {
+  /** The library's playlists, by key, each with its entries. */
+  readonly held: ReadonlyMap<string, IndexedPlaylist>;
+  /**
+   * Of the ids asked about, those whose row is another library's: an upsert
+   * of one would be refused by its collision guard (`upsertPlaylistStatements`),
+   * so the import must write neither it nor its entries (#84, "Entity ids").
+   */
+  readonly foreign: ReadonlySet<string>;
+}
+
+/**
+ * The playlists already imported from these `.m3u` keys of one library, by
+ * key, each with the entries it holds, and which of the ids in `askAbout`
+ * are another library's rows.
  *
  * The entries come with the rows because the import compares them: a pass
  * that finds the stored playlist already equal to what the file says writes
@@ -116,23 +216,43 @@ export async function findTracksByKeys(
  * at once - and the rows themselves were already one statement per hundred
  * keys here.
  *
+ * `askAbout` is the ids the import is about to write that another library
+ * may already hold (ADR-0009's collision), looked up in the statement that
+ * reads the keys: none on the fast path, so a library-1 lookup is the
+ * statement it always was.
+ *
  * The caller passes the playlists it is about to import, not every playlist
  * its listing page offered: the entries of a playlist this run will not reach
  * are rows read for nothing, and a run reads at most `importsPerRun` of them.
  */
 export async function findPlaylistsByKeys(
   db: Database,
+  libraryId: number,
   keys: readonly string[],
-): Promise<Map<string, IndexedPlaylist>> {
-  const rows: Omit<IndexedPlaylist, "trackIds">[] = [];
+  askAbout: readonly string[] = [],
+  tally: StatementTally = { statements: 0 },
+): Promise<PlaylistsByKey> {
+  const rows: (Omit<IndexedPlaylist, "trackIds"> & { libraryId: number })[] = [];
+  // Asking about ids too, a statement binds both, so each gets half.
+  const size = askAbout.length === 0 ? KEYS_PER_STATEMENT : Math.floor(KEYS_PER_STATEMENT / 2);
+  const keyChunks = chunked(keys, size);
+  const idChunks = chunked(askAbout, size);
 
-  for (const chunk of chunked(keys)) {
+  for (let index = 0; index < Math.max(keyChunks.length, idChunks.length); index++) {
+    const keyChunk = keyChunks[index] ?? [];
+    const idChunk = idChunks[index] ?? [];
+    const byKey =
+      keyChunk.length === 0
+        ? undefined
+        : and(eq(playlist.libraryId, libraryId), inArray(playlist.r2Key, keyChunk));
+    const byId = idChunk.length === 0 ? undefined : inArray(playlist.id, idChunk);
     rows.push(
       ...(await db
         .select({
           id: playlist.id,
           name: playlist.name,
           r2Key: playlist.r2Key,
+          libraryId: playlist.libraryId,
           ownerId: playlist.ownerId,
           public: playlist.public,
           comment: playlist.comment,
@@ -142,21 +262,29 @@ export async function findPlaylistsByKeys(
           changedAt: playlist.changedAt,
         })
         .from(playlist)
-        .where(and(eq(playlist.libraryId, KEYED_LIBRARY), inArray(playlist.r2Key, chunk)))),
+        .where(byId === undefined ? byKey : or(byKey, byId))),
     );
+    tally.statements++;
   }
 
-  const entries = await findPlaylistEntryIds(
-    db,
-    rows.map((row) => row.id),
-  );
-  const found = new Map<string, IndexedPlaylist>();
-
-  for (const row of rows) {
-    found.set(row.r2Key, { ...row, trackIds: entries.get(row.id) ?? [] });
+  const foreign = new Set<string>();
+  const own = new Map<string, Omit<IndexedPlaylist, "trackIds">>();
+  for (const { libraryId: rowLibrary, ...row } of rows) {
+    if (rowLibrary === libraryId) {
+      own.set(row.id, row);
+    } else {
+      foreign.add(row.id);
+    }
   }
 
-  return found;
+  const entries = await findPlaylistEntryIds(db, [...own.keys()], tally);
+  const held = new Map<string, IndexedPlaylist>();
+
+  for (const row of own.values()) {
+    held.set(row.r2Key, { ...row, trackIds: entries.get(row.id) ?? [] });
+  }
+
+  return { held, foreign };
 }
 
 /**
@@ -169,6 +297,7 @@ export async function findPlaylistsByKeys(
 async function findPlaylistEntryIds(
   db: Database,
   ids: readonly string[],
+  tally: StatementTally,
 ): Promise<Map<string, string[]>> {
   const found = new Map<string, string[]>();
 
@@ -178,6 +307,7 @@ async function findPlaylistEntryIds(
       .from(playlistTrack)
       .where(inArray(playlistTrack.playlistId, chunk))
       .orderBy(asc(playlistTrack.playlistId), asc(playlistTrack.position));
+    tally.statements++;
 
     for (const row of rows) {
       const held = found.get(row.playlistId);
@@ -215,7 +345,12 @@ export async function findTracksByIds(
 
   for (const chunk of chunked(ids, KEYS_PER_STATEMENT - scopeParameters(scope))) {
     const rows = await db
-      .select({ id: track.id, r2Key: track.r2Key, duration: track.duration })
+      .select({
+        id: track.id,
+        r2Key: track.r2Key,
+        duration: track.duration,
+        libraryId: track.libraryId,
+      })
       .from(track)
       .where(and(inArray(track.id, chunk), libraryFilter(scope, track.libraryId)));
 
@@ -262,13 +397,13 @@ export async function listPlaylistEntryTracks(
 }
 
 /** A playlist's entry as `updatePlaylist` reads it: the track and its library. */
-export interface StoredEntryTrack extends EntryTrack {
-  readonly libraryId: number;
-}
+export type StoredEntryTrack = EntryTrack;
 
 /** A stored playlist as a write endpoint needs it: everything it must keep. */
 export interface WritablePlaylist extends StoredPlaylist {
   readonly name: string;
+  /** The library whose bucket holds its `.m3u`, where every write of it goes (#84). */
+  readonly libraryId: number;
 }
 
 /**
@@ -288,6 +423,7 @@ export async function findWritablePlaylist(
       id: playlist.id,
       name: playlist.name,
       r2Key: playlist.r2Key,
+      libraryId: playlist.libraryId,
       ownerId: playlist.ownerId,
       public: playlist.public,
       comment: playlist.comment,
@@ -300,26 +436,89 @@ export async function findWritablePlaylist(
   return rows[0] ?? null;
 }
 
+/** A library row as a playlist write reads it: where its bucket is, and whether it may be written. */
+export type PlaylistLibraryRow = Pick<
+  Library,
+  "id" | "kind" | "path" | "endpoint" | "bucket" | "credentials" | "writable" | "state"
+>;
+
+/**
+ * The row of the library a playlist's file lives in, or null when there is
+ * none, and every library's path, in one round trip: what `updatePlaylist`
+ * and `deletePlaylist` need to reach a library other than the bound one, to
+ * refuse a read-only one, and to spell the other libraries' tracks in its
+ * file (#84). It is read only for such a library, so a library-1 write runs
+ * v0.5.0's statements.
+ */
+export async function findPlaylistLibrary(
+  db: Database,
+  libraryId: number,
+): Promise<{ readonly row: PlaylistLibraryRow | null; readonly paths: Map<number, string> }> {
+  const [rows, paths] = await db.batch([
+    db
+      .select({
+        id: library.id,
+        kind: library.kind,
+        path: library.path,
+        endpoint: library.endpoint,
+        bucket: library.bucket,
+        credentials: library.credentials,
+        writable: library.writable,
+        state: library.state,
+      })
+      .from(library)
+      .where(eq(library.id, libraryId))
+      .limit(1),
+    db.select({ id: library.id, path: library.path }).from(library),
+  ]);
+
+  return { row: rows[0] ?? null, paths: new Map(paths.map((each) => [each.id, each.path])) };
+}
+
+/**
+ * The paths of these libraries, by id: how a written `.m3u` spells a track
+ * of a library other than its own (`playlistLine`). Nothing is read for no
+ * id, which is every write whose tracks are all in the playlist's library.
+ */
+export async function findLibraryPaths(
+  db: Database,
+  ids: readonly number[],
+): Promise<Map<number, string>> {
+  if (ids.length === 0) {
+    return new Map();
+  }
+
+  const rows = await db
+    .select({ id: library.id, path: library.path })
+    .from(library)
+    .where(inArray(library.id, [...ids]));
+
+  return new Map(rows.map((row) => [row.id, row.path]));
+}
+
 /** Removes one playlist; its entries cascade with it. */
 export async function deletePlaylistRow(db: Database, id: string): Promise<void> {
   await db.delete(playlist).where(eq(playlist.id, id));
 }
 
 /**
- * Deletes the rows of the playlists whose `.m3u` these keys were, with their
- * entries by cascade, in one batch of statements bound below D1's parameter
- * limit: what the sweep would remove on its next pass, removed now.
+ * Deletes the rows of the playlists whose `.m3u` these keys were, each in its
+ * library, with their entries by cascade, in one batch of statements bound
+ * below D1's parameter limit: what the sweep would remove on its next pass,
+ * removed now.
  */
 export async function deletePlaylistRowsByKeys(
   db: Database,
-  r2Keys: readonly string[],
+  files: readonly LibraryKeys[],
 ): Promise<void> {
   await runBatch(
     db,
-    chunked(r2Keys).map((chunk) =>
-      db
-        .delete(playlist)
-        .where(and(eq(playlist.libraryId, KEYED_LIBRARY), inArray(playlist.r2Key, chunk))),
+    files.flatMap(({ libraryId, keys }) =>
+      chunked(keys).map((chunk) =>
+        db
+          .delete(playlist)
+          .where(and(eq(playlist.libraryId, libraryId), inArray(playlist.r2Key, chunk))),
+      ),
     ),
   );
 }
@@ -365,6 +564,7 @@ export interface ImportedPlaylist {
 export function matchesStoredPlaylist(
   held: IndexedPlaylist | undefined,
   imported: ImportedPlaylist,
+  { secondsOnly = false }: { readonly secondsOnly?: boolean } = {},
 ): boolean {
   if (held === undefined) {
     return false;
@@ -376,10 +576,36 @@ export function matchesStoredPlaylist(
     held.name === imported.name &&
     held.songCount === imported.songCount &&
     held.duration === imported.duration &&
-    held.changedAt.getTime() === imported.changedAt.getTime() &&
+    sameUpload(held.changedAt, imported.changedAt, secondsOnly) &&
     held.trackIds.length === imported.trackIds.length &&
     held.trackIds.every((trackId, position) => trackId === imported.trackIds[position])
   );
+}
+
+/**
+ * Whether a stored `changed` is the upload time a listing now reports.
+ *
+ * Through the binding they are equal to the millisecond: a write stores the
+ * `uploaded` its `put` answered, which every later listing reports. An S3
+ * `PutObject` answers no `Last-Modified`, only its `Date`, to the second,
+ * while `ListObjectsV2` reports the millisecond (storage/s3.ts). So in an S3
+ * library (`secondsOnly`) a stored `changed` on a whole second also matches
+ * a listed time within that second or the one before it: the `Date` of the
+ * answer to the write that stored it, sent just after the object was
+ * stamped. Without this, the import would rewrite once, for nothing, every
+ * playlist a client wrote there (#150).
+ */
+function sameUpload(stored: Date, listed: Date, secondsOnly: boolean): boolean {
+  const at = stored.getTime();
+  if (at === listed.getTime()) {
+    return true;
+  }
+  if (!secondsOnly || at % 1000 !== 0) {
+    return false;
+  }
+  const second = Math.floor(listed.getTime() / 1000) * 1000;
+
+  return second === at || second === at - 1000;
 }
 
 /**
@@ -437,9 +663,11 @@ export function upsertPlaylistStatements(
         // The collision guard, as on tracks (scanner/repository.ts): another
         // library's playlist row is never moved into this one. It guards the
         // row only: the statements below still replace that id's entries.
-        // Nothing reaches this while every caller passes library 1; the
-        // import and writes across libraries (#84, ticket F) must detect the
-        // refused upsert before replacing the entries.
+        // So every caller makes sure first that no other library holds the
+        // id: the import asks (`findPlaylistsByKeys`' `foreign`) and skips
+        // such a file as broken, and a write either keeps the id of a row it
+        // read with its library or makes a new key in library 1, whose id no
+        // other library's can equal (playlists/writes.ts).
         setWhere: sql`${playlist.libraryId} = excluded.${sql.identifier(playlist.libraryId.name)}`,
       }),
     db.delete(playlistTrack).where(eq(playlistTrack.playlistId, imported.id)),
@@ -491,19 +719,22 @@ export interface SweptPlaylist {
  */
 export async function sweepMissingPlaylists(
   db: Database,
+  libraryId: number,
   after: string,
   through: string | null,
   listed: readonly string[],
   createdBefore: Date,
   /** Adds the rows D1 says the deletions wrote, for the daily write budget. */
   written: { rows: number } = { rows: 0 },
+  tally: StatementTally = { statements: 0 },
 ): Promise<SweptPlaylist[]> {
+  tally.statements++;
   const inRange = await db
     .select({ id: playlist.id, r2Key: playlist.r2Key })
     .from(playlist)
     .where(
       and(
-        eq(playlist.libraryId, KEYED_LIBRARY),
+        eq(playlist.libraryId, libraryId),
         gt(playlist.r2Key, after),
         through === null ? undefined : lte(playlist.r2Key, through),
         lt(playlist.createdAt, createdBefore),
@@ -513,9 +744,17 @@ export async function sweepMissingPlaylists(
   const stillThere = new Set(listed);
   const gone = inRange.filter((row) => !stillThere.has(row.r2Key));
 
-  for (const chunk of chunked(gone.map((row) => row.id))) {
-    // The entries go with them: `playlist_track` cascades on the playlist.
-    written.rows += rowsWrittenBy([await db.delete(playlist).where(inArray(playlist.id, chunk))]);
+  // The entries go with them: `playlist_track` cascades on the playlist.
+  // However many chunks the deletions take, they are one round trip, so a
+  // stretch with many playlists gone costs the step one subrequest.
+  const [first, ...rest] = chunked(gone.map((row) => row.id)).map((chunk) =>
+    db.delete(playlist).where(inArray(playlist.id, chunk)),
+  );
+  if (first !== undefined) {
+    tally.statements++;
+    written.rows += rowsWrittenBy(
+      rest.length === 0 ? [await first] : await db.batch([first, ...rest]),
+    );
   }
 
   return gone;

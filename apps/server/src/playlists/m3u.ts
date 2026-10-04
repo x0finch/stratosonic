@@ -40,6 +40,15 @@
  * `playlists/Artist/Album/01.mp3`. Trying both can only match more of the
  * user's playlist, never the wrong track: a candidate either is a key in the
  * bucket or it is not.
+ *
+ * ## Across libraries
+ *
+ * Each library's bucket is its own root, and its `path` is a storage URI
+ * (`r2-binding://MUSIC`, `s3://<endpoint host>/<bucket>`, ADR-0009). A line
+ * that starts with a library's path names that library, as Navidrome's
+ * absolute paths name whichever library holds them (`entryCandidates`), and
+ * a written file spells another library's track that way (`playlistLine`).
+ * Every other line is resolved in the playlist's own library, as above.
  */
 
 import { isAudioKey, suffixOf } from "../library/audio-formats";
@@ -134,6 +143,103 @@ export function entryKeyCandidates(m3uKey: string, entry: string): readonly stri
   const candidates = [cleanPath(folder === "" ? entry : `${folder}/${entry}`), cleanPath(entry)];
 
   return [...new Set(candidates.filter(isPresent))];
+}
+
+/* ----------------------------------------------- across libraries -- */
+
+/** What entry resolution needs to know of a library: its id, path and whether it is served. */
+export interface PlaylistLibrary {
+  readonly id: number;
+  /** The storage URI, `r2-binding://MUSIC` or `s3://<endpoint host>/<bucket>` (ADR-0009). */
+  readonly path: string;
+  /** Whether the library is `active`; a `removing` one resolves nothing. */
+  readonly active: boolean;
+}
+
+/** The keys an entry could name, and the library they are keys of. */
+export interface EntryCandidates {
+  readonly libraryId: number;
+  /** In the order they should be tried; none for a line that names nothing. */
+  readonly keys: readonly string[];
+}
+
+/**
+ * The library this line names by its path, or null when it starts with no
+ * library's path: Navidrome's `libraryMatcher.findLibrary`
+ * (core/playlists/parse_m3u.go), which matches an entry against every
+ * library's path, **longest first**, so a path that is a prefix of another
+ * (`s3://host/music` and `s3://host/music-classical`) cannot take the
+ * other's lines, and only at a path boundary, so a line must go on with
+ * `/`.
+ */
+export function libraryOfLine(
+  line: string,
+  libraries: readonly PlaylistLibrary[],
+): PlaylistLibrary | null {
+  let found: PlaylistLibrary | null = null;
+  for (const candidate of libraries) {
+    if (
+      line.startsWith(`${candidate.path}/`) &&
+      (found === null || candidate.path.length > found.path.length)
+    ) {
+      found = candidate;
+    }
+  }
+
+  return found;
+}
+
+/**
+ * The keys an entry of a playlist in library `libraryId` could name, and in
+ * which library (#84, "Playlists across libraries"):
+ *
+ * - a line that starts with a library's `path` plus `/` names that library,
+ *   with the rest of the line as the key, cleaned as Navidrome cleans an
+ *   absolute path (`filepath.Clean`); one of a library that is not `active`
+ *   names nothing, as a path outside every library does in Navidrome;
+ * - any other line is a bare entry and resolves in the playlist's own
+ *   library, exactly as `entryKeyCandidates` resolves it.
+ */
+export function entryCandidates(
+  libraryId: number,
+  m3uKey: string,
+  entry: string,
+  libraries: readonly PlaylistLibrary[],
+): EntryCandidates {
+  const named = libraryOfLine(entry, libraries);
+  if (named === null) {
+    return { libraryId, keys: entryKeyCandidates(m3uKey, entry) };
+  }
+
+  return {
+    libraryId: named.id,
+    keys: named.active ? present(cleanPath(entry.slice(named.path.length + 1))) : [],
+  };
+}
+
+/**
+ * The line a playlist in library `libraryId` writes for one of its tracks:
+ * the bare key for a track of its own library, so a file of one library is
+ * byte for byte what v0.5.0 wrote, and `<path>/<key>` for a track of
+ * another, which `entryCandidates` reads back into that library (#84).
+ * `renderM3u` then writes a bare key that begins with `#` in its absolute
+ * spelling; a qualified line begins with its library's scheme, never `#`.
+ */
+export function playlistLine(
+  libraryId: number,
+  entry: { readonly libraryId: number; readonly r2Key: string },
+  paths: ReadonlyMap<number, string>,
+): string {
+  if (entry.libraryId === libraryId) {
+    return entry.r2Key;
+  }
+
+  const path = paths.get(entry.libraryId);
+  if (path === undefined) {
+    throw new Error(`playlists: no path for library ${entry.libraryId}`);
+  }
+
+  return `${path}/${entry.r2Key}`;
 }
 
 /** A `file://` URL becomes the path it names; anything else is already one. */

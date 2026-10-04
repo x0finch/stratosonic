@@ -14,10 +14,11 @@
  * always correct, while a pass that trusts a half-written cursor is not.
  */
 
-import { property } from "@stratosonic/db";
+import { DEFAULT_LIBRARY_ID, property } from "@stratosonic/db";
 import { eq, inArray } from "drizzle-orm";
 import type { Database } from "../db";
 import { type RowsWritten, readRowsWritten, SCAN_ROWS_WRITTEN_KEY } from "../scanner/budget";
+import { type ScanLibrary, scanLibrariesQuery } from "../scanner/state";
 
 /**
  * The row a pass in flight writes.
@@ -52,6 +53,12 @@ export interface PlaylistImportCounts {
   unmatched: number;
   /** Objects R2 could not produce; left for the next run to try again. */
   deferred: number;
+  /**
+   * Playlists left out because their id is another library's row
+   * (ADR-0009's collision): writing one would be refused, and would replace
+   * the other playlist's entries (#84, "Entity ids").
+   */
+  broken: number;
   /** Playlists whose `.m3u` object has gone, removed by the sweep. */
   removed: number;
 }
@@ -65,6 +72,7 @@ export function noPlaylistImportCounts(): PlaylistImportCounts {
     entries: 0,
     unmatched: 0,
     deferred: 0,
+    broken: 0,
     removed: 0,
   };
 }
@@ -82,6 +90,13 @@ export function addPlaylistImportCounts(
 export interface PlaylistImportProgress {
   /** Epoch milliseconds the pass began at. */
   readonly startedAt: number;
+  /**
+   * The library the pass is in (#84, "Scanning several libraries"): the
+   * import walks every active library in ascending id, as the scan does. A
+   * row written before there were libraries has none, and means library 1.
+   * The cursor, `skip`, `sweptTo` and `restarted` are that library's.
+   */
+  readonly libraryId: number;
   /** The R2 cursor that produces the page to resume in; `""` is the start. */
   readonly cursor: string;
   /** How many objects of that page the last run already handled. */
@@ -105,24 +120,37 @@ export interface PlaylistImportProgress {
   readonly untallied: RowsWritten | null;
 }
 
-/** What one import run reads before it starts, in one query. */
+/** What one import run reads before it starts, in one round trip. */
 export interface PlaylistImportState {
   readonly progress: PlaylistImportProgress | null;
   /** The day's write tally the import counts against (`scanner/budget.ts`). */
   readonly rowsWritten: RowsWritten | null;
+  /**
+   * Every library row, in ascending id: the ones to walk (the active ones),
+   * how to reach each (`storageFor`), and every path an entry may name.
+   */
+  readonly libraries: readonly ScanLibrary[];
 }
 
-/** The import's progress and the day's write tally, in one query. */
+/**
+ * The import's progress, the day's write tally and the library rows, in one
+ * batch: one round trip, one subrequest, as the scan reads its own
+ * (`readScanState`), so each step sees each library's current `state`.
+ */
 export async function readPlaylistImportState(db: Database): Promise<PlaylistImportState> {
-  const rows = await db
-    .select()
-    .from(property)
-    .where(inArray(property.id, [PLAYLIST_IMPORT_PROGRESS_KEY, SCAN_ROWS_WRITTEN_KEY]));
+  const [rows, libraries] = await db.batch([
+    db
+      .select()
+      .from(property)
+      .where(inArray(property.id, [PLAYLIST_IMPORT_PROGRESS_KEY, SCAN_ROWS_WRITTEN_KEY])),
+    scanLibrariesQuery(db),
+  ]);
   const stored = new Map(rows.map((row) => [row.id, parsedObject(row.value)]));
 
   return {
     progress: readProgress(stored.get(PLAYLIST_IMPORT_PROGRESS_KEY) ?? null),
     rowsWritten: readRowsWritten(stored.get(SCAN_ROWS_WRITTEN_KEY) ?? undefined),
+    libraries,
   };
 }
 
@@ -130,7 +158,12 @@ export async function readPlaylistImportState(db: Database): Promise<PlaylistImp
 export async function readPlaylistImportProgress(
   db: Database,
 ): Promise<PlaylistImportProgress | null> {
-  return (await readPlaylistImportState(db)).progress;
+  const rows = await db
+    .select()
+    .from(property)
+    .where(eq(property.id, PLAYLIST_IMPORT_PROGRESS_KEY));
+
+  return readProgress(rows[0] === undefined ? null : (parsedObject(rows[0].value) ?? null));
 }
 
 function parsedObject(value: string): Record<string, unknown> | undefined {
@@ -161,6 +194,7 @@ function readProgress(stored: Record<string, unknown> | null): PlaylistImportPro
 
   return {
     startedAt,
+    libraryId: positiveWholeNumber(stored.libraryId) ?? DEFAULT_LIBRARY_ID,
     cursor: typeof stored.cursor === "string" ? stored.cursor : "",
     skip: wholeNumber(stored.skip) ?? 0,
     sweptTo: typeof stored.sweptTo === "string" ? stored.sweptTo : "",
@@ -209,6 +243,11 @@ function readCounts(value: unknown): PlaylistImportCounts | null {
   }
 
   return counts;
+}
+
+function positiveWholeNumber(value: unknown): number | null {
+  const whole = wholeNumber(value);
+  return whole === null || whole === 0 ? null : whole;
 }
 
 function wholeNumber(value: unknown): number | null {

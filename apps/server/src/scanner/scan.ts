@@ -277,12 +277,12 @@ type Plan =
     };
 
 /**
- * A library-1 key that could hash to another library's track id: one that
- * begins with a library id's digits and U+200B (ADR-0009). Any key of
- * another library could collide with such a library-1 key, so every one of
- * those is asked about.
+ * A library-1 key that could hash to another library's track or playlist
+ * id: one that begins with a library id's digits and U+200B (ADR-0009). Any
+ * key of another library could collide with such a library-1 key, so every
+ * one of those is asked about, by the scan and the playlist import alike.
  */
-const COLLISION_SHAPED = /^[1-9][0-9]*​/;
+export const COLLISION_SHAPED = /^[1-9][0-9]*​/;
 
 /**
  * Runs one bounded step of the scan and reports what it did.

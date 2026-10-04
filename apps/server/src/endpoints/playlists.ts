@@ -35,6 +35,11 @@
  * entries they cannot see, and a song id out of their libraries is "Song not
  * found", as an unknown one is. The list of playlists is not filtered.
  *
+ * **A write goes to the playlist's own library** (#84, "Playlists across
+ * libraries"): a new playlist to library 1, an existing one to the library
+ * its file is in, and a read-only library refuses with error 0, "the
+ * library is read-only", before anything is put or written.
+ *
  * All three writes take the same route: the whole `.m3u` is rendered and put,
  * and the row follows from it. `updatePlaylist` is therefore not an edit of a
  * stored list but a read of the current one, an edit in memory, and a write of
@@ -59,13 +64,23 @@ import {
   type StoredEntryTrack,
   type WritablePlaylist,
 } from "../playlists/repository";
-import { erasePlaylist, newPlaylistKey, writePlaylist } from "../playlists/writes";
+import {
+  boundPlaylistTarget,
+  erasePlaylist,
+  newPlaylistKey,
+  type PlaylistTarget,
+  playlistTarget,
+  writePlaylist,
+} from "../playlists/writes";
 import { integerParameterValue, requiredParameter } from "../subsonic/params";
 import { SubsonicError, SubsonicErrorCode, type SubsonicNode } from "../subsonic/response";
 import type { AuthenticatedSubsonicRequest, SubsonicHandler } from "../subsonic/router";
 
 /** Navidrome's message for a playlist it cannot produce. */
 const NOT_FOUND = "playlist not found";
+
+/** The answer to a write of a playlist whose library is read-only (#84). */
+const READ_ONLY = "the library is read-only";
 
 /** How many `songId`s one write may name, so its lookup stays affordable. */
 const MAX_SONGS_PER_REQUEST = 1000;
@@ -140,8 +155,12 @@ export const createPlaylist: SubsonicHandler = async (request) => {
   // Navidrome's `Put` replaces every entry. Only `updatePlaylist` keeps them
   // (#84, "Playlists for a scoped caller").
   const held = requestedId === "" ? null : await writable(db, request, requestedId);
+  // A new playlist is written to library 1 (ADR-0006), an existing one in
+  // its own library.
+  const target =
+    held === null ? boundPlaylistTarget(request.env) : await writableLibrary(request, db, held);
 
-  const id = await writePlaylist(request.env, db, {
+  const id = await writePlaylist(db, target, {
     r2Key: held?.r2Key ?? newPlaylistKey(),
     name: held?.name ?? name,
     comment: held?.comment ?? "",
@@ -190,6 +209,7 @@ export const updatePlaylist: SubsonicHandler = async (request) => {
   const { params } = request;
   const db = database(request.env);
   const held = await writable(db, request, requiredParameter(params, "playlistId"));
+  const target = await writableLibrary(request, db, held);
   const scope = scopeOf(request.user);
 
   const [current, added] = await Promise.all([
@@ -205,7 +225,7 @@ export const updatePlaylist: SubsonicHandler = async (request) => {
   // file - which is the random id the key is made of.
   const renamed = playlistNameForFile(params.get("name") ?? "");
 
-  await writePlaylist(request.env, db, {
+  await writePlaylist(db, target, {
     r2Key: held.r2Key,
     name: renamed || held.name,
     comment: params.get("comment") ?? held.comment,
@@ -282,8 +302,9 @@ function booleanParameter(params: URLSearchParams, name: string): boolean | null
 export const deletePlaylist: SubsonicHandler = async (request) => {
   const db = database(request.env);
   const held = await writable(db, request, requiredParameter(request.params, "id"));
+  const target = await writableLibrary(request, db, held);
 
-  await erasePlaylist(request.env, db, held.id, held.r2Key);
+  await erasePlaylist(db, target, held.id, held.r2Key);
 
   return {};
 };
@@ -328,6 +349,28 @@ async function writable(
   }
 
   return held;
+}
+
+/**
+ * Where a write of this playlist goes: its own library's bucket (#84). A
+ * library that is gone or being removed is "not found", as its playlists
+ * are about to be; a read-only one is error 0, "the library is read-only".
+ * Either is answered before anything is put or written.
+ */
+async function writableLibrary(
+  request: AuthenticatedSubsonicRequest,
+  db: Database,
+  held: WritablePlaylist,
+): Promise<PlaylistTarget> {
+  const target = await playlistTarget(request.env, db, held.libraryId);
+  if (target === "not_found") {
+    throw new SubsonicError(SubsonicErrorCode.NotFound, NOT_FOUND);
+  }
+  if (target === "read_only") {
+    throw new SubsonicError(SubsonicErrorCode.Generic, READ_ONLY);
+  }
+
+  return target;
 }
 
 /**
