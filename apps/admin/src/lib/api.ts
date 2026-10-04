@@ -737,3 +737,118 @@ export async function completeUploads(keys: readonly string[]): Promise<Complete
     ),
   );
 }
+
+/** Why a bucket could not be reached, as the server's storage layer names it (#84). */
+export type StorageFailure =
+  | "auth"
+  | "bucket_not_found"
+  | "throttled"
+  | "invalid_cursor"
+  | "unavailable";
+
+/** What a library holds, from its albums' aggregates. */
+export interface LibraryContents {
+  artists: number;
+  albums: number;
+  tracks: number;
+  sizeBytes: number;
+  durationSec: number;
+}
+
+/**
+ * A library as `GET /api/libraries` lists it (#84, "Libraries API"), never
+ * with a key. Library 1 is the bucket the Worker is bound to (`kind`
+ * `r2-binding`), which has no key at all; any other is an R2 bucket reached
+ * with an API token, shown by its Access Key ID's last four characters.
+ */
+export interface Library {
+  id: number;
+  name: string;
+  kind: "r2-binding" | "s3";
+  accountId: string | null;
+  /** `R2_BUCKET_NAME` for library 1, which may be unset. */
+  bucket: string | null;
+  /** `…3F9A`, or null for library 1 and for a token that no longer opens. */
+  accessKeyIdHint: string | null;
+  writable: boolean;
+  defaultNewUsers: boolean;
+  state: "active" | "removing";
+  lastScanStartedAt: string | null;
+  lastScanAt: string | null;
+  /** Why the last pass skipped it (a `StorageFailure`), or null. */
+  lastScanError: string | null;
+  counts: LibraryContents;
+}
+
+/** `GET /api/libraries`: the libraries in id order, and `CF_ACCOUNT_ID` to prefill a new one's. */
+export interface LibraryList {
+  libraries: Library[];
+  defaultAccountId: string | null;
+}
+
+/** What a connect or a change of bucket did to the scan; `null` when the driver could not be told. */
+export type LibraryScan = "started" | "running" | null;
+
+/** The fields of a new library: a name, the bucket, and the R2 API token that reaches it. */
+export interface NewLibrary {
+  name: string;
+  accountId: string;
+  bucket: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  defaultNewUsers: boolean;
+}
+
+/** What a PATCH changes: any of these, the two keys together. Library 1 takes the first two only. */
+export interface LibraryChanges {
+  name?: string;
+  defaultNewUsers?: boolean;
+  accountId?: string;
+  bucket?: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+}
+
+/**
+ * `POST /api/libraries/:id/test`: whether the stored token lists the bucket,
+ * and whether it can write to it; library 1's also says whether uploads are
+ * configured.
+ */
+export type ConnectionTest =
+  | { ok: true; writable: boolean; uploads?: boolean }
+  | { ok: false; reason: StorageFailure };
+
+/** What a removal takes out of the index, as the server counted it. */
+export interface RemovedLibrary {
+  tracks: number;
+  albums: number;
+  playlists: number;
+}
+
+export function fetchLibraries(): Promise<LibraryList> {
+  return call<LibraryList>("GET", "/api/libraries");
+}
+
+/** Connects a bucket. The server tests it first, and stores nothing when the test fails. */
+export function connectLibrary(
+  request: NewLibrary,
+): Promise<{ library: Library; scan: LibraryScan }> {
+  return call("POST", "/api/libraries", request);
+}
+
+export function updateLibrary(
+  id: number,
+  changes: LibraryChanges,
+): Promise<{ library: Library; scan: LibraryScan }> {
+  return call("PATCH", `/api/libraries/${id}`, changes);
+}
+
+export function testLibrary(id: number): Promise<ConnectionTest> {
+  return call("POST", `/api/libraries/${id}/test`);
+}
+
+/** Starts removing a library: it is gone for every reader at once, and the scan deletes its rows. */
+export async function removeLibrary(id: number): Promise<RemovedLibrary> {
+  const { removed } = await call<{ removed: RemovedLibrary }>("DELETE", `/api/libraries/${id}`);
+  return removed;
+}
