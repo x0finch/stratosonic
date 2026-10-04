@@ -38,7 +38,7 @@
  */
 
 import { DEFAULT_LIBRARY_ID, type Library, library, property } from "@stratosonic/db";
-import { asc, eq, inArray, like, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, like, or, type SQL, sql } from "drizzle-orm";
 import type { Database } from "../db";
 import { PLAYLIST_IMPORT_PROGRESS_KEY } from "../playlists/state";
 import { type RowsWritten, readRowsWritten, SCAN_ROWS_WRITTEN_KEY } from "./budget";
@@ -406,21 +406,37 @@ export function toScanReport(rows: Awaited<ReturnType<typeof scanReportQuery>>):
  * Records a change to the bucket at `at`, keeping the later of it and the
  * stored one, so two requests that race cannot move the instant back. A
  * stored row that will not parse is replaced.
+ *
+ * With `when`, the change is recorded only if that condition holds as the
+ * statement runs: a batch whose earlier write may have been refused records
+ * nothing then (`DELETE /api/libraries/:id`, libraries/repository.ts).
  */
-export function writeLibraryChangedAtStatement(db: Database, at: number): ScanStatement {
+export function writeLibraryChangedAtStatement(
+  db: Database,
+  at: number,
+  when?: SQL,
+): ScanStatement {
   const value = JSON.stringify({ at });
+  const conflict = {
+    target: property.id,
+    set: { value },
+    setWhere: sql`${at} > case when json_valid(${property.value})
+      then case when json_type(${property.value}, '$.at') in ('integer', 'real')
+        then json_extract(${property.value}, '$.at') else -1 end
+      else -1 end`,
+  };
+
+  if (when === undefined) {
+    return db
+      .insert(property)
+      .values({ id: LIBRARY_CHANGED_AT_KEY, value })
+      .onConflictDoUpdate(conflict);
+  }
 
   return db
     .insert(property)
-    .values({ id: LIBRARY_CHANGED_AT_KEY, value })
-    .onConflictDoUpdate({
-      target: property.id,
-      set: { value },
-      setWhere: sql`${at} > case when json_valid(${property.value})
-        then case when json_type(${property.value}, '$.at') in ('integer', 'real')
-          then json_extract(${property.value}, '$.at') else -1 end
-        else -1 end`,
-    });
+    .select(sql`select ${LIBRARY_CHANGED_AT_KEY}, ${value} where ${when}`)
+    .onConflictDoUpdate(conflict);
 }
 
 /** The objects of a library currently written off as unreadable. */
@@ -463,8 +479,15 @@ export function clearScanProgressStatement(db: Database): ScanStatement {
  * library's bucket resets its cursor, if the pass is in it, and its memo, in
  * the same batch). The pass then lists the new bucket from its start, and
  * sweeps the tracks it no longer holds.
+ *
+ * `when` is a condition both statements also need, for a batch whose earlier
+ * write may have been refused (libraries/repository.ts: `updateLibrary`).
  */
-export function resetLibraryScanStatements(db: Database, libraryId: number): ScanStatement[] {
+export function resetLibraryScanStatements(
+  db: Database,
+  libraryId: number,
+  when: SQL = sql`1`,
+): ScanStatement[] {
   // A v0.5.0 row names no library, and is library 1's.
   const ofThisLibrary = sql`coalesce(json_extract(${property.value}, '$.libraryId'), ${DEFAULT_LIBRARY_ID}) = ${libraryId}`;
 
@@ -475,9 +498,9 @@ export function resetLibraryScanStatements(db: Database, libraryId: number): Sca
         value: sql`json_set(${property.value}, '$.cursor', '', '$.skip', 0, '$.sweptTo', '', '$.restarted', json('false'))`,
       })
       .where(
-        sql`${property.id} = ${SCAN_PROGRESS_KEY} and json_valid(${property.value}) and ${ofThisLibrary}`,
+        sql`${property.id} = ${SCAN_PROGRESS_KEY} and json_valid(${property.value}) and ${ofThisLibrary} and ${when}`,
       ),
-    deleteBrokenObjectsStatement(db, libraryId),
+    db.delete(property).where(and(eq(property.id, brokenObjectsKey(libraryId)), when)),
   ];
 }
 
